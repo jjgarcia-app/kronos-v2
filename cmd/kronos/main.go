@@ -21,7 +21,7 @@ func run(args []string) error {
 	case "init":
 		return runInit()
 	case "serve":
-		return runServe()
+		return runServe(args[1:]...)
 	case "hook":
 		return runHook(args[1:])
 	case "setup":

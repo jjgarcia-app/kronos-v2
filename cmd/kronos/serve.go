@@ -5,16 +5,30 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 
 	"github.com/jjgarcia-app/kronos-v2/internal/config"
 	"github.com/jjgarcia-app/kronos-v2/internal/embeddings"
 	"github.com/jjgarcia-app/kronos-v2/internal/mcp"
 	"github.com/jjgarcia-app/kronos-v2/internal/platform"
 	"github.com/jjgarcia-app/kronos-v2/internal/relations"
+	httpserver "github.com/jjgarcia-app/kronos-v2/internal/server"
 	"github.com/jjgarcia-app/kronos-v2/internal/store"
 )
 
-func runServe() error {
+func runServe(args ...string) error {
+	// parse --port=N flag
+	port := 4317
+	for _, a := range args {
+		if strings.HasPrefix(a, "--port=") {
+			n, err := strconv.Atoi(strings.TrimPrefix(a, "--port="))
+			if err == nil && n > 0 {
+				port = n
+			}
+		}
+	}
+
 	ctx := context.Background()
 
 	cfg, _ := config.Load()
@@ -34,6 +48,12 @@ func runServe() error {
 		return fmt.Errorf("open store: %w", err)
 	}
 	defer st.Close()
+
+	// arrancar HTTP server en background
+	hs := httpserver.New(st, port)
+	if err := hs.Start(); err != nil {
+		fmt.Fprintf(os.Stderr, "warn: http server no pudo arrancar: %v\n", err)
+	}
 
 	vs, _ := embeddings.New(ctx, filepath.Join(dataDir, "vectors"))
 	rel := relations.New(vs)
