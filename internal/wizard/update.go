@@ -173,19 +173,31 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.setupDone = false
 			ollamaModel := m.cfg.Embeddings.OllamaModel
 			if ollamaModel == "" {
-				ollamaModel = "nomic-embed-text"
+				ollamaModel = "bge-m3"
 			}
-			return m, tea.Batch(
-				m.sp.Tick,
-				cmdRunSetup(m.agents, m.wantsDocker, ollamaModel),
-			)
+			var setupCmd tea.Cmd
+			setupCmd, m.cancelSetup = cmdRunSetup(m.agents, m.wantsDocker, ollamaModel)
+			return m, tea.Batch(m.sp.Tick, setupCmd)
 		case "q", "ctrl+c":
 			return m, tea.Quit
 		}
 
 	// ── Setup running ─────────────────────────────────────────────────────────
 	case phaseSetup:
-		if msg.String() == "ctrl+c" {
+		switch msg.String() {
+		case "esc", "q":
+			if m.cancelSetup != nil {
+				m.cancelSetup()
+				m.cancelSetup = nil
+			}
+			m.setupLog = append(m.setupLog, "Instalación cancelada por el usuario")
+			m.setupDone = true
+			m.phase = phaseDone
+			return m, cmdRunDoctor(m.cfg)
+		case "ctrl+c":
+			if m.cancelSetup != nil {
+				m.cancelSetup()
+			}
 			return m, tea.Quit
 		}
 

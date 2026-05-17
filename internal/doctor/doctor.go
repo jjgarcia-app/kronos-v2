@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/jjgarcia-app/kronos-v2/internal/config"
@@ -228,7 +229,7 @@ func checkEmbeddingModel(ctx context.Context, cfg config.Config) Check {
 	}
 	model := cfg.Embeddings.OllamaModel
 	if model == "" {
-		model = "nomic-embed-text"
+		model = "bge-m3"
 	}
 
 	client := &http.Client{Timeout: 2 * time.Second}
@@ -325,24 +326,25 @@ func checkClaudeHooks() Check {
 }
 
 func checkBinaryInPath() Check {
-	path, err := exec.LookPath("kronos")
-	if err != nil {
-		// On Windows also try kronos.exe
-		path, err = exec.LookPath("kronos.exe")
+	for _, name := range []string{"kronos", "kronos.exe"} {
+		if p, err := exec.LookPath(name); err == nil {
+			return Check{Name: "Binario en PATH", Detail: p, Status: StatusOK}
+		}
 	}
-	if err != nil {
-		return Check{
-			Name:         "Binario en PATH",
-			Detail:       "kronos no encontrado en PATH",
-			Status:       StatusWarn,
-			FixAvailable: false,
-			FixLabel:     "Añadir kronos al PATH manualmente",
+	// Fallback: check if our own executable's directory is listed in PATH.
+	exe, _ := os.Executable()
+	exeDir := filepath.Clean(filepath.Dir(exe))
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		if strings.EqualFold(filepath.Clean(dir), exeDir) {
+			return Check{Name: "Binario en PATH", Detail: exe, Status: StatusOK}
 		}
 	}
 	return Check{
-		Name:   "Binario en PATH",
-		Detail: path,
-		Status: StatusOK,
+		Name:         "Binario en PATH",
+		Detail:       "kronos no encontrado en PATH",
+		Status:       StatusWarn,
+		FixAvailable: false,
+		FixLabel:     "Añadir kronos al PATH manualmente",
 	}
 }
 
@@ -404,7 +406,7 @@ func fixPostgresDB(ctx context.Context, cfg config.Config, progress chan<- strin
 func fixOllama(cfg config.Config, progress chan<- string) error {
 	model := cfg.Embeddings.OllamaModel
 	if model == "" {
-		model = "nomic-embed-text"
+		model = "bge-m3"
 	}
 
 	if cfg.Embeddings.OllamaDocker {
@@ -438,7 +440,7 @@ func fixOllama(cfg config.Config, progress chan<- string) error {
 func fixEmbeddingModel(cfg config.Config, progress chan<- string) error {
 	model := cfg.Embeddings.OllamaModel
 	if model == "" {
-		model = "nomic-embed-text"
+		model = "bge-m3"
 	}
 	progress <- fmt.Sprintf("Descargando modelo %s...", model)
 	cmd := exec.Command("ollama", "pull", model)

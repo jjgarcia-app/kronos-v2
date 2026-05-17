@@ -90,7 +90,7 @@ Una vez conectado, el agente tiene acceso a:
 | Componente | Por defecto | Alternativa |
 |------------|-------------|-------------|
 | Base de datos | SQLite (puro Go, sin CGO) | PostgreSQL |
-| Embeddings | Ollama (nomic-embed-text) | Sin embeddings |
+| Embeddings | Ollama (bge-m3) | Sin embeddings |
 | Búsqueda | FTS5 (SQLite) / pg_tsvector (PG) | — |
 
 ---
@@ -105,7 +105,7 @@ kronos doctor
 [OK] Config file:       ~/.config/kronos/config.json
 [OK] Base de datos:     ~/.local/share/kronos/kronos.db
 [OK] Ollama:            http://localhost:11434 OK
-[OK] Modelo embeddings: nomic-embed-text instalado
+[OK] Modelo embeddings: bge-m3 instalado
 [OK] Hooks Claude Code: instalados
 [OK] Binario en PATH:   /usr/local/bin/kronos
 ```

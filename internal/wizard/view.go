@@ -9,12 +9,19 @@ import (
 	"github.com/jjgarcia-app/kronos-v2/internal/doctor"
 )
 
+const banner = `
+  ██╗  ██╗██████╗  ██████╗ ███╗   ██╗ ██████╗ ███████╗
+  ██║ ██╔╝██╔══██╗██╔═══██╗████╗  ██║██╔═══██╗██╔════╝
+  █████╔╝ ██████╔╝██║   ██║██╔██╗ ██║██║   ██║███████╗
+  ██╔═██╗ ██╔══██╗██║   ██║██║╚██╗██║██║   ██║╚════██║
+  ██║  ██╗██║  ██║╚██████╔╝██║ ╚████║╚██████╔╝███████║
+  ╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═══╝ ╚═════╝ ╚══════╝`
+
 func (m Model) View() string {
 	var b strings.Builder
 
 	// ── Header ────────────────────────────────────────────────────────────────
-	b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(colIris).
-		PaddingLeft(2).Render("K R O N O S   v2"))
+	b.WriteString(styleTitle.Render(banner))
 	b.WriteString("\n")
 	b.WriteString(styleMuted.Render("  Memoria persistente para agentes de IA  —  Asistente de configuración"))
 	b.WriteString("\n\n")
@@ -181,6 +188,9 @@ func (m Model) View() string {
 			}
 		}
 		b.WriteString(renderBox(m.width, lines(bodyLines...)))
+		if !m.setupDone {
+			b.WriteString(styleHelp.Render("\n  Esc para cancelar  ·  Ctrl+C para salir"))
+		}
 
 	case phaseDone:
 		b.WriteString(renderDoctorReport(m.report))

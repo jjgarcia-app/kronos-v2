@@ -11,7 +11,7 @@ import (
 
 const (
 	DefaultOllamaURL   = "http://localhost:11434"
-	DefaultOllamaModel = "nomic-embed-text"
+	DefaultOllamaModel = "bge-m3"
 )
 
 // EmbeddingFunc is the signature chromem-go uses internally.

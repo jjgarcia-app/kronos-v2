@@ -1,11 +1,15 @@
 package wizard
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -119,9 +123,10 @@ type Model struct {
 	agents      []agentItem
 	agentCursor int
 
-	sp        spinner.Model
-	setupLog  []string
-	setupDone bool
+	sp          spinner.Model
+	setupLog    []string
+	setupDone   bool
+	cancelSetup func() // cancels the running setup goroutine
 
 	report doctor.Report
 
@@ -183,6 +188,14 @@ func cmdCheckBinary() tea.Cmd {
 			}
 		}
 		exe, _ := os.Executable()
+		// Fallback: check if the binary's own directory is listed in PATH.
+		// LookPath can miss it when the session PATH differs from the registry.
+		exeDir := filepath.Clean(filepath.Dir(exe))
+		for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+			if strings.EqualFold(filepath.Clean(dir), exeDir) {
+				return binaryCheckedMsg{path: exe, ok: true}
+			}
+		}
 		return binaryCheckedMsg{path: exe, ok: false}
 	}
 }
@@ -212,31 +225,98 @@ func drainSetup(ch <-chan string) tea.Cmd {
 }
 
 // cmdRunSetup starts a goroutine that installs agents (and optionally Ollama via
-// Docker) and returns the first drain command.
-func cmdRunSetup(agents []agentItem, wantsDocker bool, ollamaModel string) tea.Cmd {
+// Docker) and returns the first drain command plus a cancel func.
+func cmdRunSetup(agents []agentItem, wantsDocker bool, ollamaModel string) (tea.Cmd, func()) {
+	ctx, cancel := context.WithCancel(context.Background())
 	ch := make(chan string, 64)
 	go func() {
 		defer close(ch)
 
+		ollamaURL := "http://localhost:11434"
+
+		cancelled := func() bool {
+			select {
+			case <-ctx.Done():
+				ch <- "  Instalación cancelada"
+				return true
+			default:
+				return false
+			}
+		}
+
 		if wantsDocker {
-			ch <- "Iniciando Ollama en Docker..."
-			cmd := exec.Command("docker", "run", "-d", "--name", "kronos-ollama",
-				"-p", "11434:11434", "ollama/ollama")
-			if out, err := cmd.CombinedOutput(); err != nil {
-				ch <- fmt.Sprintf("  ! docker: %s", strings.TrimSpace(string(out)))
+			if cancelled() {
+				return
+			}
+			// Step 1: pull the image so we can stream layer progress.
+			ch <- "Descargando imagen ollama/ollama..."
+			pullImg := exec.CommandContext(ctx, "docker", "pull", "ollama/ollama")
+			if err := streamCmd(pullImg, "  ", ch); err != nil {
+				if ctx.Err() != nil {
+					ch <- "  Cancelado"
+					return
+				}
+				ch <- fmt.Sprintf("  ! docker pull: %v", err)
+				goto agents
+			}
+			ch <- "  ✓ Imagen descargada"
+
+			if cancelled() {
+				return
+			}
+			// Step 2: start container (detached — fast, no streaming needed).
+			ch <- "Iniciando contenedor kronos-ollama..."
+			runOut, runErr := exec.Command("docker", "run", "-d",
+				"--name", "kronos-ollama",
+				"-p", "11434:11434",
+				"ollama/ollama").CombinedOutput()
+			if runErr != nil {
+				msg := strings.TrimSpace(string(runOut))
+				if strings.Contains(msg, "already in use") {
+					ch <- "  ✓ Contenedor kronos-ollama ya existe"
+				} else {
+					ch <- fmt.Sprintf("  ! docker run: %s", msg)
+					goto agents
+				}
 			} else {
-				ch <- "  ✓ Contenedor kronos-ollama iniciado"
-				time.Sleep(3 * time.Second)
-				ch <- fmt.Sprintf("Descargando %s...", ollamaModel)
-				pull := exec.Command("ollama", "pull", ollamaModel)
-				if out, err := pull.CombinedOutput(); err != nil {
-					ch <- fmt.Sprintf("  ! pull: %s", strings.TrimSpace(string(out)))
+				ch <- "  ✓ Contenedor iniciado"
+			}
+
+			if cancelled() {
+				return
+			}
+			// Step 3: wait for Ollama API to be ready.
+			ch <- "Esperando que Ollama inicie..."
+			if !waitOllamaReady(ollamaURL, 45*time.Second) {
+				ch <- "  ! Ollama no respondió a tiempo — continúa sin modelo"
+				goto agents
+			}
+			ch <- "  ✓ Ollama disponible"
+		}
+
+		if cancelled() {
+			return
+		}
+		// Always check and pull the model whenever Ollama is reachable.
+		if waitOllamaReady(ollamaURL, 5*time.Second) {
+			if isModelInstalled(ollamaURL, ollamaModel) {
+				ch <- fmt.Sprintf("  ✓ Modelo %s ya instalado", ollamaModel)
+			} else {
+				ch <- fmt.Sprintf("Descargando modelo %s...", ollamaModel)
+				if err := pullModelViaAPI(ctx, ollamaURL, ollamaModel, ch); err != nil {
+					if ctx.Err() == nil {
+						ch <- fmt.Sprintf("  ! pull %s: %v", ollamaModel, err)
+					}
 				} else {
 					ch <- fmt.Sprintf("  ✓ Modelo %s listo", ollamaModel)
 				}
 			}
 		}
 
+	agents:
+		if cancelled() {
+			return
+		}
 		for _, a := range agents {
 			if !a.checked {
 				continue
@@ -258,7 +338,7 @@ func cmdRunSetup(agents []agentItem, wantsDocker bool, ollamaModel string) tea.C
 			}
 		}
 	}()
-	return drainSetup(ch)
+	return drainSetup(ch), cancel
 }
 
 func cmdSaveConfig(cfg config.Config) tea.Cmd {
@@ -279,6 +359,131 @@ func cmdRunDoctor(cfg config.Config) tea.Cmd {
 		defer cancel()
 		return doctorDoneMsg{report: doctor.Run(ctx, cfg)}
 	}
+}
+
+// ── Streaming helpers ─────────────────────────────────────────────────────────
+
+// scanCRLF splits on \n, \r\n, or bare \r — handles docker/ollama progress output.
+func scanCRLF(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	if atEOF && len(data) == 0 {
+		return 0, nil, nil
+	}
+	for i, b := range data {
+		if b == '\n' || b == '\r' {
+			advance = i + 1
+			if b == '\r' && i+1 < len(data) && data[i+1] == '\n' {
+				advance = i + 2
+			}
+			return advance, data[:i], nil
+		}
+	}
+	if atEOF {
+		return len(data), data, nil
+	}
+	return 0, nil, nil
+}
+
+// streamCmd runs cmd and sends each non-empty output line (prefixed) to ch.
+func streamCmd(cmd *exec.Cmd, prefix string, ch chan<- string) error {
+	pr, pw := io.Pipe()
+	cmd.Stdout = pw
+	cmd.Stderr = pw
+
+	scanDone := make(chan struct{})
+	go func() {
+		defer close(scanDone)
+		sc := bufio.NewScanner(pr)
+		sc.Split(scanCRLF)
+		for sc.Scan() {
+			line := strings.TrimSpace(sc.Text())
+			if line != "" {
+				ch <- prefix + line
+			}
+		}
+	}()
+
+	runErr := cmd.Run()
+	pw.Close()
+	<-scanDone
+	pr.Close()
+	return runErr
+}
+
+// waitOllamaReady polls the Ollama API until it responds or timeout elapses.
+func waitOllamaReady(url string, timeout time.Duration) bool {
+	client := &http.Client{Timeout: 2 * time.Second}
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if resp, err := client.Get(url + "/api/tags"); err == nil {
+			resp.Body.Close()
+			if resp.StatusCode < 300 {
+				return true
+			}
+		}
+		time.Sleep(2 * time.Second)
+	}
+	return false
+}
+
+// pullModelViaAPI calls POST /api/pull and streams JSON progress to ch.
+// Avoids TTY/ANSI issues from running "ollama pull" as a subprocess.
+func pullModelViaAPI(ctx context.Context, baseURL, model string, ch chan<- string) error {
+	req, err := http.NewRequestWithContext(ctx, "POST", baseURL+"/api/pull",
+		strings.NewReader(`{"name":"`+model+`","stream":true}`))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	type pullEvent struct {
+		Status    string `json:"status"`
+		Digest    string `json:"digest"`
+		Total     int64  `json:"total"`
+		Completed int64  `json:"completed"`
+		Error     string `json:"error"`
+	}
+
+	var lastPct int64 = -1
+	sc := bufio.NewScanner(resp.Body)
+	for sc.Scan() {
+		var ev pullEvent
+		if err := json.Unmarshal(sc.Bytes(), &ev); err != nil {
+			continue
+		}
+		if ev.Error != "" {
+			return fmt.Errorf("%s", ev.Error)
+		}
+		if ev.Total > 0 {
+			pct := ev.Completed * 100 / ev.Total
+			if pct != lastPct && pct%10 == 0 {
+				ch <- fmt.Sprintf("  %d%%  (%d MB)", pct, ev.Total/(1024*1024))
+				lastPct = pct
+			}
+		} else if ev.Status != "" && ev.Digest == "" {
+			ch <- "  " + ev.Status
+		}
+	}
+	return sc.Err()
+}
+
+// isModelInstalled checks /api/tags to see if the model name appears in Ollama.
+func isModelInstalled(baseURL, model string) bool {
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Get(baseURL + "/api/tags")
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(body), model)
 }
 
 // ── Path helpers ──────────────────────────────────────────────────────────────
