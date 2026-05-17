@@ -119,10 +119,11 @@ func TestMemSave_Basic(t *testing.T) {
 	srv := newTestServer(t)
 
 	text := call(t, srv, "mem_save", map[string]any{
-		"title":   "Elegimos Go para Kronos v2",
-		"content": "Go compila a binario único sin dependencias externas. Pure Go sin CGO posible con ncruces.",
-		"type":    "decision",
-		"project": "kronos-v2",
+		"title":     "Elegimos Go para Kronos v2",
+		"content":   "Qué: Adoptamos Go puro sin CGO como lenguaje del proyecto.\nPor qué: Binario estático multiplataforma con ncruces/go-sqlite3 WASM.\nArchivos: go.mod\nCómo aplicar: Nunca agregar dependencias con CGO.",
+		"type":      "decision",
+		"project":   "kronos-v2",
+		"topic_key": "stack/language",
 	})
 
 	if !contains(text, "guardado") {
@@ -134,13 +135,19 @@ func TestMemSave_Upsert(t *testing.T) {
 	srv := newTestServer(t)
 
 	call(t, srv, "mem_save", map[string]any{
-		"title": "v1", "content": "primera versión del contenido para topic key",
-		"type": "decision", "project": "p", "topic_key": "arch/db",
+		"title":     "v1",
+		"content":   "Qué: Elegimos PostgreSQL como base de datos primaria.\nPor qué: Necesitamos consultas complejas y replicación.\nArchivos: internal/store/store.go\nCómo aplicar: Usar $N placeholders, no ?.",
+		"type":      "decision",
+		"project":   "p",
+		"topic_key": "arch/db",
 	})
 
 	text := call(t, srv, "mem_save", map[string]any{
-		"title": "v2", "content": "segunda versión actualizada del contenido",
-		"type": "decision", "project": "p", "topic_key": "arch/db",
+		"title":     "v2",
+		"content":   "Qué: Actualizamos a DualStore con SQLite como buffer de PostgreSQL.\nPor qué: Tolerancia a fallos cuando PG está caído.\nArchivos: internal/store/dual_store.go\nCómo aplicar: DualStore es siempre el backend en producción.",
+		"type":      "decision",
+		"project":   "p",
+		"topic_key": "arch/db",
 	})
 
 	if !contains(text, "actualizado") {
@@ -169,8 +176,9 @@ func TestMemSearch_FindsSaved(t *testing.T) {
 
 	call(t, srv, "mem_save", map[string]any{
 		"title":   "SQLite FTS5 soporta búsqueda full-text",
-		"content": "El tokenizador unicode61 maneja español correctamente sin configuración adicional.",
-		"type":    "discovery", "project": "p",
+		"content": "Qué: FTS5 con unicode61 maneja español sin configuración extra.\nPor qué: No necesita extensiones adicionales en ncruces/go-sqlite3.\nArchivos: internal/store/fts.go\nCómo aplicar: Usar FTS5 directamente sin flags adicionales.",
+		"type":    "discovery",
+		"project": "p",
 	})
 
 	text := call(t, srv, "mem_search", map[string]any{
@@ -219,9 +227,11 @@ func TestMemContext_WithObservations(t *testing.T) {
 	srv := newTestServer(t)
 
 	call(t, srv, "mem_save", map[string]any{
-		"title": "Decisión importante del proyecto",
-		"content": "Elegimos arquitectura hexagonal para separar dominio de infraestructura correctamente.",
-		"type": "architecture", "project": "p",
+		"title":     "Decisión importante del proyecto",
+		"content":   "Qué: Adoptamos arquitectura hexagonal para kronos-v2.\nPor qué: Separar dominio de infraestructura facilita tests y cambio de backend.\nArchivos: internal/store/storer.go\nCómo aplicar: Store siempre detrás de interfaz Storer.",
+		"type":      "architecture",
+		"project":   "p",
+		"topic_key": "arch/hexagonal",
 	})
 
 	text := call(t, srv, "mem_context", map[string]any{
@@ -240,9 +250,10 @@ func TestMemGetObservation(t *testing.T) {
 
 	// guardar y obtener el ID del texto de respuesta
 	saveText := call(t, srv, "mem_save", map[string]any{
-		"title": "Observación para recuperar completa",
-		"content": "Contenido completo que queremos recuperar por ID sin truncamiento alguno.",
-		"type": "discovery", "project": "p",
+		"title":   "Observación para recuperar completa",
+		"content": "Qué: Guardamos observación para probar mem_get_observation.\nPor qué: Verificar que el contenido completo se retorna sin truncar.\nArchivos: N/A\nCómo aplicar: mem_get_observation retorna el contenido íntegro.",
+		"type":    "discovery",
+		"project": "p",
 	})
 
 	// extraer ID del texto "ID: N"
@@ -256,7 +267,7 @@ func TestMemGetObservation(t *testing.T) {
 	if !contains(text, "Observación para recuperar") {
 		t.Errorf("get_observation missing title: %s", text)
 	}
-	if !contains(text, "Contenido completo") {
+	if !contains(text, "mem_get_observation retorna") {
 		t.Errorf("get_observation missing content: %s", text)
 	}
 }
@@ -277,9 +288,11 @@ func TestMemUpdate(t *testing.T) {
 	srv := newTestServer(t)
 
 	saveText := call(t, srv, "mem_save", map[string]any{
-		"title": "Título original antes de actualizar",
-		"content": "Contenido original que luego será modificado por mem_update.",
-		"type": "decision", "project": "p",
+		"title":     "Título original antes de actualizar",
+		"content":   "Qué: Guardamos observación para probar mem_update.\nPor qué: Verificar que actualización con formato correcto funciona.\nArchivos: N/A\nCómo aplicar: Siempre usar formato al actualizar content.",
+		"type":      "decision",
+		"project":   "p",
+		"topic_key": "test/update",
 	})
 
 	id := extractID(saveText)
@@ -290,7 +303,7 @@ func TestMemUpdate(t *testing.T) {
 	text := call(t, srv, "mem_update", map[string]any{
 		"id":      id,
 		"title":   "Título actualizado correctamente",
-		"content": "Contenido nuevo después de aplicar mem_update al registro existente.",
+		"content": "Qué: Actualizamos la observación con mem_update.\nPor qué: El contenido previo tenía información incompleta.\nArchivos: N/A\nCómo aplicar: mem_update requiere el mismo formato que mem_save.",
 	})
 
 	if !contains(text, "actualizada") {
@@ -316,7 +329,7 @@ func TestMemSessionSummary(t *testing.T) {
 	text := call(t, srv, "mem_session_summary", map[string]any{
 		"session_id": "s-sum",
 		"project":    "p",
-		"summary":    "## Goal\nImplementar store\n\n## Accomplished\n- Store SQLite con FTS5\n- 22 tests pasando",
+		"summary":    "## Objetivo\nImplementar store con FTS5\n\n## Completado\n- Store SQLite con FTS5\n- 22 tests pasando\n\n## Descubrimientos clave\nFTS5 unicode61 maneja español sin config extra\n\n## Próximos pasos\nImplementar DualStore\n\n## Archivos relevantes\ninternal/store/store.go",
 	})
 
 	if !contains(text, "guardado") && !contains(text, "Resumen") {
