@@ -242,6 +242,18 @@ func (s *Server) handleMemSessionSummary(ctx context.Context, req mcpgo.CallTool
 	return ok("Resumen guardado. Sesión " + sessionID + " cerrada."), nil
 }
 
+func (s *Server) handleMemDelete(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	idStr := str(req, "id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		return fail(fmt.Errorf("id inválido: %s", idStr)), nil
+	}
+	if err := s.store.DeleteObservation(ctx, id); err != nil {
+		return fail(err), nil
+	}
+	return ok(fmt.Sprintf("Observación %d eliminada.", id)), nil
+}
+
 func (s *Server) handleMemCheckpoint(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
 	if s.dataDir == "" {
 		return fail(fmt.Errorf("dataDir no configurado en el servidor")), nil

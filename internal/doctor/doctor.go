@@ -51,6 +51,9 @@ func Run(ctx context.Context, cfg config.Config) Report {
 	r.Checks = append(r.Checks, checkEmbeddingModel(ctx, cfg))
 	r.Checks = append(r.Checks, checkClaudeHooks())
 	r.Checks = append(r.Checks, checkBinaryInPath())
+	if cfg.DB.Backend == "postgres" {
+		r.Checks = append(r.Checks, checkSyncQueue(ctx))
+	}
 
 	return r
 }
@@ -345,6 +348,29 @@ func checkBinaryInPath() Check {
 		Status:       StatusWarn,
 		FixAvailable: false,
 		FixLabel:     "Añadir kronos al PATH manualmente",
+	}
+}
+
+func checkSyncQueue(ctx context.Context) Check {
+	dbPath, err := platform.DBPath()
+	if err != nil {
+		return Check{Name: "Sync queue", Detail: "no se pudo leer", Status: StatusWarn}
+	}
+	st, err := store.New(dbPath)
+	if err != nil {
+		return Check{Name: "Sync queue", Detail: "no se pudo abrir DB local", Status: StatusWarn}
+	}
+	defer st.Close()
+
+	n := st.SyncQueueCount(ctx)
+	if n == 0 {
+		return Check{Name: "Sync queue", Detail: "sin pendientes", Status: StatusOK}
+	}
+	return Check{
+		Name:         "Sync queue",
+		Detail:       fmt.Sprintf("%d observación(es) pendiente(s) de sync → ejecuta: kronos sync", n),
+		Status:       StatusWarn,
+		FixAvailable: false,
 	}
 }
 

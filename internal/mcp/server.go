@@ -79,6 +79,8 @@ func (s *Server) Call(ctx context.Context, tool string, arguments map[string]any
 		handler = s.handleMemSessionSummary
 	case "mem_save_prompt":
 		handler = s.handleMemSavePrompt
+	case "mem_delete":
+		handler = s.handleMemDelete
 	case "mem_checkpoint":
 		handler = s.handleMemCheckpoint
 	default:
@@ -97,6 +99,7 @@ func (s *Server) registerTools() {
 	s.mcp.AddTool(toolMemSessionEnd(), s.handleMemSessionEnd)
 	s.mcp.AddTool(toolMemSessionSummary(), s.handleMemSessionSummary)
 	s.mcp.AddTool(toolMemSavePrompt(), s.handleMemSavePrompt)
+	s.mcp.AddTool(toolMemDelete(), s.handleMemDelete)
 	s.mcp.AddTool(toolMemCheckpoint(), s.handleMemCheckpoint)
 }
 

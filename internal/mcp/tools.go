@@ -157,6 +157,18 @@ ESTRUCTURA OBLIGATORIA del summary:
 	)
 }
 
+func toolMemDelete() mcpgo.Tool {
+	return mcpgo.NewTool("mem_delete",
+		mcpgo.WithDescription(`CUÁNDO LLAMAR: cuando una observación es factualmente incorrecta, fue guardada por error, o está tan desactualizada que confundiría al agente en futuras sesiones.
+
+NO USAR PARA: información antigua pero válida — la memoria persistente es intencional. NO usar para "limpiar" — usa mem_update si el contenido cambió.
+
+Flujo: mem_search → verificar con mem_get_observation → mem_delete con el ID.
+El borrado es soft-delete (deleted_at). Los datos siguen en la DB pero no aparecen en búsquedas.`),
+		mcpgo.WithString("id", mcpgo.Required(), mcpgo.Description("ID numérico de la observación a eliminar (obtenido con mem_search)")),
+	)
+}
+
 func toolMemCheckpoint() mcpgo.Tool {
 	return mcpgo.NewTool("mem_checkpoint",
 		mcpgo.WithDescription(`HERRAMIENTA ANTI-PÉRDIDA DE CONTEXTO. Guarda el estado exacto de una tarea en progreso para que sea recuperado automáticamente al inicio de la siguiente conversación, incluso después de una compactación de contexto.

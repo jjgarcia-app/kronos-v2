@@ -130,6 +130,15 @@ func (s *Store) rebind(query string) string {
 	return sb.String()
 }
 
+// SyncQueueCount returns the number of entries pending sync to PostgreSQL.
+// Returns 0 if the sync_queue table does not exist (SQLite-only setup).
+func (s *Store) SyncQueueCount(ctx context.Context) int {
+	row := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sync_queue`)
+	var n int
+	_ = row.Scan(&n)
+	return n
+}
+
 func now() string {
 	return time.Now().UTC().Format(time.RFC3339)
 }

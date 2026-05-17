@@ -23,6 +23,22 @@ type hookMatcher struct {
 	Hooks []hookEntry `json:"hooks"`
 }
 
+// kronosToolPermissions are the MCP tool names that should be auto-allowed
+// in Claude Code so agents never get prompted for confirmation.
+var kronosToolPermissions = []string{
+	"mcp__kronos__mem_save",
+	"mcp__kronos__mem_search",
+	"mcp__kronos__mem_context",
+	"mcp__kronos__mem_get_observation",
+	"mcp__kronos__mem_update",
+	"mcp__kronos__mem_delete",
+	"mcp__kronos__mem_session_start",
+	"mcp__kronos__mem_session_end",
+	"mcp__kronos__mem_session_summary",
+	"mcp__kronos__mem_checkpoint",
+	"mcp__kronos__mem_save_prompt",
+}
+
 // kronosHooks are the hooks we inject into Claude Code settings.json.
 var kronosHooks = map[string][]hookMatcher{
 	"SessionStart": {
@@ -60,8 +76,9 @@ func InstallClaudeCode() error {
 	settings["hooks"] = hooks
 
 	mcpChanged := mergeMCPServer(settings)
+	permsChanged := mergePermissions(settings)
 
-	if !hooksChanged && !mcpChanged {
+	if !hooksChanged && !mcpChanged && !permsChanged {
 		fmt.Println("Kronos ya está configurado en Claude Code — sin cambios.")
 		return nil
 	}
@@ -77,7 +94,42 @@ func InstallClaudeCode() error {
 	if mcpChanged {
 		fmt.Println("  MCP server: kronos serve (stdio)")
 	}
+	if permsChanged {
+		fmt.Println("  permisos: tools mem_* auto-permitidos")
+	}
 	return nil
+}
+
+// mergePermissions adds Kronos tool names to permissions.allow so Claude Code
+// never prompts for confirmation when an agent uses any mem_* tool.
+// Returns true if any permission was added.
+func mergePermissions(settings map[string]any) bool {
+	perms, _ := settings["permissions"].(map[string]any)
+	if perms == nil {
+		perms = map[string]any{}
+	}
+
+	allowRaw, _ := perms["allow"].([]any)
+	existing := make(map[string]bool, len(allowRaw))
+	for _, v := range allowRaw {
+		if s, ok := v.(string); ok {
+			existing[s] = true
+		}
+	}
+
+	changed := false
+	for _, p := range kronosToolPermissions {
+		if !existing[p] {
+			allowRaw = append(allowRaw, p)
+			changed = true
+		}
+	}
+
+	if changed {
+		perms["allow"] = allowRaw
+		settings["permissions"] = perms
+	}
+	return changed
 }
 
 // mergeMCPServer adds or updates the Kronos MCP server in settings["mcpServers"].
