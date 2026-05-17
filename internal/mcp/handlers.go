@@ -255,6 +255,7 @@ func (s *Server) handleMemUpdate(ctx context.Context, req mcpgo.CallToolRequest)
 		p.Title = &v
 	}
 	if v := str(req, "content"); v != "" {
+		v = secrets.Redact(v)
 		newType := store.ObservationType(strOr(req, "type", "discovery"))
 		// topic_key not re-validated on update — it was set on creation
 		if err := validateSaveParams(v, newType, ""); err != nil {

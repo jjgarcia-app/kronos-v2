@@ -109,6 +109,9 @@ func (s *Store) UpdateObservation(ctx context.Context, p UpdateParams) (*Observa
 	if err != nil || existing == nil {
 		return nil, fmt.Errorf("observation %d not found", p.ID)
 	}
+	if existing.DeletedAt != nil {
+		return nil, fmt.Errorf("observation %d has been deleted", p.ID)
+	}
 
 	title := existing.Title
 	content := existing.Content

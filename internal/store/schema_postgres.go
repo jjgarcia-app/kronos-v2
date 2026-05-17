@@ -97,4 +97,16 @@ var postgresMigrations = []string{
 		PRIMARY KEY (target_key, chunk_id)
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_sync_chunks_target ON sync_chunks(target_key)`,
+
+	// v21–v22: soft-delete para memory_relations
+	`ALTER TABLE memory_relations ADD COLUMN IF NOT EXISTS deleted_at TEXT`,
+	`CREATE INDEX IF NOT EXISTS idx_memrel_deleted ON memory_relations(deleted_at)`,
+
+	// v23–v24: soft-delete para sessions
+	`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS deleted_at TEXT`,
+	`CREATE INDEX IF NOT EXISTS idx_sessions_deleted ON sessions(deleted_at)`,
+
+	// v25–v26: soft-delete para user_prompts
+	`ALTER TABLE user_prompts ADD COLUMN IF NOT EXISTS deleted_at TEXT`,
+	`CREATE INDEX IF NOT EXISTS idx_prompts_deleted ON user_prompts(deleted_at)`,
 }
