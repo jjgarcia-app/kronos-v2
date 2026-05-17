@@ -9,24 +9,17 @@ import (
 	"github.com/jjgarcia-app/kronos-v2/internal/doctor"
 )
 
-const banner = `
-  ██╗  ██╗██████╗  ██████╗ ███╗   ██╗ ██████╗ ███████╗
-  ██║ ██╔╝██╔══██╗██╔═══██╗████╗  ██║██╔═══██╗██╔════╝
-  █████╔╝ ██████╔╝██║   ██║██╔██╗ ██║██║   ██║███████╗
-  ██╔═██╗ ██╔══██╗██║   ██║██║╚██╗██║██║   ██║╚════██║
-  ██║  ██╗██║  ██║╚██████╔╝██║ ╚████║╚██████╔╝███████║
-  ╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═══╝ ╚═════╝ ╚══════╝`
-
 func (m Model) View() string {
 	var b strings.Builder
 
-	// Header
-	b.WriteString(styleTitle.Render(banner))
+	// ── Header ────────────────────────────────────────────────────────────────
+	b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(colIris).
+		PaddingLeft(2).Render("K R O N O S   v2"))
 	b.WriteString("\n")
 	b.WriteString(styleMuted.Render("  Memoria persistente para agentes de IA  —  Asistente de configuración"))
 	b.WriteString("\n\n")
 
-	// Completed phases (summary)
+	// ── Completed phase summaries ─────────────────────────────────────────────
 	for _, line := range m.done {
 		b.WriteString(line + "\n")
 	}
@@ -34,93 +27,127 @@ func (m Model) View() string {
 		b.WriteString("\n")
 	}
 
-	// Active phase
+	// ── Active phase ──────────────────────────────────────────────────────────
 	switch m.phase {
+
 	case phaseWelcome:
-		b.WriteString(renderBox(m.width,
-			stylePhase.Render("Bienvenido")+"\n\n"+
-				styleText.Render("Este asistente configurará Kronos en tu sistema:\n")+
-				styleMuted.Render("  • Verificar que el binario esté en PATH\n")+
-				styleMuted.Render("  • Crear la base de datos\n")+
-				styleMuted.Render("  • Detectar o instalar Ollama (opcional)\n")+
-				styleMuted.Render("  • Registrar Kronos en tus agentes de IA\n")+
-				"\n"+
-				styleMuted.Render("Sistema: ")+styleText.Render(osLabel()),
-		))
+		content := lines(
+			stylePhase.Render("Bienvenido"),
+			"",
+			styleText.Render("Este asistente configurará Kronos en tu sistema:"),
+			styleMuted.Render("  •  Verificar que el binario esté en PATH"),
+			styleMuted.Render("  •  Crear la base de datos"),
+			styleMuted.Render("  •  Detectar o instalar Ollama (opcional)"),
+			styleMuted.Render("  •  Registrar Kronos en tus agentes de IA"),
+			"",
+			styleMuted.Render("Sistema: ")+styleText.Render(osLabel()),
+		)
+		b.WriteString(renderBox(m.width, content))
 		b.WriteString(styleHelp.Render("\n  Enter para comenzar  ·  q para salir"))
 
 	case phaseBinary:
-		content := stylePhase.Render("1/4  Binario en PATH") + "\n\n"
+		var bodyLines []string
+		bodyLines = append(bodyLines, stylePhase.Render("1/4  Binario en PATH"), "")
 		if m.binaryPath == "" {
-			content += m.sp.View() + " Verificando..."
+			bodyLines = append(bodyLines, m.sp.View()+"  Verificando...")
 		} else if m.binaryOK {
-			content += styleOK.Render("✓ kronos encontrado en:\n") +
-				styleText.Render("  "+m.binaryPath)
+			bodyLines = append(bodyLines,
+				styleOK.Render("✓  kronos encontrado en:"),
+				styleText.Render("   "+m.binaryPath),
+			)
 		} else {
-			content += styleWarn.Render("!! kronos no está en PATH\n\n") +
-				styleText.Render("Ubicación actual del binario:\n") +
-				styleMuted.Render("  "+m.binaryPath+"\n\n") +
-				styleText.Render("Para añadirlo al PATH:\n") +
-				styleMuted.Render(indent(pathHint(), "  "))
+			bodyLines = append(bodyLines,
+				styleWarn.Render("!!  kronos no está en PATH"),
+				"",
+				styleText.Render("Ubicación actual del binario:"),
+				styleMuted.Render("   "+m.binaryPath),
+				"",
+				styleText.Render("Para añadirlo al PATH:"),
+			)
+			for _, l := range strings.Split(pathHint(), "\n") {
+				bodyLines = append(bodyLines, styleMuted.Render("   "+l))
+			}
 		}
-		b.WriteString(renderBox(m.width, content))
+		b.WriteString(renderBox(m.width, lines(bodyLines...)))
 		if m.binaryPath != "" {
 			b.WriteString(styleHelp.Render("\n  Enter para continuar"))
 		}
 
 	case phaseConfig:
-		content := stylePhase.Render("2/4  Base de datos") + "\n\n" +
-			styleText.Render("Ruta donde Kronos guardará tus memorias:\n") +
-			"  " + m.dbInput.View()
+		content := lines(
+			stylePhase.Render("2/4  Base de datos"),
+			"",
+			styleText.Render("Ruta donde Kronos guardará tus memorias:"),
+			"  "+m.dbInput.View(),
+			"",
+			styleMuted.Render("Presiona Enter para confirmar o edita la ruta."),
+		)
 		b.WriteString(renderBox(m.width, content))
 		b.WriteString(styleHelp.Render("\n  Enter para confirmar"))
 
 	case phaseOllama:
-		content := stylePhase.Render("3/4  Embeddings semánticos") + "\n\n"
+		var bodyLines []string
+		bodyLines = append(bodyLines, stylePhase.Render("3/4  Embeddings semánticos"), "")
 		if m.ollamaURL == "" {
-			content += m.sp.View() + " Verificando Ollama..."
+			bodyLines = append(bodyLines, m.sp.View()+"  Verificando Ollama...")
 		} else if m.ollamaOK {
-			content += styleOK.Render("✓ Ollama disponible en "+m.ollamaURL+"\n") +
-				styleMuted.Render("\nLa búsqueda semántica está habilitada.")
+			bodyLines = append(bodyLines,
+				styleOK.Render("✓  Ollama disponible en "+m.ollamaURL),
+				"",
+				styleMuted.Render("La búsqueda semántica está habilitada."),
+			)
 		} else {
-			content += styleFail.Render("✗ Ollama no responde en "+m.ollamaURL+"\n") +
-				styleMuted.Render("\nOllama habilita búsqueda semántica y contexto inteligente.\nSin él, Kronos usa búsqueda de texto completo (FTS5).")
+			bodyLines = append(bodyLines,
+				styleFail.Render("✗  Ollama no responde en "+m.ollamaURL),
+				"",
+				styleMuted.Render("Ollama habilita búsqueda semántica y contexto inteligente."),
+				styleMuted.Render("Sin él, Kronos usa búsqueda de texto completo (FTS5)."),
+			)
 		}
-		b.WriteString(renderBox(m.width, content))
+		b.WriteString(renderBox(m.width, lines(bodyLines...)))
 		if m.ollamaURL != "" {
 			if m.ollamaOK {
 				b.WriteString(styleHelp.Render("\n  Enter para continuar"))
 			} else {
-				b.WriteString(styleHelp.Render("\n  Enter para ver opciones"))
+				b.WriteString(styleHelp.Render("\n  Enter para ver opciones de instalación"))
 			}
 		}
 
 	case phaseOllamaOpts:
-		opts := []string{
-			"Instalar localmente (ver instrucciones)",
-			"Instalar via Docker   (automático)",
-			"Omitir por ahora",
+		opts := []struct{ label, hint string }{
+			{"Instalar localmente", ollamaLocalHint()},
+			{"Instalar via Docker  (automático)", ""},
+			{"Omitir por ahora", ""},
 		}
-		content := stylePhase.Render("3/4  Opciones de Ollama") + "\n\n"
+		var bodyLines []string
+		bodyLines = append(bodyLines, stylePhase.Render("3/4  Opciones de Ollama"), "")
 		for i, opt := range opts {
 			if i == m.ollamaCursor {
-				content += styleCursor.Render("> ") + styleHighlight.Render(opt) + "\n"
+				bodyLines = append(bodyLines, styleCursor.Render("> ")+styleHighlight.Render(opt.label))
 			} else {
-				content += "  " + styleMuted.Render(opt) + "\n"
+				bodyLines = append(bodyLines, "  "+styleMuted.Render(opt.label))
 			}
 		}
 		if m.ollamaCursor == 0 {
-			content += "\n" + styleMuted.Render(indent(ollamaLocalHint(), "  "))
+			bodyLines = append(bodyLines, "")
+			for _, l := range strings.Split(ollamaLocalHint(), "\n") {
+				bodyLines = append(bodyLines, styleMuted.Render("  "+l))
+			}
 		}
-		b.WriteString(renderBox(m.width, content))
+		b.WriteString(renderBox(m.width, lines(bodyLines...)))
 		b.WriteString(styleHelp.Render("\n  j/k mover  ·  Enter seleccionar"))
 
 	case phaseAgents:
-		content := stylePhase.Render("4/4  Agentes de IA") + "\n\n" +
-			styleText.Render("Selecciona dónde instalar Kronos:\n\n")
+		var bodyLines []string
+		bodyLines = append(bodyLines,
+			stylePhase.Render("4/4  Agentes de IA"),
+			"",
+			styleText.Render("Selecciona dónde instalar Kronos:"),
+			"",
+		)
 		for i, a := range m.agents {
 			cursor := "  "
-			check := "[ ]"
+			check := styleMuted.Render("[ ]")
 			nameStyle := styleMuted
 			if i == m.agentCursor {
 				cursor = styleCursor.Render("> ")
@@ -129,33 +156,34 @@ func (m Model) View() string {
 			if a.checked {
 				check = styleOK.Render("[✓]")
 			}
-			content += cursor + check + " " + nameStyle.Render(a.label) +
-				"  " + styleMuted.Render(a.desc) + "\n"
+			bodyLines = append(bodyLines,
+				cursor+check+"  "+nameStyle.Render(a.label)+"   "+styleMuted.Render(a.desc),
+			)
 		}
-		b.WriteString(renderBox(m.width, content))
+		b.WriteString(renderBox(m.width, lines(bodyLines...)))
 		b.WriteString(styleHelp.Render("\n  j/k mover  ·  Espacio marcar/desmarcar  ·  Enter instalar"))
 
 	case phaseSetup:
-		content := stylePhase.Render("Instalando...") + "\n\n"
+		var bodyLines []string
+		bodyLines = append(bodyLines, stylePhase.Render("Instalando..."), "")
 		if len(m.setupLog) == 0 {
-			content += m.sp.View() + " Iniciando..."
+			bodyLines = append(bodyLines, m.sp.View()+"  Iniciando...")
 		} else {
-			// show last 10 lines to keep within box
 			start := 0
-			if len(m.setupLog) > 10 {
-				start = len(m.setupLog) - 10
+			if len(m.setupLog) > 12 {
+				start = len(m.setupLog) - 12
 			}
-			for _, line := range m.setupLog[start:] {
-				content += styleMuted.Render(line) + "\n"
+			for _, l := range m.setupLog[start:] {
+				bodyLines = append(bodyLines, styleMuted.Render(l))
 			}
 			if !m.setupDone {
-				content += "\n" + m.sp.View() + " Trabajando..."
+				bodyLines = append(bodyLines, "", m.sp.View()+"  Trabajando...")
 			}
 		}
-		b.WriteString(renderBox(m.width, content))
+		b.WriteString(renderBox(m.width, lines(bodyLines...)))
 
 	case phaseDone:
-		b.WriteString(renderDoctorReport(m.report, m.width))
+		b.WriteString(renderDoctorReport(m.report))
 		b.WriteString("\n")
 		b.WriteString(styleOK.Render("  ¡Kronos está listo!"))
 		b.WriteString("\n")
@@ -170,20 +198,26 @@ func (m Model) View() string {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+// lines joins strings with \n — used to build box content without embedding
+// newlines inside lipgloss.Render() calls (which causes misalignment).
+func lines(ss ...string) string {
+	return strings.Join(ss, "\n")
+}
+
 func renderBox(width int, content string) string {
-	boxWidth := width - 4
-	if boxWidth < 40 {
-		boxWidth = 40
+	boxWidth := width - 6
+	if boxWidth < 44 {
+		boxWidth = 44
 	}
 	return styleBox.Width(boxWidth).Render(content)
 }
 
-func renderDoctorReport(r doctor.Report, width int) string {
+func renderDoctorReport(r doctor.Report) string {
 	if len(r.Checks) == 0 {
 		return styleMuted.Render("  Cargando verificación...")
 	}
 	var sb strings.Builder
-	sb.WriteString(stylePhase.Render("  Verificación del sistema") + "\n\n")
+	sb.WriteString(stylePhase.Render("  Verificación final") + "\n\n")
 	for _, c := range r.Checks {
 		icon := styleOK.Render("✓")
 		switch c.Status {
@@ -192,20 +226,10 @@ func renderDoctorReport(r doctor.Report, width int) string {
 		case doctor.StatusFail:
 			icon = styleFail.Render("✗")
 		}
-		name := lipgloss.NewStyle().Width(22).Render(c.Name + ":")
+		name := lipgloss.NewStyle().Width(24).Render(c.Name + ":")
 		sb.WriteString(fmt.Sprintf("  %s %s%s\n", icon, name, styleMuted.Render(c.Detail)))
 	}
 	return sb.String()
-}
-
-func indent(s, prefix string) string {
-	lines := strings.Split(s, "\n")
-	for i, l := range lines {
-		if l != "" {
-			lines[i] = prefix + l
-		}
-	}
-	return strings.Join(lines, "\n")
 }
 
 func osLabel() string {
