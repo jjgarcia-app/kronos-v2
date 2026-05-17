@@ -108,7 +108,7 @@ func (s *Store) TimelineObservations(ctx context.Context, obsID int64, n int) ([
 	}
 
 	rows, err := s.query(ctx,
-		`SELECT id, session_id, type, title, content, project, scope, topic_key,
+		`SELECT id, sync_id, session_id, type, title, content, tool_name, project, scope, topic_key,
 		        normalized_hash, revision_count, duplicate_count, created_at, updated_at, deleted_at
 		 FROM observations
 		 WHERE session_id = ? AND deleted_at IS NULL

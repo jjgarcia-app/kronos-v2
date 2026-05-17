@@ -30,7 +30,7 @@ func (s *Store) searchSQLite(ctx context.Context, p SearchParams) ([]*SearchResu
 
 	if p.Project != "" {
 		sqlRows, err = s.db.QueryContext(ctx, `
-			SELECT o.id, o.session_id, o.type, o.title, o.content,
+			SELECT o.id, o.sync_id, o.session_id, o.type, o.title, o.content, o.tool_name,
 			       o.project, o.scope, o.topic_key, o.normalized_hash,
 			       o.revision_count, o.duplicate_count, o.created_at, o.updated_at, o.deleted_at,
 			       bm25(observations_fts) as rank
@@ -45,7 +45,7 @@ func (s *Store) searchSQLite(ctx context.Context, p SearchParams) ([]*SearchResu
 		)
 	} else {
 		sqlRows, err = s.db.QueryContext(ctx, `
-			SELECT o.id, o.session_id, o.type, o.title, o.content,
+			SELECT o.id, o.sync_id, o.session_id, o.type, o.title, o.content, o.tool_name,
 			       o.project, o.scope, o.topic_key, o.normalized_hash,
 			       o.revision_count, o.duplicate_count, o.created_at, o.updated_at, o.deleted_at,
 			       bm25(observations_fts) as rank
@@ -80,8 +80,8 @@ func (s *Store) searchPostgres(ctx context.Context, p SearchParams) ([]*SearchRe
 
 	if p.Project != "" {
 		sqlRows, err = s.db.QueryContext(ctx, `
-			SELECT id, COALESCE(session_id,''), type, title, content,
-			       project, scope, topic_key, normalized_hash,
+			SELECT id, COALESCE(sync_id,''), COALESCE(session_id,''), type, title, content,
+			       COALESCE(tool_name,''), project, scope, topic_key, normalized_hash,
 			       revision_count, duplicate_count, created_at, updated_at, deleted_at,
 			       ts_rank(to_tsvector('spanish', title || ' ' || content),
 			               plainto_tsquery('spanish', $1)) as rank
@@ -95,8 +95,8 @@ func (s *Store) searchPostgres(ctx context.Context, p SearchParams) ([]*SearchRe
 		)
 	} else {
 		sqlRows, err = s.db.QueryContext(ctx, `
-			SELECT id, COALESCE(session_id,''), type, title, content,
-			       project, scope, topic_key, normalized_hash,
+			SELECT id, COALESCE(sync_id,''), COALESCE(session_id,''), type, title, content,
+			       COALESCE(tool_name,''), project, scope, topic_key, normalized_hash,
 			       revision_count, duplicate_count, created_at, updated_at, deleted_at,
 			       ts_rank(to_tsvector('spanish', title || ' ' || content),
 			               plainto_tsquery('spanish', $1)) as rank
@@ -126,12 +126,12 @@ func (s *Store) searchPostgres(ctx context.Context, p SearchParams) ([]*SearchRe
 
 func scanSearchResult(row interface{ Scan(dest ...any) error }) (*SearchResult, error) {
 	var r SearchResult
-	var sessionID, deletedAt sql.NullString
+	var syncID, sessionID, toolName, deletedAt sql.NullString
 	var topicKey, hash, createdAt, updatedAt string
 
 	err := row.Scan(
-		&r.ID, &sessionID, &r.Type, &r.Title, &r.Content,
-		&r.Project, &r.Scope, &topicKey, &hash,
+		&r.ID, &syncID, &sessionID, &r.Type, &r.Title, &r.Content,
+		&toolName, &r.Project, &r.Scope, &topicKey, &hash,
 		&r.RevisionCount, &r.DuplicateCount,
 		&createdAt, &updatedAt, &deletedAt,
 		&r.Rank,
@@ -139,7 +139,9 @@ func scanSearchResult(row interface{ Scan(dest ...any) error }) (*SearchResult, 
 	if err != nil {
 		return nil, err
 	}
+	r.SyncID = syncID.String
 	r.SessionID = sessionID.String
+	r.ToolName = toolName.String
 	r.TopicKey = topicKey
 	r.NormalizedHash = hash
 	r.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)

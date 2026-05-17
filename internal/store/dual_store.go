@@ -314,6 +314,12 @@ func (d *DualStore) Search(ctx context.Context, p SearchParams) ([]*SearchResult
 	return d.buffer.Search(ctx, p)
 }
 
+// LocalStore retorna el Store SQLite local (buffer).
+// Usar para operaciones que siempre deben ejecutarse en local: conflictos, sync, checkpoints.
+func (d *DualStore) LocalStore() *Store {
+	return d.buffer
+}
+
 func (d *DualStore) Close() error {
 	d.cancel()
 	d.mu.RLock()

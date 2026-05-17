@@ -58,4 +58,43 @@ var postgresMigrations = []string{
 
 	`CREATE INDEX IF NOT EXISTS idx_prompts_project ON user_prompts(project)`,
 	`CREATE INDEX IF NOT EXISTS idx_prompts_session ON user_prompts(session_id)`,
+
+	// v11–v14: sync_id + tool_name
+	`ALTER TABLE observations ADD COLUMN IF NOT EXISTS sync_id TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE observations ADD COLUMN IF NOT EXISTS tool_name TEXT NOT NULL DEFAULT ''`,
+	`UPDATE observations SET sync_id = md5(random()::text || id::text) WHERE sync_id = ''`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS idx_observations_sync_id ON observations(sync_id) WHERE sync_id != ''`,
+
+	// v15–v18: memory_relations
+	`CREATE TABLE IF NOT EXISTS memory_relations (
+		id                        BIGSERIAL PRIMARY KEY,
+		sync_id                   TEXT UNIQUE NOT NULL,
+		source_id                 TEXT,
+		target_id                 TEXT,
+		relation                  TEXT NOT NULL DEFAULT 'pending',
+		reason                    TEXT,
+		evidence                  TEXT,
+		confidence                REAL,
+		judgment_status           TEXT NOT NULL DEFAULT 'pending',
+		marked_by_actor           TEXT,
+		marked_by_kind            TEXT,
+		marked_by_model           TEXT,
+		session_id                TEXT,
+		superseded_at             TEXT,
+		superseded_by_relation_id BIGINT REFERENCES memory_relations(id),
+		created_at                TEXT NOT NULL,
+		updated_at                TEXT NOT NULL
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_memrel_source ON memory_relations(source_id, judgment_status)`,
+	`CREATE INDEX IF NOT EXISTS idx_memrel_target ON memory_relations(target_id, judgment_status)`,
+	`CREATE INDEX IF NOT EXISTS idx_memrel_status ON memory_relations(judgment_status)`,
+
+	// v19–v20: sync_chunks
+	`CREATE TABLE IF NOT EXISTS sync_chunks (
+		target_key  TEXT NOT NULL,
+		chunk_id    TEXT NOT NULL,
+		imported_at TEXT NOT NULL,
+		PRIMARY KEY (target_key, chunk_id)
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_sync_chunks_target ON sync_chunks(target_key)`,
 }

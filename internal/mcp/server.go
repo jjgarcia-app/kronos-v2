@@ -53,6 +53,24 @@ func (s *Server) ServeStdio() error {
 	return server.ServeStdio(s.mcp)
 }
 
+// localStorer is a private interface to access the underlying SQLite store
+// for operations that are always local (relations, stats, rename).
+type localStorer interface {
+	LocalStore() *store.Store
+}
+
+// localStore returns the underlying *store.Store for local-only operations.
+// Works for both *store.Store and *store.DualStore.
+func (s *Server) localStore() *store.Store {
+	if ls, ok := s.store.(localStorer); ok {
+		return ls.LocalStore()
+	}
+	if st, ok := s.store.(*store.Store); ok {
+		return st
+	}
+	return nil
+}
+
 // Call invoca un handler de tool directamente — usado en tests.
 func (s *Server) Call(ctx context.Context, tool string, arguments map[string]any) (*mcpgo.CallToolResult, error) {
 	req := mcpgo.CallToolRequest{}
@@ -83,6 +101,24 @@ func (s *Server) Call(ctx context.Context, tool string, arguments map[string]any
 		handler = s.handleMemDelete
 	case "mem_checkpoint":
 		handler = s.handleMemCheckpoint
+	case "mem_judge":
+		handler = s.handleMemJudge
+	case "mem_compare":
+		handler = s.handleMemCompare
+	case "mem_suggest_topic_key":
+		handler = s.handleMemSuggestTopicKey
+	case "mem_timeline":
+		handler = s.handleMemTimeline
+	case "mem_stats":
+		handler = s.handleMemStats
+	case "mem_current_project":
+		handler = s.handleMemCurrentProject
+	case "mem_capture_passive":
+		handler = s.handleMemCapturePassive
+	case "mem_merge_projects":
+		handler = s.handleMemMergeProjects
+	case "mem_doctor":
+		handler = s.handleMemDoctor
 	default:
 		return nil, fmt.Errorf("tool desconocido: %s", tool)
 	}
@@ -101,6 +137,15 @@ func (s *Server) registerTools() {
 	s.mcp.AddTool(toolMemSavePrompt(), s.handleMemSavePrompt)
 	s.mcp.AddTool(toolMemDelete(), s.handleMemDelete)
 	s.mcp.AddTool(toolMemCheckpoint(), s.handleMemCheckpoint)
+	s.mcp.AddTool(toolMemJudge(), s.handleMemJudge)
+	s.mcp.AddTool(toolMemCompare(), s.handleMemCompare)
+	s.mcp.AddTool(toolMemSuggestTopicKey(), s.handleMemSuggestTopicKey)
+	s.mcp.AddTool(toolMemTimeline(), s.handleMemTimeline)
+	s.mcp.AddTool(toolMemStats(), s.handleMemStats)
+	s.mcp.AddTool(toolMemCurrentProject(), s.handleMemCurrentProject)
+	s.mcp.AddTool(toolMemCapturePassive(), s.handleMemCapturePassive)
+	s.mcp.AddTool(toolMemMergeProjects(), s.handleMemMergeProjects)
+	s.mcp.AddTool(toolMemDoctor(), s.handleMemDoctor)
 }
 
 // helpers

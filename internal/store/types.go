@@ -34,10 +34,12 @@ type Session struct {
 
 type Observation struct {
 	ID             int64
+	SyncID         string
 	SessionID      string
 	Type           ObservationType
 	Title          string
 	Content        string
+	ToolName       string
 	Project        string
 	Scope          Scope
 	TopicKey       string
@@ -54,6 +56,7 @@ type SaveParams struct {
 	Type      ObservationType
 	Title     string
 	Content   string
+	ToolName  string
 	Project   string
 	Scope     Scope
 	TopicKey  string // si se provee, hace upsert por topic_key+project

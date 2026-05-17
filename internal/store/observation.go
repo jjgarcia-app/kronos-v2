@@ -2,8 +2,10 @@ package store
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"time"
@@ -36,7 +38,7 @@ func (s *Store) SaveObservation(ctx context.Context, p SaveParams) (*Observation
 			return nil, err
 		}
 		if existing != nil {
-			return s.updateObservation(ctx, existing.ID, p.Title, p.Content, string(p.Type), hash, ts)
+			return s.updateObservation(ctx, existing.ID, p.Title, p.Content, string(p.Type), p.ToolName, hash, ts)
 		}
 	}
 
@@ -52,11 +54,11 @@ func (s *Store) SaveObservation(ctx context.Context, p SaveParams) (*Observation
 	// caso 3: insert nuevo
 	id, err := s.insertReturning(ctx,
 		`INSERT INTO observations
-			(session_id, type, title, content, project, scope, topic_key, normalized_hash,
-			 revision_count, duplicate_count, last_seen_at, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, ?)`,
-		nullStr(p.SessionID), string(p.Type), p.Title, p.Content,
-		p.Project, string(p.Scope), p.TopicKey, hash, ts, ts, ts,
+			(sync_id, session_id, type, title, content, tool_name, project, scope, topic_key,
+			 normalized_hash, revision_count, duplicate_count, last_seen_at, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, ?)`,
+		newSyncID(), nullStr(p.SessionID), string(p.Type), p.Title, p.Content,
+		p.ToolName, p.Project, string(p.Scope), p.TopicKey, hash, ts, ts, ts,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert observation: %w", err)
@@ -66,7 +68,7 @@ func (s *Store) SaveObservation(ctx context.Context, p SaveParams) (*Observation
 
 func (s *Store) GetObservation(ctx context.Context, id int64) (*Observation, error) {
 	row := s.queryRow(ctx,
-		`SELECT id, session_id, type, title, content, project, scope, topic_key,
+		`SELECT id, sync_id, session_id, type, title, content, tool_name, project, scope, topic_key,
 		        normalized_hash, revision_count, duplicate_count, created_at, updated_at, deleted_at
 		 FROM observations WHERE id = ?`, id)
 	return scanObservation(row)
@@ -81,6 +83,7 @@ func (s *Store) UpdateObservation(ctx context.Context, p UpdateParams) (*Observa
 	title := existing.Title
 	content := existing.Content
 	typ := string(existing.Type)
+	toolName := existing.ToolName
 
 	if p.Title != nil {
 		title = *p.Title
@@ -93,7 +96,7 @@ func (s *Store) UpdateObservation(ctx context.Context, p UpdateParams) (*Observa
 	}
 
 	hash := normalizedHash(title, content)
-	return s.updateObservation(ctx, p.ID, title, content, typ, hash, now())
+	return s.updateObservation(ctx, p.ID, title, content, typ, toolName, hash, now())
 }
 
 func (s *Store) DeleteObservation(ctx context.Context, id int64) error {
@@ -107,7 +110,7 @@ func (s *Store) ListObservations(ctx context.Context, project string, limit int)
 		limit = 50
 	}
 	rows, err := s.query(ctx,
-		`SELECT id, session_id, type, title, content, project, scope, topic_key,
+		`SELECT id, sync_id, session_id, type, title, content, tool_name, project, scope, topic_key,
 		        normalized_hash, revision_count, duplicate_count, created_at, updated_at, deleted_at
 		 FROM observations
 		 WHERE (project = ? OR scope = 'global') AND deleted_at IS NULL
@@ -119,21 +122,20 @@ func (s *Store) ListObservations(ctx context.Context, project string, limit int)
 	return scanObservations(rows)
 }
 
-// ListAll returns every non-deleted observation, optionally filtered by project.
-// Pass project="" to include all projects. Results are ordered by project, then created_at.
+// ListAll retorna todas las observaciones no borradas, opcionalmente filtradas por proyecto.
 func (s *Store) ListAll(ctx context.Context, project string) ([]*Observation, error) {
 	var rows *sql.Rows
 	var err error
 	if project == "" {
 		rows, err = s.query(ctx,
-			`SELECT id, session_id, type, title, content, project, scope, topic_key,
+			`SELECT id, sync_id, session_id, type, title, content, tool_name, project, scope, topic_key,
 			        normalized_hash, revision_count, duplicate_count, created_at, updated_at, deleted_at
 			 FROM observations
 			 WHERE deleted_at IS NULL
 			 ORDER BY project ASC, created_at ASC`)
 	} else {
 		rows, err = s.query(ctx,
-			`SELECT id, session_id, type, title, content, project, scope, topic_key,
+			`SELECT id, sync_id, session_id, type, title, content, tool_name, project, scope, topic_key,
 			        normalized_hash, revision_count, duplicate_count, created_at, updated_at, deleted_at
 			 FROM observations
 			 WHERE (project = ? OR scope = 'global') AND deleted_at IS NULL
@@ -148,7 +150,7 @@ func (s *Store) ListAll(ctx context.Context, project string) ([]*Observation, er
 
 func (s *Store) ListSessionObservations(ctx context.Context, sessionID string) ([]*Observation, error) {
 	rows, err := s.query(ctx,
-		`SELECT id, session_id, type, title, content, project, scope, topic_key,
+		`SELECT id, sync_id, session_id, type, title, content, tool_name, project, scope, topic_key,
 		        normalized_hash, revision_count, duplicate_count, created_at, updated_at, deleted_at
 		 FROM observations
 		 WHERE session_id = ? AND deleted_at IS NULL
@@ -160,8 +162,16 @@ func (s *Store) ListSessionObservations(ctx context.Context, sessionID string) (
 	return scanObservations(rows)
 }
 
+// GetObservationBySyncID busca una observación por su sync_id global.
+func (s *Store) GetObservationBySyncID(ctx context.Context, syncID string) (*Observation, error) {
+	row := s.queryRow(ctx,
+		`SELECT id, sync_id, session_id, type, title, content, tool_name, project, scope, topic_key,
+		        normalized_hash, revision_count, duplicate_count, created_at, updated_at, deleted_at
+		 FROM observations WHERE sync_id = ?`, syncID)
+	return scanObservation(row)
+}
+
 // SavePassive guarda learnings extraídos del output de sub-agentes.
-// Usa dedup por hash para evitar duplicados entre sesiones.
 func (s *Store) SavePassive(ctx context.Context, sessionID, project, content string) (*Observation, error) {
 	title := passiveTitle(content)
 	return s.SaveObservation(ctx, SaveParams{
@@ -174,11 +184,37 @@ func (s *Store) SavePassive(ctx context.Context, sessionID, project, content str
 	})
 }
 
+// RenameProject mueve todas las observaciones de from a to. Retorna el número de filas afectadas.
+func (s *Store) RenameProject(ctx context.Context, from, to string) (int64, error) {
+	res, err := s.exec(ctx,
+		`UPDATE observations SET project = ? WHERE project = ? AND deleted_at IS NULL`, to, from)
+	if err != nil {
+		return 0, fmt.Errorf("rename project: %w", err)
+	}
+	affected, _ := res.RowsAffected()
+	return affected, nil
+}
+
+// CountObservations retorna el total de observaciones no borradas.
+func (s *Store) CountObservations(ctx context.Context, project string) int {
+	var row *sql.Row
+	if project != "" {
+		row = s.db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM observations WHERE project = ? AND deleted_at IS NULL`, project)
+	} else {
+		row = s.db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM observations WHERE deleted_at IS NULL`)
+	}
+	var n int
+	_ = row.Scan(&n)
+	return n
+}
+
 // internos
 
 func (s *Store) getByTopicKey(ctx context.Context, project, topicKey string) (*Observation, error) {
 	row := s.queryRow(ctx,
-		`SELECT id, session_id, type, title, content, project, scope, topic_key,
+		`SELECT id, sync_id, session_id, type, title, content, tool_name, project, scope, topic_key,
 		        normalized_hash, revision_count, duplicate_count, created_at, updated_at, deleted_at
 		 FROM observations
 		 WHERE project = ? AND topic_key = ? AND deleted_at IS NULL
@@ -192,7 +228,7 @@ func (s *Store) getByTopicKey(ctx context.Context, project, topicKey string) (*O
 
 func (s *Store) getByHash(ctx context.Context, hash, project string) (*Observation, error) {
 	row := s.queryRow(ctx,
-		`SELECT id, session_id, type, title, content, project, scope, topic_key,
+		`SELECT id, sync_id, session_id, type, title, content, tool_name, project, scope, topic_key,
 		        normalized_hash, revision_count, duplicate_count, created_at, updated_at, deleted_at
 		 FROM observations
 		 WHERE normalized_hash = ? AND project = ? AND deleted_at IS NULL
@@ -204,13 +240,13 @@ func (s *Store) getByHash(ctx context.Context, hash, project string) (*Observati
 	return obs, nil
 }
 
-func (s *Store) updateObservation(ctx context.Context, id int64, title, content, typ, hash, ts string) (*Observation, error) {
+func (s *Store) updateObservation(ctx context.Context, id int64, title, content, typ, toolName, hash, ts string) (*Observation, error) {
 	_, err := s.exec(ctx,
 		`UPDATE observations
-		 SET title = ?, content = ?, type = ?, normalized_hash = ?,
+		 SET title = ?, content = ?, type = ?, tool_name = ?, normalized_hash = ?,
 		     revision_count = revision_count + 1, last_seen_at = ?, updated_at = ?
 		 WHERE id = ?`,
-		title, content, typ, hash, ts, ts, id,
+		title, content, typ, toolName, hash, ts, ts, id,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("update observation: %w", err)
@@ -247,6 +283,12 @@ func passiveTitle(content string) string {
 	return title
 }
 
+func newSyncID() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
 func nullStr(s string) sql.NullString {
 	return sql.NullString{String: s, Valid: s != ""}
 }
@@ -257,12 +299,12 @@ type observationScanner interface {
 
 func scanObservation(row observationScanner) (*Observation, error) {
 	var o Observation
-	var sessionID, deletedAt sql.NullString
+	var syncID, sessionID, toolName, deletedAt sql.NullString
 	var topicKey, hash, createdAt, updatedAt string
 
 	err := row.Scan(
-		&o.ID, &sessionID, &o.Type, &o.Title, &o.Content,
-		&o.Project, &o.Scope, &topicKey, &hash,
+		&o.ID, &syncID, &sessionID, &o.Type, &o.Title, &o.Content,
+		&toolName, &o.Project, &o.Scope, &topicKey, &hash,
 		&o.RevisionCount, &o.DuplicateCount,
 		&createdAt, &updatedAt, &deletedAt,
 	)
@@ -272,7 +314,9 @@ func scanObservation(row observationScanner) (*Observation, error) {
 	if err != nil {
 		return nil, err
 	}
+	o.SyncID = syncID.String
 	o.SessionID = sessionID.String
+	o.ToolName = toolName.String
 	o.TopicKey = topicKey
 	o.NormalizedHash = hash
 	o.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
