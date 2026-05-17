@@ -77,6 +77,17 @@ func (d *Detector) Remove(ctx context.Context, id int64) error {
 	return d.vs.Remove(ctx, id)
 }
 
+// Similar returns observations whose embeddings are most similar to text,
+// excluding the observation with excludeID (pass 0 to skip no one).
+// Returns at most limit results with similarity >= minSimilarity.
+// No-op when embeddings are disabled.
+func (d *Detector) Similar(ctx context.Context, text string, limit int, excludeID int64, minSimilarity float32) ([]embeddings.SimilarResult, error) {
+	if d.vs == nil {
+		return nil, nil
+	}
+	return d.vs.Similar(ctx, text, limit, excludeID, minSimilarity)
+}
+
 // Enabled reports whether the detector has an active vector store.
 func (d *Detector) Enabled() bool {
 	return d.vs != nil

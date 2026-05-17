@@ -79,6 +79,11 @@ func (s *Server) localStore() *store.Store {
 	return nil
 }
 
+// LocalStoreForJudge returns the underlying SQLite store for the auto-judge background process.
+func (s *Server) LocalStoreForJudge() *store.Store {
+	return s.localStore()
+}
+
 // Call invoca un handler de tool directamente — usado en tests.
 func (s *Server) Call(ctx context.Context, tool string, arguments map[string]any) (*mcpgo.CallToolResult, error) {
 	req := mcpgo.CallToolRequest{}

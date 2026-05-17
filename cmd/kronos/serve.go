@@ -10,6 +10,7 @@ import (
 
 	"github.com/jjgarcia-app/kronos-v2/internal/config"
 	"github.com/jjgarcia-app/kronos-v2/internal/embeddings"
+	"github.com/jjgarcia-app/kronos-v2/internal/judge"
 	"github.com/jjgarcia-app/kronos-v2/internal/mcp"
 	"github.com/jjgarcia-app/kronos-v2/internal/platform"
 	"github.com/jjgarcia-app/kronos-v2/internal/relations"
@@ -32,7 +33,8 @@ func runServe(args ...string) error {
 		}
 	}
 
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	cfg, _ := config.Load()
 
@@ -53,7 +55,7 @@ func runServe(args ...string) error {
 	defer st.Close()
 
 	// arrancar HTTP server en background
-	hs := httpserver.New(st, port)
+	hs := httpserver.New(st, port, cfg.APIToken)
 	if err := hs.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "warn: http server no pudo arrancar: %v\n", err)
 	}
@@ -64,6 +66,9 @@ func runServe(args ...string) error {
 	toolFilter := mcp.ResolveTools(toolsFlag)
 	srv := mcp.NewWithOptions(st, cfg.Nudge.ActionsThreshold, cfg.Nudge.FallbackMinutes, rel, toolFilter)
 	srv.SetDataDir(dataDir)
+	if ls := srv.LocalStoreForJudge(); ls != nil {
+		judge.AutoJudge(ctx, ls, rel)
+	}
 	return srv.ServeStdio()
 }
 

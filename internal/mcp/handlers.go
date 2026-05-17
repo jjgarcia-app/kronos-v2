@@ -93,6 +93,32 @@ func (s *Server) handleMemSearch(ctx context.Context, req mcpgo.CallToolRequest)
 	if err != nil {
 		return fail(err), nil
 	}
+
+	// búsqueda vectorial complementaria (bge-m3)
+	if s.rel != nil && s.rel.Enabled() {
+		hits, _ := s.rel.Similar(ctx, query, limit, 0, 0.60)
+		seen := make(map[int64]bool)
+		for _, r := range results {
+			seen[r.ID] = true
+		}
+		if ls := s.localStore(); ls != nil {
+			for _, h := range hits {
+				if seen[h.ObsID] {
+					continue
+				}
+				obs, err := ls.GetObservation(ctx, h.ObsID)
+				if err != nil || obs == nil {
+					continue
+				}
+				results = append(results, &store.SearchResult{
+					Observation: *obs,
+					Rank:        float64(h.Similarity),
+				})
+				seen[h.ObsID] = true
+			}
+		}
+	}
+
 	if len(results) == 0 {
 		return ok("No se encontraron resultados para: " + query), nil
 	}
@@ -139,7 +165,11 @@ func (s *Server) handleMemContext(ctx context.Context, req mcpgo.CallToolRequest
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "## Contexto de memoria (%d observaciones)\n\n", len(observations))
 	for _, o := range observations {
-		fmt.Fprintf(&sb, "**[%d] %s** (%s) — %s\n", o.ID, o.Title, o.Type, o.CreatedAt.Format("2006-01-02"))
+		staleMarker := ""
+		if !o.UpdatedAt.IsZero() && time.Since(o.UpdatedAt) > 90*24*time.Hour {
+			staleMarker = " ⚠ obsoleta"
+		}
+		fmt.Fprintf(&sb, "**[%d] %s** (%s%s) — %s\n", o.ID, o.Title, o.Type, staleMarker, o.CreatedAt.Format("2006-01-02"))
 		preview := o.Content
 		if len(preview) > 150 {
 			preview = preview[:147] + "..."
