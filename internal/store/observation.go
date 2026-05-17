@@ -52,16 +52,46 @@ func (s *Store) SaveObservation(ctx context.Context, p SaveParams) (*Observation
 	}
 
 	// caso 3: insert nuevo
-	id, err := s.insertReturning(ctx,
-		`INSERT INTO observations
+	syncID := p.SyncID
+	if syncID == "" {
+		syncID = newSyncID()
+	}
+
+	if s.driver == "postgres" {
+		var id int64
+		err = s.db.QueryRowContext(ctx,
+			s.rebind(`INSERT INTO observations
+				(sync_id, session_id, type, title, content, tool_name, project, scope, topic_key,
+				 normalized_hash, revision_count, duplicate_count, last_seen_at, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, ?)
+			 ON CONFLICT (sync_id) DO UPDATE SET updated_at = observations.updated_at
+			 RETURNING id`),
+			syncID, nullStr(p.SessionID), string(p.Type), p.Title, p.Content,
+			p.ToolName, p.Project, string(p.Scope), p.TopicKey, hash, ts, ts, ts,
+		).Scan(&id)
+		if err != nil {
+			return nil, fmt.Errorf("insert observation: %w", err)
+		}
+		return s.GetObservation(ctx, id)
+	}
+
+	res, err := s.db.ExecContext(ctx,
+		`INSERT OR IGNORE INTO observations
 			(sync_id, session_id, type, title, content, tool_name, project, scope, topic_key,
 			 normalized_hash, revision_count, duplicate_count, last_seen_at, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, ?)`,
-		newSyncID(), nullStr(p.SessionID), string(p.Type), p.Title, p.Content,
+		syncID, nullStr(p.SessionID), string(p.Type), p.Title, p.Content,
 		p.ToolName, p.Project, string(p.Scope), p.TopicKey, hash, ts, ts, ts,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert observation: %w", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return nil, fmt.Errorf("insert observation lastid: %w", err)
+	}
+	if id == 0 {
+		return s.GetObservationBySyncID(ctx, syncID)
 	}
 	return s.GetObservation(ctx, id)
 }
@@ -182,6 +212,30 @@ func (s *Store) SavePassive(ctx context.Context, sessionID, project, content str
 		Project:   project,
 		Scope:     ScopeProject,
 	})
+}
+
+// GCStale soft-deletes observations that have not been updated or re-seen
+// within retentionDays. Only removes observations with revision_count=1 and
+// duplicate_count=1 (never revised, never re-encountered).
+// Returns the number of observations soft-deleted.
+func (s *Store) GCStale(ctx context.Context, retentionDays int) (int64, error) {
+	if retentionDays <= 0 {
+		retentionDays = 90
+	}
+	cutoff := time.Now().UTC().AddDate(0, 0, -retentionDays).Format(time.RFC3339)
+	res, err := s.exec(ctx,
+		`UPDATE observations SET deleted_at = ?
+		 WHERE deleted_at IS NULL
+		   AND revision_count = 1
+		   AND duplicate_count = 1
+		   AND last_seen_at < ?`,
+		now(), cutoff,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("gc stale: %w", err)
+	}
+	affected, _ := res.RowsAffected()
+	return affected, nil
 }
 
 // RenameProject mueve todas las observaciones de from a to. Retorna el número de filas afectadas.

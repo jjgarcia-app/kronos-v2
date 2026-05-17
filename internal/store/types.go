@@ -52,6 +52,7 @@ type Observation struct {
 }
 
 type SaveParams struct {
+	SyncID    string // si se provee, usar este en lugar de generar uno nuevo
 	SessionID string
 	Type      ObservationType
 	Title     string

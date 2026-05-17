@@ -130,7 +130,9 @@ func (d *DualStore) SaveObservation(ctx context.Context, p SaveParams) (*Observa
 	if err != nil {
 		return nil, err
 	}
-	_ = d.queue.enqueue("save_observation", p)
+	pWithSync := p
+	pWithSync.SyncID = obs.SyncID
+	_ = d.queue.enqueue("save_observation", pWithSync)
 	return obs, nil
 }
 

@@ -11,6 +11,7 @@ package sync
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"time"
 
@@ -211,7 +212,7 @@ func (s *Syncer) collectData(ctx context.Context, project, sinceTime string) (*C
 	var obsQuery string
 	var obsArgs []any
 	if project != "" {
-		obsQuery = `SELECT id, session_id, type, title, content, project, scope, topic_key,
+		obsQuery = `SELECT id, sync_id, session_id, type, title, content, project, scope, topic_key,
 		                    normalized_hash, revision_count, duplicate_count,
 		                    last_seen_at, created_at, updated_at
 		             FROM observations
@@ -219,7 +220,7 @@ func (s *Syncer) collectData(ctx context.Context, project, sinceTime string) (*C
 		             ORDER BY created_at ASC`
 		obsArgs = []any{sinceTime, project}
 	} else {
-		obsQuery = `SELECT id, session_id, type, title, content, project, scope, topic_key,
+		obsQuery = `SELECT id, sync_id, session_id, type, title, content, project, scope, topic_key,
 		                    normalized_hash, revision_count, duplicate_count,
 		                    last_seen_at, created_at, updated_at
 		             FROM observations
@@ -235,28 +236,30 @@ func (s *Syncer) collectData(ctx context.Context, project, sinceTime string) (*C
 	defer obsRows.Close()
 	for obsRows.Next() {
 		var id int64
+		var syncID sql.NullString
 		var sessionID *string
 		var typ, title, content, proj, scope, topicKey, hash string
 		var revCount, dupCount int
 		var lastSeen, createdAt, updatedAt string
-		if err := obsRows.Scan(&id, &sessionID, &typ, &title, &content, &proj, &scope,
+		if err := obsRows.Scan(&id, &syncID, &sessionID, &typ, &title, &content, &proj, &scope,
 			&topicKey, &hash, &revCount, &dupCount, &lastSeen, &createdAt, &updatedAt); err != nil {
 			return nil, err
 		}
 		m := map[string]any{
-			"id":               id,
-			"type":             typ,
-			"title":            title,
-			"content":          content,
-			"project":          proj,
-			"scope":            scope,
-			"topic_key":        topicKey,
-			"normalized_hash":  hash,
-			"revision_count":   revCount,
-			"duplicate_count":  dupCount,
-			"last_seen_at":     lastSeen,
-			"created_at":       createdAt,
-			"updated_at":       updatedAt,
+			"id":              id,
+			"sync_id":         syncID.String,
+			"type":            typ,
+			"title":           title,
+			"content":         content,
+			"project":         proj,
+			"scope":           scope,
+			"topic_key":       topicKey,
+			"normalized_hash": hash,
+			"revision_count":  revCount,
+			"duplicate_count": dupCount,
+			"last_seen_at":    lastSeen,
+			"created_at":      createdAt,
+			"updated_at":      updatedAt,
 		}
 		if sessionID != nil {
 			m["session_id"] = *sessionID
@@ -341,18 +344,13 @@ func (s *Syncer) applyChunk(cd *ChunkData) ([3]int, error) {
 
 	for _, obs := range cd.Observations {
 		sessionID, _ := obs["session_id"].(string)
+		syncID, _ := obs["sync_id"].(string)
 		typ, _ := obs["type"].(string)
 		title, _ := obs["title"].(string)
 		content, _ := obs["content"].(string)
 		proj, _ := obs["project"].(string)
 		scope, _ := obs["scope"].(string)
 		topicKey, _ := obs["topic_key"].(string)
-		hash, _ := obs["normalized_hash"].(string)
-		revCount := intVal(obs["revision_count"])
-		dupCount := intVal(obs["duplicate_count"])
-		lastSeen, _ := obs["last_seen_at"].(string)
-		createdAt, _ := obs["created_at"].(string)
-		updatedAt, _ := obs["updated_at"].(string)
 
 		if typ == "" || title == "" || proj == "" {
 			continue
@@ -366,19 +364,20 @@ func (s *Syncer) applyChunk(cd *ChunkData) ([3]int, error) {
 			}
 		}
 
-		res, err := db.ExecContext(ctx,
-			`INSERT OR IGNORE INTO observations
-			 (session_id, type, title, content, project, scope, topic_key, normalized_hash,
-			  revision_count, duplicate_count, last_seen_at, created_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			nullableStr(sessionID), typ, title, content, proj, scope, topicKey, hash,
-			revCount, dupCount, lastSeen, createdAt, updatedAt,
-		)
+		_, err := s.store.SaveObservation(ctx, store.SaveParams{
+			SyncID:    syncID,
+			SessionID: sessionID,
+			Type:      store.ObservationType(typ),
+			Title:     title,
+			Content:   content,
+			Project:   proj,
+			Scope:     store.Scope(scope),
+			TopicKey:  topicKey,
+		})
 		if err != nil {
 			return counts, fmt.Errorf("insertar observation: %w", err)
 		}
-		n, _ := res.RowsAffected()
-		counts[1] += int(n)
+		counts[1]++
 	}
 
 	for _, prompt := range cd.Prompts {
