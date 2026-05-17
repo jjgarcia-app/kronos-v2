@@ -1,11 +1,11 @@
-# Binaries
+# Binaries (solo en la raíz del repo, no el directorio cmd/kronos/)
 *.exe
 *.exe~
 *.dll
 *.so
 *.dylib
-kronos
-kronos.exe
+/kronos
+/kronos.exe
 
 # Test binaries
 *.test
