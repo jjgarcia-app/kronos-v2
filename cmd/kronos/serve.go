@@ -18,14 +18,17 @@ import (
 )
 
 func runServe(args ...string) error {
-	// parse --port=N flag
+	// parse --port=N and --tools=PROFILE flags
 	port := 4317
+	toolsFlag := ""
 	for _, a := range args {
 		if strings.HasPrefix(a, "--port=") {
 			n, err := strconv.Atoi(strings.TrimPrefix(a, "--port="))
 			if err == nil && n > 0 {
 				port = n
 			}
+		} else if strings.HasPrefix(a, "--tools=") {
+			toolsFlag = strings.TrimPrefix(a, "--tools=")
 		}
 	}
 
@@ -58,7 +61,8 @@ func runServe(args ...string) error {
 	vs, _ := embeddings.New(ctx, filepath.Join(dataDir, "vectors"))
 	rel := relations.New(vs)
 
-	srv := mcp.NewWithRelations(st, cfg.Nudge.ActionsThreshold, cfg.Nudge.FallbackMinutes, rel)
+	toolFilter := mcp.ResolveTools(toolsFlag)
+	srv := mcp.NewWithOptions(st, cfg.Nudge.ActionsThreshold, cfg.Nudge.FallbackMinutes, rel, toolFilter)
 	srv.SetDataDir(dataDir)
 	return srv.ServeStdio()
 }

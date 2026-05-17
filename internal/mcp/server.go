@@ -12,11 +12,12 @@ import (
 
 // Server es el MCP server de Kronos. Expone los tools de memoria a Claude Code.
 type Server struct {
-	store    store.Storer
-	activity *Activity
-	mcp      *server.MCPServer
-	rel      *relations.Detector // nil when embeddings are disabled
-	dataDir  string              // directorio de datos para checkpoints
+	store      store.Storer
+	activity   *Activity
+	mcp        *server.MCPServer
+	rel        *relations.Detector // nil when embeddings are disabled
+	dataDir    string              // directorio de datos para checkpoints
+	toolFilter map[string]bool     // nil = registrar todos; non-nil = solo los listados
 }
 
 // New crea un Server listo para ser servido via stdio o HTTP.
@@ -26,10 +27,17 @@ func New(st store.Storer, nudgeActions, nudgeFallbackMins int) *Server {
 
 // NewWithRelations crea un Server con soporte opcional de relations/embeddings.
 func NewWithRelations(st store.Storer, nudgeActions, nudgeFallbackMins int, rel *relations.Detector) *Server {
+	return NewWithOptions(st, nudgeActions, nudgeFallbackMins, rel, nil)
+}
+
+// NewWithOptions crea un Server con todas las opciones configurables.
+// toolFilter nil = registrar todos los tools; non-nil = solo los listados.
+func NewWithOptions(st store.Storer, nudgeActions, nudgeFallbackMins int, rel *relations.Detector, toolFilter map[string]bool) *Server {
 	s := &Server{
-		store:    st,
-		activity: NewActivity(nudgeActions, nudgeFallbackMins),
-		rel:      rel,
+		store:      st,
+		activity:   NewActivity(nudgeActions, nudgeFallbackMins),
+		rel:        rel,
+		toolFilter: toolFilter,
 	}
 
 	s.mcp = server.NewMCPServer("kronos", "2.0.0",
@@ -126,26 +134,38 @@ func (s *Server) Call(ctx context.Context, tool string, arguments map[string]any
 }
 
 func (s *Server) registerTools() {
-	s.mcp.AddTool(toolMemSave(), s.handleMemSave)
-	s.mcp.AddTool(toolMemSearch(), s.handleMemSearch)
-	s.mcp.AddTool(toolMemContext(), s.handleMemContext)
-	s.mcp.AddTool(toolMemGetObservation(), s.handleMemGetObservation)
-	s.mcp.AddTool(toolMemUpdate(), s.handleMemUpdate)
-	s.mcp.AddTool(toolMemSessionStart(), s.handleMemSessionStart)
-	s.mcp.AddTool(toolMemSessionEnd(), s.handleMemSessionEnd)
-	s.mcp.AddTool(toolMemSessionSummary(), s.handleMemSessionSummary)
-	s.mcp.AddTool(toolMemSavePrompt(), s.handleMemSavePrompt)
-	s.mcp.AddTool(toolMemDelete(), s.handleMemDelete)
-	s.mcp.AddTool(toolMemCheckpoint(), s.handleMemCheckpoint)
-	s.mcp.AddTool(toolMemJudge(), s.handleMemJudge)
-	s.mcp.AddTool(toolMemCompare(), s.handleMemCompare)
-	s.mcp.AddTool(toolMemSuggestTopicKey(), s.handleMemSuggestTopicKey)
-	s.mcp.AddTool(toolMemTimeline(), s.handleMemTimeline)
-	s.mcp.AddTool(toolMemStats(), s.handleMemStats)
-	s.mcp.AddTool(toolMemCurrentProject(), s.handleMemCurrentProject)
-	s.mcp.AddTool(toolMemCapturePassive(), s.handleMemCapturePassive)
-	s.mcp.AddTool(toolMemMergeProjects(), s.handleMemMergeProjects)
-	s.mcp.AddTool(toolMemDoctor(), s.handleMemDoctor)
+	type entry struct {
+		tool    func() mcpgo.Tool
+		handler func(context.Context, mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error)
+	}
+	all := []entry{
+		{toolMemSave, s.handleMemSave},
+		{toolMemSearch, s.handleMemSearch},
+		{toolMemContext, s.handleMemContext},
+		{toolMemGetObservation, s.handleMemGetObservation},
+		{toolMemUpdate, s.handleMemUpdate},
+		{toolMemSessionStart, s.handleMemSessionStart},
+		{toolMemSessionEnd, s.handleMemSessionEnd},
+		{toolMemSessionSummary, s.handleMemSessionSummary},
+		{toolMemSavePrompt, s.handleMemSavePrompt},
+		{toolMemDelete, s.handleMemDelete},
+		{toolMemCheckpoint, s.handleMemCheckpoint},
+		{toolMemJudge, s.handleMemJudge},
+		{toolMemCompare, s.handleMemCompare},
+		{toolMemSuggestTopicKey, s.handleMemSuggestTopicKey},
+		{toolMemTimeline, s.handleMemTimeline},
+		{toolMemStats, s.handleMemStats},
+		{toolMemCurrentProject, s.handleMemCurrentProject},
+		{toolMemCapturePassive, s.handleMemCapturePassive},
+		{toolMemMergeProjects, s.handleMemMergeProjects},
+		{toolMemDoctor, s.handleMemDoctor},
+	}
+	for _, e := range all {
+		t := e.tool()
+		if s.toolFilter == nil || s.toolFilter[t.Name] {
+			s.mcp.AddTool(t, e.handler)
+		}
+	}
 }
 
 // helpers

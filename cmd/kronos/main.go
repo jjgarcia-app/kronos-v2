@@ -20,7 +20,7 @@ func run(args []string) error {
 	switch args[0] {
 	case "init":
 		return runInit()
-	case "serve":
+	case "serve", "mcp":
 		return runServe(args[1:]...)
 	case "hook":
 		return runHook(args[1:])
@@ -42,6 +42,6 @@ func run(args []string) error {
 		fmt.Printf("kronos v2.0.0-dev\n")
 		return nil
 	default:
-		return fmt.Errorf("unknown command %q — use: init | serve | hook | setup | export | doctor | tui | config | sync [--export|--import] | rules | version", args[0])
+		return fmt.Errorf("unknown command %q — use: init | serve | mcp [--tools=PROFILE] | hook | setup | export | doctor | tui | config | sync [--export|--import] | rules | version", args[0])
 	}
 }
