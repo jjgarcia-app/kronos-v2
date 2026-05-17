@@ -104,3 +104,147 @@ func TestDetect_RepoNameFromURL(t *testing.T) {
 		}
 	}
 }
+
+func TestDetectFull_FromKronosConfig(t *testing.T) {
+	dir := t.TempDir()
+	kronosDir := filepath.Join(dir, ".kronos")
+	if err := os.Mkdir(kronosDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(kronosDir, "config.json"), []byte(`{"project_name":"mi-proyecto-json"}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := project.DetectFull(dir)
+	if r.Project != "mi-proyecto-json" {
+		t.Errorf("Project = %q, want mi-proyecto-json", r.Project)
+	}
+	if r.Source != "config" {
+		t.Errorf("Source = %q, want config", r.Source)
+	}
+	if r.Error != nil {
+		t.Errorf("unexpected error: %v", r.Error)
+	}
+}
+
+func TestDetectFull_KronosConfig_InvalidName(t *testing.T) {
+	dir := t.TempDir()
+	kronosDir := filepath.Join(dir, ".kronos")
+	if err := os.Mkdir(kronosDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// project_name with path separator — should be rejected
+	if err := os.WriteFile(filepath.Join(kronosDir, "config.json"), []byte(`{"project_name":"../../etc/passwd"}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := project.DetectFull(dir)
+	// Should fall through to dir_basename since config name is invalid
+	if r.Source == "config" {
+		t.Error("expected invalid project_name to be rejected, but Source = config")
+	}
+}
+
+func TestDetectFull_KronosConfig_EmptyName(t *testing.T) {
+	dir := t.TempDir()
+	kronosDir := filepath.Join(dir, ".kronos")
+	if err := os.Mkdir(kronosDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(kronosDir, "config.json"), []byte(`{"project_name":""}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := project.DetectFull(dir)
+	if r.Source == "config" {
+		t.Error("empty project_name should be rejected")
+	}
+}
+
+func TestDetectFull_SingleChild_AutoPromote(t *testing.T) {
+	parent := t.TempDir()
+	child := filepath.Join(parent, "my-service")
+	if err := os.MkdirAll(filepath.Join(child, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	r := project.DetectFull(parent)
+	if r.Project != "my-service" {
+		t.Errorf("Project = %q, want my-service", r.Project)
+	}
+	if r.Source != "git_child" {
+		t.Errorf("Source = %q, want git_child", r.Source)
+	}
+	if r.Warning != "auto-promoted child repository" {
+		t.Errorf("Warning = %q, want 'auto-promoted child repository'", r.Warning)
+	}
+	if r.Error != nil {
+		t.Errorf("unexpected error: %v", r.Error)
+	}
+}
+
+func TestDetectFull_MultipleChildren_Ambiguous(t *testing.T) {
+	parent := t.TempDir()
+	for _, name := range []string{"service-a", "service-b"} {
+		if err := os.MkdirAll(filepath.Join(parent, name, ".git"), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	r := project.DetectFull(parent)
+	if r.Project != "" {
+		t.Errorf("Project should be empty for ambiguous, got %q", r.Project)
+	}
+	if r.Source != "ambiguous" {
+		t.Errorf("Source = %q, want ambiguous", r.Source)
+	}
+	if r.Error != project.ErrAmbiguousProject {
+		t.Errorf("Error = %v, want ErrAmbiguousProject", r.Error)
+	}
+	if len(r.AvailableProjects) != 2 {
+		t.Errorf("AvailableProjects len = %d, want 2", len(r.AvailableProjects))
+	}
+}
+
+func TestDetectFull_NoiseFiltered(t *testing.T) {
+	parent := t.TempDir()
+	// Create a noise dir with .git — should be ignored
+	if err := os.MkdirAll(filepath.Join(parent, "node_modules", ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	// Create a real child repo
+	if err := os.MkdirAll(filepath.Join(parent, "my-app", ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	r := project.DetectFull(parent)
+	if r.Project != "my-app" {
+		t.Errorf("Project = %q, want my-app (node_modules should be filtered)", r.Project)
+	}
+	if r.Source != "git_child" {
+		t.Errorf("Source = %q, want git_child", r.Source)
+	}
+}
+
+func TestDetectFull_PathIsAbsolute(t *testing.T) {
+	dir := t.TempDir()
+	r := project.DetectFull(dir)
+	if !filepath.IsAbs(r.Path) {
+		t.Errorf("Path %q should be absolute", r.Path)
+	}
+}
+
+func TestDetect_BackwardCompat_Ambiguous(t *testing.T) {
+	parent := t.TempDir()
+	for _, name := range []string{"repo-x", "repo-y"} {
+		if err := os.MkdirAll(filepath.Join(parent, name, ".git"), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	r := project.Detect(parent)
+	// Ambiguous case: Detect returns "unknown" with ambiguous method
+	if r.Name != "unknown" {
+		t.Errorf("Detect ambiguous: Name = %q, want unknown", r.Name)
+	}
+}

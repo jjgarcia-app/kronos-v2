@@ -5,16 +5,29 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/jjgarcia-app/kronos-v2/internal/hooks"
 	"github.com/jjgarcia-app/kronos-v2/internal/platform"
 	"github.com/jjgarcia-app/kronos-v2/internal/store"
 )
 
+// runHook dispatches a named hook.
+//
+// Usage:
+//
+//	kronos hook <name> [--reason <reason>]
+//	kronos hook <name> <reason>
+//
+// For session-start, reason="compact" triggers post-compaction recovery.
+// Reason "startup", "clear", or empty all trigger the normal session start.
 func runHook(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("uso: kronos hook <session-start|prompt-submit|subagent-stop|session-stop>")
+		return fmt.Errorf("uso: kronos hook <session-start|prompt-submit|subagent-stop|session-stop> [--reason compact]")
 	}
+
+	hookName := args[0]
+	reason := parseReason(args[1:])
 
 	dbPath, err := platform.DBPath()
 	if err != nil {
@@ -31,5 +44,23 @@ func runHook(args []string) error {
 	}
 	defer st.Close()
 
-	return hooks.Run(context.Background(), args[0], st)
+	return hooks.RunWithReason(context.Background(), hookName, reason, st)
+}
+
+// parseReason extracts the reason value from remaining args.
+// Accepts --reason <value> or a bare positional argument.
+func parseReason(args []string) string {
+	for i, arg := range args {
+		if arg == "--reason" && i+1 < len(args) {
+			return strings.TrimSpace(args[i+1])
+		}
+		if strings.HasPrefix(arg, "--reason=") {
+			return strings.TrimSpace(strings.TrimPrefix(arg, "--reason="))
+		}
+		// bare positional argument that is not a flag
+		if !strings.HasPrefix(arg, "-") {
+			return strings.TrimSpace(arg)
+		}
+	}
+	return ""
 }
