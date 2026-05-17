@@ -83,10 +83,10 @@ func (s *Store) searchPostgres(ctx context.Context, p SearchParams) ([]*SearchRe
 			SELECT id, COALESCE(sync_id,''), COALESCE(session_id,''), type, title, content,
 			       COALESCE(tool_name,''), project, scope, topic_key, normalized_hash,
 			       revision_count, duplicate_count, created_at, updated_at, deleted_at,
-			       ts_rank(to_tsvector('spanish', title || ' ' || content),
-			               plainto_tsquery('spanish', $1)) as rank
+			       ts_rank(to_tsvector('simple', title || ' ' || content),
+			               plainto_tsquery('simple', $1)) as rank
 			FROM observations
-			WHERE to_tsvector('spanish', title || ' ' || content) @@ plainto_tsquery('spanish', $1)
+			WHERE to_tsvector('simple', title || ' ' || content) @@ plainto_tsquery('simple', $1)
 			  AND (project = $2 OR scope = 'global')
 			  AND deleted_at IS NULL
 			ORDER BY rank DESC
@@ -98,10 +98,10 @@ func (s *Store) searchPostgres(ctx context.Context, p SearchParams) ([]*SearchRe
 			SELECT id, COALESCE(sync_id,''), COALESCE(session_id,''), type, title, content,
 			       COALESCE(tool_name,''), project, scope, topic_key, normalized_hash,
 			       revision_count, duplicate_count, created_at, updated_at, deleted_at,
-			       ts_rank(to_tsvector('spanish', title || ' ' || content),
-			               plainto_tsquery('spanish', $1)) as rank
+			       ts_rank(to_tsvector('simple', title || ' ' || content),
+			               plainto_tsquery('simple', $1)) as rank
 			FROM observations
-			WHERE to_tsvector('spanish', title || ' ' || content) @@ plainto_tsquery('spanish', $1)
+			WHERE to_tsvector('simple', title || ' ' || content) @@ plainto_tsquery('simple', $1)
 			  AND deleted_at IS NULL
 			ORDER BY rank DESC
 			LIMIT $2`,

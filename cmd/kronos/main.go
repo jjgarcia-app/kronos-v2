@@ -38,10 +38,12 @@ func run(args []string) error {
 		return runSync(args[1:])
 	case "rules":
 		return runRules(args[1:])
+	case "gc":
+		return runGC(args[1:])
 	case "version", "--version", "-v":
 		fmt.Printf("kronos v2.0.0-dev\n")
 		return nil
 	default:
-		return fmt.Errorf("unknown command %q — use: init | serve | mcp [--tools=PROFILE] | hook | setup | export | doctor | tui | config | sync [--export|--import] | rules | version", args[0])
+		return fmt.Errorf("unknown command %q — use: init | serve | mcp [--tools=PROFILE] | hook | setup | export | doctor | tui | config | sync [--export|--import] | rules | gc | version", args[0])
 	}
 }

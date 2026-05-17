@@ -39,16 +39,21 @@ const summaryTemplate = `## Objetivo
 
 // validateSaveParams validates content format and topic_key requirements.
 // Returns a descriptive error if the agent used the wrong format.
-// Passive observations bypass format validation (auto-captured from subagents).
+// Passive, preference and session observations bypass format validation.
 func validateSaveParams(content string, typ store.ObservationType, topicKey string) error {
-	if typ == store.TypePassive || typ == store.TypeSession {
+	if typ == store.TypePassive || typ == store.TypeSession || typ == store.TypePreference {
+		if strings.TrimSpace(content) == "" {
+			return fmt.Errorf("content no puede estar vacío")
+		}
 		return nil
 	}
 
-	// Enforce content format
+	// Enforce content format — accept Spanish and English headers
 	lower := strings.ToLower(content)
-	missingQue := !strings.Contains(lower, "qué:") && !strings.Contains(lower, "que:")
-	missingPorque := !strings.Contains(lower, "por qué:") && !strings.Contains(lower, "por que:")
+	missingQue := !strings.Contains(lower, "qué:") && !strings.Contains(lower, "que:") &&
+		!strings.Contains(lower, "what:")
+	missingPorque := !strings.Contains(lower, "por qué:") && !strings.Contains(lower, "por que:") &&
+		!strings.Contains(lower, "why:")
 
 	if missingQue || missingPorque {
 		return fmt.Errorf(`el content no tiene el formato requerido.
@@ -56,6 +61,7 @@ func validateSaveParams(content string, typ store.ObservationType, topicKey stri
 Formato obligatorio:
 %s
 
+También se aceptan headers en inglés: What: / Why:
 Todos los agentes deben usar este mismo formato para mantener
 la memoria consistente y buscable entre sesiones.`, saveContentTemplate)
 	}

@@ -56,6 +56,7 @@ type Config struct {
 	Nudge      NudgeConfig      `json:"nudge"`
 	Secrets    SecretsConfig    `json:"secrets"`
 	Export     ExportConfig     `json:"export"`
+	APIToken   string           `json:"api_token"`
 }
 
 // Default returns a Config populated with sensible defaults.

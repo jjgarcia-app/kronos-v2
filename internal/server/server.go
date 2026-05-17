@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -14,20 +15,22 @@ import (
 
 // Server expone la memoria de Kronos via HTTP REST local.
 type Server struct {
-	st   store.Storer
-	port int
-	mux  *http.ServeMux
+	st    store.Storer
+	port  int
+	token string
+	mux   *http.ServeMux
 }
 
 // New crea un Server listo para arrancar.
-func New(st store.Storer, port int) *Server {
+func New(st store.Storer, port int, token string) *Server {
 	if port <= 0 {
 		port = 4317
 	}
 	srv := &Server{
-		st:   st,
-		port: port,
-		mux:  http.NewServeMux(),
+		st:    st,
+		port:  port,
+		token: token,
+		mux:   http.NewServeMux(),
 	}
 	srv.routes()
 	return srv
@@ -37,7 +40,7 @@ func New(st store.Storer, port int) *Server {
 func (srv *Server) Start() error {
 	httpSrv := &http.Server{
 		Addr:    srv.Addr(),
-		Handler: srv.mux,
+		Handler: srv.authMiddleware(srv.mux),
 	}
 	go func() {
 		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -45,6 +48,34 @@ func (srv *Server) Start() error {
 		}
 	}()
 	return nil
+}
+
+// authMiddleware protege los endpoints. /health siempre es libre.
+// Sin token: solo permite peticiones de loopback.
+// Con token: requiere header Authorization: Bearer <token>.
+func (srv *Server) authMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if srv.token == "" {
+			host, _, _ := net.SplitHostPort(r.RemoteAddr)
+			ip := net.ParseIP(host)
+			if ip == nil || !ip.IsLoopback() {
+				writeError(w, http.StatusForbidden, "acceso solo desde localhost")
+				return
+			}
+		} else {
+			auth := r.Header.Get("Authorization")
+			expected := "Bearer " + srv.token
+			if auth != expected {
+				writeError(w, http.StatusUnauthorized, "token inválido o ausente")
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // Addr retorna la dirección de escucha, ej: ":4317".
