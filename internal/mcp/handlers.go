@@ -162,7 +162,7 @@ func (s *Server) handleMemSearch(ctx context.Context, req mcpgo.CallToolRequest)
 		r := e.result
 		fmt.Fprintf(&sb, "**[%d] %s** (%s)\n", r.ID, r.Title, r.Type)
 		fmt.Fprintf(&sb, "Proyecto: %s | %s\n", r.Project, r.CreatedAt.Format("2006-01-02"))
-		preview := r.Content
+		preview := secrets.Redact(r.Content)
 		if len(preview) > 200 {
 			preview = preview[:197] + "..."
 		}
@@ -203,7 +203,7 @@ func (s *Server) handleMemContext(ctx context.Context, req mcpgo.CallToolRequest
 			staleMarker = " ⚠ obsoleta"
 		}
 		fmt.Fprintf(&sb, "**[%d] %s** (%s%s) — %s\n", o.ID, o.Title, o.Type, staleMarker, o.CreatedAt.Format("2006-01-02"))
-		preview := o.Content
+		preview := secrets.Redact(o.Content)
 		if len(preview) > 150 {
 			preview = preview[:147] + "..."
 		}
@@ -238,7 +238,7 @@ func (s *Server) handleMemGetObservation(ctx context.Context, req mcpgo.CallTool
 	fmt.Fprintf(&sb, "**ID**: %d | **Tipo**: %s | **Proyecto**: %s\n", obs.ID, obs.Type, obs.Project)
 	fmt.Fprintf(&sb, "**Scope**: %s | **Topic key**: %s\n", obs.Scope, obs.TopicKey)
 	fmt.Fprintf(&sb, "**Creado**: %s | **Rev**: %d\n\n", obs.CreatedAt.Format(time.RFC3339), obs.RevisionCount)
-	fmt.Fprintf(&sb, "%s\n", obs.Content)
+	fmt.Fprintf(&sb, "%s\n", secrets.Redact(obs.Content))
 
 	return ok(sb.String()), nil
 }

@@ -458,24 +458,41 @@ func (s *Store) checkCrossProject(ctx context.Context, sourceID, targetID string
 	return nil
 }
 
-// GCOrphanRelations marca como 'orphaned' las relaciones que han estado
-// en estado 'pending' más de ageDays días sin ser resueltas.
-// Retorna el número de relaciones marcadas.
-func (s *Store) GCOrphanRelations(ctx context.Context, ageDays int) (int64, error) {
-	if ageDays <= 0 {
-		ageDays = 30
+// GCRelations elimina físicamente relaciones basura en dos casos:
+//  1. Dangling: la observación fuente o destino fue soft-deleted (ya no existe activa).
+//  2. Stale pending: llevan más de staleDays días en estado 'pending' sin ser resueltas.
+//
+// Retorna el total de filas eliminadas.
+func (s *Store) GCRelations(ctx context.Context, staleDays int) (int64, error) {
+	if staleDays <= 0 {
+		staleDays = 30
 	}
-	cutoff := time.Now().UTC().AddDate(0, 0, -ageDays).Format(time.RFC3339)
-	res, err := s.exec(ctx,
-		`UPDATE memory_relations SET judgment_status = 'orphaned', updated_at = ?
-		 WHERE judgment_status = 'pending' AND created_at < ?`,
-		now(), cutoff,
+
+	// 1. dangling: source o target ya no existe como observación activa
+	res1, err := s.exec(ctx, `
+		DELETE FROM memory_relations
+		WHERE NOT EXISTS (
+			SELECT 1 FROM observations WHERE sync_id = source_id AND deleted_at IS NULL
+		) OR NOT EXISTS (
+			SELECT 1 FROM observations WHERE sync_id = target_id AND deleted_at IS NULL
+		)`)
+	if err != nil {
+		return 0, fmt.Errorf("gc dangling relations: %w", err)
+	}
+	dangling, _ := res1.RowsAffected()
+
+	// 2. stale pending: nunca fueron juzgadas después de staleDays días
+	cutoff := time.Now().UTC().AddDate(0, 0, -staleDays).Format(time.RFC3339)
+	res2, err := s.exec(ctx,
+		`DELETE FROM memory_relations WHERE judgment_status = 'pending' AND created_at < ?`,
+		cutoff,
 	)
 	if err != nil {
-		return 0, fmt.Errorf("gc orphan relations: %w", err)
+		return 0, fmt.Errorf("gc stale relations: %w", err)
 	}
-	affected, _ := res.RowsAffected()
-	return affected, nil
+	stale, _ := res2.RowsAffected()
+
+	return dangling + stale, nil
 }
 
 // sanitizeFTSCandidates convierte un título en una query FTS5 OR-based para búsqueda amplia.
