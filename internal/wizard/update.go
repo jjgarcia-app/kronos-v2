@@ -1,6 +1,8 @@
 package wizard
 
 import (
+	"strings"
+
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -52,6 +54,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.dbInput, cmd = m.dbInput.Update(msg)
 		return m, cmd
 	}
+	if m.phase == phaseConfigPG {
+		var cmd tea.Cmd
+		m.pgInput, cmd = m.pgInput.Update(msg)
+		return m, cmd
+	}
 
 	return m, nil
 }
@@ -78,14 +85,39 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			} else {
 				m.done = append(m.done, styleWarn.Render("  !! Binario: no está en PATH"))
 			}
-			m.phase = phaseConfig
-			m.dbInput.Focus()
+			m.phase = phaseDBChoice
 			return m, nil
 		case "q", "ctrl+c":
 			return m, tea.Quit
 		}
 
-	// ── Config (DB path) ─────────────────────────────────────────────────────
+	// ── DB backend choice ────────────────────────────────────────────────────
+	case phaseDBChoice:
+		switch msg.String() {
+		case "j", "down":
+			if m.dbCursor < 1 {
+				m.dbCursor++
+			}
+		case "k", "up":
+			if m.dbCursor > 0 {
+				m.dbCursor--
+			}
+		case "enter":
+			if m.dbCursor == 0 {
+				m.cfg.DB.Backend = "sqlite"
+				m.phase = phaseConfig
+				m.dbInput.Focus()
+			} else {
+				m.cfg.DB.Backend = "postgres"
+				m.phase = phaseConfigPG
+				m.pgInput.Focus()
+			}
+			return m, nil
+		case "q", "ctrl+c":
+			return m, tea.Quit
+		}
+
+	// ── Config SQLite (DB path) ──────────────────────────────────────────────
 	case phaseConfig:
 		switch msg.String() {
 		case "enter":
@@ -94,7 +126,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				dbPath = m.dbInput.Placeholder
 			}
 			m.cfg.DB.SQLitePath = dbPath
-			m.done = append(m.done, styleOK.Render("  ✓ Base de datos: ")+dbPath)
+			m.done = append(m.done, styleOK.Render("  ✓ Base de datos: ")+"SQLite — "+dbPath)
 			m.phase = phaseOllama
 			m.dbInput.Blur()
 			return m, tea.Batch(
@@ -106,6 +138,35 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		default:
 			var cmd tea.Cmd
 			m.dbInput, cmd = m.dbInput.Update(msg)
+			return m, cmd
+		}
+
+	// ── Config PostgreSQL (DSN) ──────────────────────────────────────────────
+	case phaseConfigPG:
+		switch msg.String() {
+		case "enter":
+			dsn := m.pgInput.Value()
+			if dsn == "" || !strings.HasPrefix(dsn, "postgresql://") {
+				dsn = m.pgInput.Placeholder
+			}
+			m.cfg.DB.PostgresDSN = dsn
+			m.wantsPostgresDocker = strings.Contains(dsn, "localhost") || strings.Contains(dsn, "127.0.0.1")
+			label := "PostgreSQL"
+			if m.wantsPostgresDocker {
+				label += " (Docker automático)"
+			}
+			m.done = append(m.done, styleOK.Render("  ✓ Base de datos: ")+label)
+			m.phase = phaseOllama
+			m.pgInput.Blur()
+			return m, tea.Batch(
+				cmdSaveConfig(m.cfg),
+				cmdCheckOllama(m.ollamaURL),
+			)
+		case "ctrl+c":
+			return m, tea.Quit
+		default:
+			var cmd tea.Cmd
+			m.pgInput, cmd = m.pgInput.Update(msg)
 			return m, cmd
 		}
 
@@ -176,7 +237,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				ollamaModel = "bge-m3"
 			}
 			var setupCmd tea.Cmd
-			setupCmd, m.cancelSetup = cmdRunSetup(m.agents, m.wantsDocker, ollamaModel)
+			setupCmd, m.cancelSetup = cmdRunSetup(m.agents, m.wantsDocker, m.wantsPostgresDocker, m.cfg.DB.PostgresDSN, ollamaModel)
 			return m, tea.Batch(m.sp.Tick, setupCmd)
 		case "q", "ctrl+c":
 			return m, tea.Quit

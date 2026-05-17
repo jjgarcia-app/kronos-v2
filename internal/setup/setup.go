@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/jjgarcia-app/kronos-v2/internal/platform"
 )
@@ -13,7 +14,8 @@ import (
 // hookEntry matches Claude Code's settings.json hooks format.
 type hookEntry struct {
 	Type    string `json:"type"`
-	Command string `json:"command"`
+	Command string `json:"command,omitempty"`
+	Prompt  string `json:"prompt,omitempty"`
 }
 
 // hookMatcher is one element of the per-event array in settings.json.
@@ -53,7 +55,8 @@ func InstallClaudeCode() error {
 	}
 
 	hooks := getOrInitHooks(settings)
-	hooksChanged := mergeHooks(hooks)
+	legacyRemoved := removeLegacyNodeHooks(hooks)
+	hooksChanged := mergeHooks(hooks) || legacyRemoved
 	settings["hooks"] = hooks
 
 	mcpChanged := mergeMCPServer(settings)
@@ -77,15 +80,19 @@ func InstallClaudeCode() error {
 	return nil
 }
 
-// mergeMCPServer adds Kronos to settings["mcpServers"] if not already present.
+// mergeMCPServer adds or updates the Kronos MCP server in settings["mcpServers"].
+// Updates if the existing entry still points to the old Node.js binary.
 // Returns true if a change was made.
 func mergeMCPServer(settings map[string]any) bool {
 	servers, ok := settings["mcpServers"].(map[string]any)
 	if !ok {
 		servers = map[string]any{}
 	}
-	if _, exists := servers["kronos"]; exists {
-		return false
+	if existing, exists := servers["kronos"]; exists {
+		if !isLegacyNodeServer(existing) {
+			return false
+		}
+		// fall through to overwrite the legacy entry
 	}
 	servers["kronos"] = map[string]any{
 		"command": kronosBin(),
@@ -93,6 +100,27 @@ func mergeMCPServer(settings map[string]any) bool {
 	}
 	settings["mcpServers"] = servers
 	return true
+}
+
+// isLegacyNodeServer returns true when the MCP entry is the old Node.js Kronos v1 config.
+func isLegacyNodeServer(entry any) bool {
+	m, ok := entry.(map[string]any)
+	if !ok {
+		return false
+	}
+	cmd, _ := m["command"].(string)
+	if cmd == "node" {
+		return true
+	}
+	// also check args for .js files, just in case
+	if args, ok := m["args"].([]any); ok {
+		for _, a := range args {
+			if s, ok := a.(string); ok && len(s) > 3 && s[len(s)-3:] == ".js" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func kronosBin() string {
@@ -160,6 +188,41 @@ func getOrInitHooks(settings map[string]any) map[string]any {
 		return h
 	}
 	return map[string]any{}
+}
+
+// removeLegacyNodeHooks removes any hook entry whose command invokes a kronos-*.js
+// file via Node.js (left over from Kronos v1). Returns true if anything was removed.
+func removeLegacyNodeHooks(hooks map[string]any) bool {
+	changed := false
+	for event, raw := range hooks {
+		filtered := filterLegacyNode(raw)
+		if len(toMatcherSlice(filtered)) != len(toMatcherSlice(raw)) {
+			hooks[event] = filtered
+			changed = true
+		}
+	}
+	return changed
+}
+
+func filterLegacyNode(raw any) []hookMatcher {
+	var out []hookMatcher
+	for _, m := range toMatcherSlice(raw) {
+		var kept []hookEntry
+		for _, h := range m.Hooks {
+			if isLegacyNodeHook(h.Command) {
+				continue
+			}
+			kept = append(kept, h)
+		}
+		if len(kept) > 0 {
+			out = append(out, hookMatcher{Hooks: kept})
+		}
+	}
+	return out
+}
+
+func isLegacyNodeHook(cmd string) bool {
+	return strings.HasPrefix(cmd, "node ") && strings.Contains(cmd, "kronos") && strings.HasSuffix(cmd, ".js")
 }
 
 // mergeHooks adds Kronos hooks that are not already present.
@@ -241,10 +304,23 @@ func toMatcherSlice(raw any) []hookMatcher {
 			if !ok {
 				continue
 			}
-			entries = append(entries, hookEntry{
+			e := hookEntry{
 				Type:    strVal(hem, "type"),
 				Command: strVal(hem, "command"),
-			})
+				Prompt:  strVal(hem, "prompt"),
+			}
+			// skip broken agent hooks with no prompt
+			if e.Type == "agent" && e.Prompt == "" {
+				continue
+			}
+			// skip command hooks with no command
+			if e.Type == "command" && e.Command == "" {
+				continue
+			}
+			entries = append(entries, e)
+		}
+		if len(entries) == 0 {
+			continue
 		}
 		out = append(out, hookMatcher{Hooks: entries})
 	}

@@ -50,7 +50,7 @@ func (s *Store) SaveObservation(ctx context.Context, p SaveParams) (*Observation
 	}
 
 	// caso 3: insert nuevo
-	res, err := s.db.ExecContext(ctx,
+	id, err := s.insertReturning(ctx,
 		`INSERT INTO observations
 			(session_id, type, title, content, project, scope, topic_key, normalized_hash,
 			 revision_count, duplicate_count, last_seen_at, created_at, updated_at)
@@ -61,12 +61,11 @@ func (s *Store) SaveObservation(ctx context.Context, p SaveParams) (*Observation
 	if err != nil {
 		return nil, fmt.Errorf("insert observation: %w", err)
 	}
-	id, _ := res.LastInsertId()
 	return s.GetObservation(ctx, id)
 }
 
 func (s *Store) GetObservation(ctx context.Context, id int64) (*Observation, error) {
-	row := s.db.QueryRowContext(ctx,
+	row := s.queryRow(ctx,
 		`SELECT id, session_id, type, title, content, project, scope, topic_key,
 		        normalized_hash, revision_count, duplicate_count, created_at, updated_at, deleted_at
 		 FROM observations WHERE id = ?`, id)
@@ -98,7 +97,7 @@ func (s *Store) UpdateObservation(ctx context.Context, p UpdateParams) (*Observa
 }
 
 func (s *Store) DeleteObservation(ctx context.Context, id int64) error {
-	_, err := s.db.ExecContext(ctx,
+	_, err := s.exec(ctx,
 		`UPDATE observations SET deleted_at = ? WHERE id = ?`, now(), id)
 	return err
 }
@@ -107,7 +106,7 @@ func (s *Store) ListObservations(ctx context.Context, project string, limit int)
 	if limit <= 0 {
 		limit = 50
 	}
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.query(ctx,
 		`SELECT id, session_id, type, title, content, project, scope, topic_key,
 		        normalized_hash, revision_count, duplicate_count, created_at, updated_at, deleted_at
 		 FROM observations
@@ -126,14 +125,14 @@ func (s *Store) ListAll(ctx context.Context, project string) ([]*Observation, er
 	var rows *sql.Rows
 	var err error
 	if project == "" {
-		rows, err = s.db.QueryContext(ctx,
+		rows, err = s.query(ctx,
 			`SELECT id, session_id, type, title, content, project, scope, topic_key,
 			        normalized_hash, revision_count, duplicate_count, created_at, updated_at, deleted_at
 			 FROM observations
 			 WHERE deleted_at IS NULL
 			 ORDER BY project ASC, created_at ASC`)
 	} else {
-		rows, err = s.db.QueryContext(ctx,
+		rows, err = s.query(ctx,
 			`SELECT id, session_id, type, title, content, project, scope, topic_key,
 			        normalized_hash, revision_count, duplicate_count, created_at, updated_at, deleted_at
 			 FROM observations
@@ -148,7 +147,7 @@ func (s *Store) ListAll(ctx context.Context, project string) ([]*Observation, er
 }
 
 func (s *Store) ListSessionObservations(ctx context.Context, sessionID string) ([]*Observation, error) {
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.query(ctx,
 		`SELECT id, session_id, type, title, content, project, scope, topic_key,
 		        normalized_hash, revision_count, duplicate_count, created_at, updated_at, deleted_at
 		 FROM observations
@@ -178,7 +177,7 @@ func (s *Store) SavePassive(ctx context.Context, sessionID, project, content str
 // internos
 
 func (s *Store) getByTopicKey(ctx context.Context, project, topicKey string) (*Observation, error) {
-	row := s.db.QueryRowContext(ctx,
+	row := s.queryRow(ctx,
 		`SELECT id, session_id, type, title, content, project, scope, topic_key,
 		        normalized_hash, revision_count, duplicate_count, created_at, updated_at, deleted_at
 		 FROM observations
@@ -192,7 +191,7 @@ func (s *Store) getByTopicKey(ctx context.Context, project, topicKey string) (*O
 }
 
 func (s *Store) getByHash(ctx context.Context, hash, project string) (*Observation, error) {
-	row := s.db.QueryRowContext(ctx,
+	row := s.queryRow(ctx,
 		`SELECT id, session_id, type, title, content, project, scope, topic_key,
 		        normalized_hash, revision_count, duplicate_count, created_at, updated_at, deleted_at
 		 FROM observations
@@ -206,7 +205,7 @@ func (s *Store) getByHash(ctx context.Context, hash, project string) (*Observati
 }
 
 func (s *Store) updateObservation(ctx context.Context, id int64, title, content, typ, hash, ts string) (*Observation, error) {
-	_, err := s.db.ExecContext(ctx,
+	_, err := s.exec(ctx,
 		`UPDATE observations
 		 SET title = ?, content = ?, type = ?, normalized_hash = ?,
 		     revision_count = revision_count + 1, last_seen_at = ?, updated_at = ?
@@ -220,7 +219,7 @@ func (s *Store) updateObservation(ctx context.Context, id int64, title, content,
 }
 
 func (s *Store) bumpDuplicate(ctx context.Context, id int64, ts string) (*Observation, error) {
-	_, err := s.db.ExecContext(ctx,
+	_, err := s.exec(ctx,
 		`UPDATE observations
 		 SET duplicate_count = duplicate_count + 1, last_seen_at = ?
 		 WHERE id = ?`, ts, id)

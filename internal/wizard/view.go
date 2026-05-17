@@ -54,7 +54,7 @@ func (m Model) View() string {
 
 	case phaseBinary:
 		var bodyLines []string
-		bodyLines = append(bodyLines, stylePhase.Render("1/4  Binario en PATH"), "")
+		bodyLines = append(bodyLines, stylePhase.Render("1/5  Binario en PATH"), "")
 		if m.binaryPath == "" {
 			bodyLines = append(bodyLines, m.sp.View()+"  Verificando...")
 		} else if m.binaryOK {
@@ -80,9 +80,32 @@ func (m Model) View() string {
 			b.WriteString(styleHelp.Render("\n  Enter para continuar"))
 		}
 
+	case phaseDBChoice:
+		dbOpts := []struct{ label, desc string }{
+			{"SQLite", "archivo local, sin dependencias — recomendado"},
+			{"PostgreSQL", "Docker automático o DSN propio"},
+		}
+		var bodyLines []string
+		bodyLines = append(bodyLines, stylePhase.Render("2/5  Base de datos"), "")
+		for i, opt := range dbOpts {
+			if i == m.dbCursor {
+				bodyLines = append(bodyLines,
+					styleCursor.Render("> ")+styleHighlight.Render(opt.label)+
+						"   "+styleMuted.Render(opt.desc),
+				)
+			} else {
+				bodyLines = append(bodyLines,
+					"  "+styleMuted.Render(opt.label)+
+						"   "+styleMuted.Render(opt.desc),
+				)
+			}
+		}
+		b.WriteString(renderBox(m.width, lines(bodyLines...)))
+		b.WriteString(styleHelp.Render("\n  j/k mover  ·  Enter seleccionar"))
+
 	case phaseConfig:
 		content := lines(
-			stylePhase.Render("2/4  Base de datos"),
+			stylePhase.Render("3/5  Base de datos — SQLite"),
 			"",
 			styleText.Render("Ruta donde Kronos guardará tus memorias:"),
 			"  "+m.dbInput.View(),
@@ -92,9 +115,22 @@ func (m Model) View() string {
 		b.WriteString(renderBox(m.width, content))
 		b.WriteString(styleHelp.Render("\n  Enter para confirmar"))
 
+	case phaseConfigPG:
+		content := lines(
+			stylePhase.Render("3/5  Base de datos — PostgreSQL"),
+			"",
+			styleText.Render("DSN de conexión:"),
+			"  "+m.pgInput.View(),
+			"",
+			styleMuted.Render("localhost → se levantará un contenedor Docker automáticamente."),
+			styleMuted.Render("Cambia el host para usar un servidor Postgres existente."),
+		)
+		b.WriteString(renderBox(m.width, content))
+		b.WriteString(styleHelp.Render("\n  Enter para confirmar"))
+
 	case phaseOllama:
 		var bodyLines []string
-		bodyLines = append(bodyLines, stylePhase.Render("3/4  Embeddings semánticos"), "")
+		bodyLines = append(bodyLines, stylePhase.Render("4/5  Embeddings semánticos"), "")
 		if m.ollamaURL == "" {
 			bodyLines = append(bodyLines, m.sp.View()+"  Verificando Ollama...")
 		} else if m.ollamaOK {
@@ -127,7 +163,7 @@ func (m Model) View() string {
 			{"Omitir por ahora", ""},
 		}
 		var bodyLines []string
-		bodyLines = append(bodyLines, stylePhase.Render("3/4  Opciones de Ollama"), "")
+		bodyLines = append(bodyLines, stylePhase.Render("4/5  Opciones de Ollama"), "")
 		for i, opt := range opts {
 			if i == m.ollamaCursor {
 				bodyLines = append(bodyLines, styleCursor.Render("> ")+styleHighlight.Render(opt.label))
@@ -147,7 +183,7 @@ func (m Model) View() string {
 	case phaseAgents:
 		var bodyLines []string
 		bodyLines = append(bodyLines,
-			stylePhase.Render("4/4  Agentes de IA"),
+			stylePhase.Render("5/5  Agentes de IA"),
 			"",
 			styleText.Render("Selecciona dónde instalar Kronos:"),
 			"",

@@ -34,10 +34,12 @@ func run(args []string) error {
 		return runTUI()
 	case "config":
 		return runConfig(args[1:])
+	case "sync":
+		return runSync()
 	case "version", "--version", "-v":
 		fmt.Printf("kronos v2.0.0-dev\n")
 		return nil
 	default:
-		return fmt.Errorf("unknown command %q — use: init | serve | hook | setup | export | doctor | tui | config | version", args[0])
+		return fmt.Errorf("unknown command %q — use: init | serve | hook | setup | export | doctor | tui | config | sync | version", args[0])
 	}
 }

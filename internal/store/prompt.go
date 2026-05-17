@@ -11,7 +11,7 @@ func (s *Store) SavePrompt(ctx context.Context, sessionID, project, content stri
 	if content == "" || project == "" {
 		return nil
 	}
-	_, err := s.db.ExecContext(ctx,
+	_, err := s.exec(ctx,
 		`INSERT INTO user_prompts(session_id, content, project, created_at) VALUES (?, ?, ?, ?)`,
 		nullStr(sessionID), content, project, now(),
 	)
@@ -22,7 +22,7 @@ func (s *Store) ListPrompts(ctx context.Context, project string, limit int) ([]*
 	if limit <= 0 {
 		limit = 10
 	}
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.query(ctx,
 		`SELECT id, session_id, content, project, created_at
 		 FROM user_prompts WHERE project = ?
 		 ORDER BY created_at DESC LIMIT ?`, project, limit)

@@ -9,7 +9,7 @@ import (
 
 func (s *Store) CreateSession(ctx context.Context, id, project, directory string) (*Session, error) {
 	startedAt := now()
-	_, err := s.db.ExecContext(ctx,
+	_, err := s.exec(ctx,
 		`INSERT INTO sessions(id, project, directory, started_at) VALUES (?, ?, ?, ?)`,
 		id, project, directory, startedAt,
 	)
@@ -26,7 +26,7 @@ func (s *Store) CreateSession(ctx context.Context, id, project, directory string
 }
 
 func (s *Store) EndSession(ctx context.Context, id, summary string) error {
-	res, err := s.db.ExecContext(ctx,
+	res, err := s.exec(ctx,
 		`UPDATE sessions SET ended_at = ?, summary = ? WHERE id = ?`,
 		now(), summary, id,
 	)
@@ -41,13 +41,13 @@ func (s *Store) EndSession(ctx context.Context, id, summary string) error {
 }
 
 func (s *Store) GetSession(ctx context.Context, id string) (*Session, error) {
-	row := s.db.QueryRowContext(ctx,
+	row := s.queryRow(ctx,
 		`SELECT id, project, directory, started_at, ended_at, summary FROM sessions WHERE id = ?`, id)
 	return scanSession(row)
 }
 
 func (s *Store) GetActiveSession(ctx context.Context, project string) (*Session, error) {
-	row := s.db.QueryRowContext(ctx,
+	row := s.queryRow(ctx,
 		`SELECT id, project, directory, started_at, ended_at, summary
 		 FROM sessions
 		 WHERE project = ? AND ended_at IS NULL
@@ -59,7 +59,7 @@ func (s *Store) ListSessions(ctx context.Context, project string, limit int) ([]
 	if limit <= 0 {
 		limit = 20
 	}
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.query(ctx,
 		`SELECT id, project, directory, started_at, ended_at, summary
 		 FROM sessions WHERE project = ?
 		 ORDER BY started_at DESC LIMIT ?`, project, limit)

@@ -12,19 +12,19 @@ import (
 
 // Server es el MCP server de Kronos. Expone los tools de memoria a Claude Code.
 type Server struct {
-	store    *store.Store
+	store    store.Storer
 	activity *Activity
 	mcp      *server.MCPServer
 	rel      *relations.Detector // nil when embeddings are disabled
 }
 
 // New crea un Server listo para ser servido via stdio o HTTP.
-func New(st *store.Store, nudgeActions, nudgeFallbackMins int) *Server {
+func New(st store.Storer, nudgeActions, nudgeFallbackMins int) *Server {
 	return NewWithRelations(st, nudgeActions, nudgeFallbackMins, nil)
 }
 
 // NewWithRelations crea un Server con soporte opcional de relations/embeddings.
-func NewWithRelations(st *store.Store, nudgeActions, nudgeFallbackMins int, rel *relations.Detector) *Server {
+func NewWithRelations(st store.Storer, nudgeActions, nudgeFallbackMins int, rel *relations.Detector) *Server {
 	s := &Server{
 		store:    st,
 		activity: NewActivity(nudgeActions, nudgeFallbackMins),

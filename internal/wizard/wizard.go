@@ -61,7 +61,9 @@ type phase int
 const (
 	phaseWelcome    phase = iota // Banner, Enter para continuar
 	phaseBinary                  // Verificar binario en PATH
-	phaseConfig                  // Ruta de base de datos
+	phaseDBChoice                // Elegir SQLite o PostgreSQL
+	phaseConfig                  // Ruta de SQLite
+	phaseConfigPG                // DSN de PostgreSQL
 	phaseOllama                  // Detectar Ollama
 	phaseOllamaOpts              // Elegir qué hacer con Ollama
 	phaseAgents                  // Seleccionar agentes
@@ -112,8 +114,11 @@ type Model struct {
 	binaryPath string
 	binaryOK   bool
 
-	dbInput textinput.Model
-	cfg     config.Config
+	dbCursor          int  // 0=SQLite 1=PostgreSQL
+	wantsPostgresDocker bool
+	dbInput           textinput.Model // SQLite path
+	pgInput           textinput.Model // Postgres DSN
+	cfg               config.Config
 
 	ollamaOK     bool
 	ollamaURL    string
@@ -153,9 +158,20 @@ func New() Model {
 		cfg.Embeddings.OllamaURL = "http://localhost:11434"
 	}
 
+	defaultDSN := "postgresql://postgres:kronos@localhost:5432/kronos?sslmode=disable"
+	if cfg.DB.PostgresDSN != "" && strings.HasPrefix(cfg.DB.PostgresDSN, "postgresql://") {
+		defaultDSN = cfg.DB.PostgresDSN
+	}
+	pg := textinput.New()
+	pg.Placeholder = defaultDSN
+	pg.SetValue(defaultDSN)
+	pg.CharLimit = 300
+	pg.Width = 60
+
 	return Model{
 		phase:     phaseWelcome,
 		dbInput:   ti,
+		pgInput:   pg,
 		cfg:       cfg,
 		sp:        sp,
 		ollamaURL: cfg.Embeddings.OllamaURL,
@@ -226,7 +242,7 @@ func drainSetup(ch <-chan string) tea.Cmd {
 
 // cmdRunSetup starts a goroutine that installs agents (and optionally Ollama via
 // Docker) and returns the first drain command plus a cancel func.
-func cmdRunSetup(agents []agentItem, wantsDocker bool, ollamaModel string) (tea.Cmd, func()) {
+func cmdRunSetup(agents []agentItem, wantsDocker bool, wantsPostgresDocker bool, pgDSN string, ollamaModel string) (tea.Cmd, func()) {
 	ctx, cancel := context.WithCancel(context.Background())
 	ch := make(chan string, 64)
 	go func() {
@@ -241,6 +257,29 @@ func cmdRunSetup(agents []agentItem, wantsDocker bool, ollamaModel string) (tea.
 				return true
 			default:
 				return false
+			}
+		}
+
+		if wantsPostgresDocker {
+			if cancelled() {
+				return
+			}
+			ch <- "Iniciando PostgreSQL en Docker..."
+			runOut, runErr := exec.Command("docker", "run", "-d",
+				"--name", "kronos-postgres",
+				"-e", "POSTGRES_PASSWORD=kronos",
+				"-e", "POSTGRES_DB=kronos",
+				"-p", "5432:5432",
+				"postgres:16-alpine").CombinedOutput()
+			if runErr != nil {
+				msg := strings.TrimSpace(string(runOut))
+				if strings.Contains(msg, "already in use") {
+					ch <- "  ✓ Contenedor kronos-postgres ya existe"
+				} else {
+					ch <- fmt.Sprintf("  ! docker run postgres: %s", msg)
+				}
+			} else {
+				ch <- "  ✓ Contenedor kronos-postgres iniciado"
 			}
 		}
 
@@ -343,8 +382,11 @@ func cmdRunSetup(agents []agentItem, wantsDocker bool, ollamaModel string) (tea.
 
 func cmdSaveConfig(cfg config.Config) tea.Cmd {
 	return func() tea.Msg {
-		_ = os.MkdirAll(cfg.DB.SQLitePath[:max(strings.LastIndexAny(cfg.DB.SQLitePath, "/\\"), 0)], 0755)
 		_ = cfg.Save()
+		if cfg.DB.Backend == "postgres" {
+			return nil
+		}
+		_ = os.MkdirAll(cfg.DB.SQLitePath[:max(strings.LastIndexAny(cfg.DB.SQLitePath, "/\\"), 0)], 0755)
 		st, err := store.New(cfg.DB.SQLitePath)
 		if err == nil {
 			st.Close()

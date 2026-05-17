@@ -18,24 +18,24 @@ type Stats struct {
 func (s *Store) Stats(ctx context.Context) (*Stats, error) {
 	var st Stats
 
-	row := s.db.QueryRowContext(ctx,
+	row := s.queryRow(ctx,
 		`SELECT COUNT(*) FROM observations WHERE deleted_at IS NULL`)
 	if err := row.Scan(&st.TotalObservations); err != nil {
 		return nil, err
 	}
 
-	row = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions`)
+	row = s.queryRow(ctx, `SELECT COUNT(*) FROM sessions`)
 	if err := row.Scan(&st.TotalSessions); err != nil {
 		return nil, err
 	}
 
-	row = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_prompts`)
+	row = s.queryRow(ctx, `SELECT COUNT(*) FROM user_prompts`)
 	if err := row.Scan(&st.TotalPrompts); err != nil && err != sql.ErrNoRows {
 		// user_prompts table may not exist in older DBs
 		st.TotalPrompts = 0
 	}
 
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.query(ctx,
 		`SELECT DISTINCT project FROM observations WHERE deleted_at IS NULL ORDER BY project ASC`)
 	if err != nil {
 		return nil, err
@@ -69,7 +69,7 @@ func (s *Store) AllSessions(ctx context.Context, limit int) ([]*Session, error) 
 	if limit <= 0 {
 		limit = 50
 	}
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.query(ctx,
 		`SELECT id, project, directory, started_at, ended_at, summary
 		 FROM sessions ORDER BY started_at DESC LIMIT ?`, limit)
 	if err != nil {
@@ -97,7 +97,7 @@ func (s *Store) TimelineObservations(ctx context.Context, obsID int64, n int) ([
 	// first get the session_id and created_at of the target observation
 	var sessionID string
 	var createdAt string
-	row := s.db.QueryRowContext(ctx,
+	row := s.queryRow(ctx,
 		`SELECT COALESCE(session_id,''), created_at FROM observations WHERE id = ?`, obsID)
 	if err := row.Scan(&sessionID, &createdAt); err != nil {
 		return nil, err
@@ -107,7 +107,7 @@ func (s *Store) TimelineObservations(ctx context.Context, obsID int64, n int) ([
 		return nil, nil
 	}
 
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.query(ctx,
 		`SELECT id, session_id, type, title, content, project, scope, topic_key,
 		        normalized_hash, revision_count, duplicate_count, created_at, updated_at, deleted_at
 		 FROM observations
