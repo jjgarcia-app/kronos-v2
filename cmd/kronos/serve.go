@@ -11,6 +11,7 @@ import (
 	"github.com/jjgarcia-app/kronos-v2/internal/config"
 	"github.com/jjgarcia-app/kronos-v2/internal/embeddings"
 	"github.com/jjgarcia-app/kronos-v2/internal/judge"
+	"github.com/jjgarcia-app/kronos-v2/internal/llm"
 	"github.com/jjgarcia-app/kronos-v2/internal/mcp"
 	"github.com/jjgarcia-app/kronos-v2/internal/platform"
 	"github.com/jjgarcia-app/kronos-v2/internal/relations"
@@ -63,11 +64,17 @@ func runServe(args ...string) error {
 	vs, _ := embeddings.New(ctx, filepath.Join(dataDir, "vectors"))
 	rel := relations.New(vs)
 
+	// cliente LLM generativo para resolver conflictos ambiguos (0.30–0.70 similitud)
+	var llmClient *llm.Client
+	if cfg.Embeddings.Provider == "ollama" {
+		llmClient = llm.NewClient(cfg.Embeddings.OllamaURL, cfg.Embeddings.OllamaLLMModel)
+	}
+
 	toolFilter := mcp.ResolveTools(toolsFlag)
 	srv := mcp.NewWithOptions(st, cfg.Nudge.ActionsThreshold, cfg.Nudge.FallbackMinutes, rel, toolFilter)
 	srv.SetDataDir(dataDir)
 	if ls := srv.LocalStoreForJudge(); ls != nil {
-		judge.AutoJudge(ctx, ls, rel)
+		judge.AutoJudge(ctx, ls, rel, llmClient)
 	}
 	return srv.ServeStdio()
 }
