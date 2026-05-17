@@ -157,6 +157,39 @@ ESTRUCTURA OBLIGATORIA del summary:
 	)
 }
 
+func toolMemCheckpoint() mcpgo.Tool {
+	return mcpgo.NewTool("mem_checkpoint",
+		mcpgo.WithDescription(`HERRAMIENTA ANTI-PÉRDIDA DE CONTEXTO. Guarda el estado exacto de una tarea en progreso para que sea recuperado automáticamente al inicio de la siguiente conversación, incluso después de una compactación de contexto.
+
+CUÁNDO LLAMAR — OBLIGATORIO en estos momentos:
+  • Al inicio de cualquier tarea que tome más de un turno
+  • Después de completar cada paso significativo de una tarea en curso
+  • Antes de cualquier operación larga (compilación, tests, deploy)
+  • Cuando el usuario dice "continúa mañana", "sigue después" o similar
+  • Cada vez que actualizas el estado de lo que estás haciendo
+
+CUÁNDO CERRAR (status: "completed"):
+  • Cuando la tarea se completa exitosamente
+  • Cuando el usuario confirma que se terminó
+  • Antes de cambiar a una tarea completamente diferente
+
+CAMPOS:
+  • task (obligatorio): descripción clara de qué estás haciendo. Ej: "Implementar autenticación JWT en el servicio de usuarios"
+  • next_step (obligatorio): la acción CONCRETA e inmediata que debe ejecutarse al retomar. Ej: "Agregar middleware validateToken en routes/auth.go línea 45"
+  • progress: último paso que completaste. Ej: "Escribí el handler generateToken, compila sin errores"
+  • files: archivos que estás modificando activamente (separados por coma). Ej: "internal/auth/jwt.go, routes/auth.go"
+  • notes: restricciones importantes, blockers o contexto no obvio. Ej: "pgx requiere $N placeholders, no usar ?"
+  • project: nombre del proyecto (auto-detectado si se omite)`),
+		mcpgo.WithString("task", mcpgo.Required(), mcpgo.Description("Descripción clara de qué estás trabajando actualmente")),
+		mcpgo.WithString("next_step", mcpgo.Required(), mcpgo.Description("Acción concreta e inmediata a ejecutar al retomar. Debe ser lo suficientemente específica para actuar sin contexto adicional")),
+		mcpgo.WithString("progress", mcpgo.Description("Último paso completado antes de este checkpoint")),
+		mcpgo.WithString("files", mcpgo.Description("Archivos activos separados por coma: path/to/file.go, path/to/other.go")),
+		mcpgo.WithString("notes", mcpgo.Description("Restricciones críticas, blockers o contexto no obvio que debe recordarse")),
+		mcpgo.WithString("project", mcpgo.Description("Nombre del proyecto. Si se omite, se usa el configurado")),
+		mcpgo.WithString("status", mcpgo.Description("'active' (default) para guardar/actualizar. 'completed' para cerrar el checkpoint cuando la tarea termina")),
+	)
+}
+
 func toolMemSavePrompt() mcpgo.Tool {
 	return mcpgo.NewTool("mem_save_prompt",
 		mcpgo.WithDescription(`NOTA: el hook UserPromptSubmit guarda los prompts del usuario automáticamente en cada turno de conversación con Claude Code. No es necesario llamar este tool en uso normal.

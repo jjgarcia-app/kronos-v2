@@ -16,6 +16,7 @@ type Server struct {
 	activity *Activity
 	mcp      *server.MCPServer
 	rel      *relations.Detector // nil when embeddings are disabled
+	dataDir  string              // directorio de datos para checkpoints
 }
 
 // New crea un Server listo para ser servido via stdio o HTTP.
@@ -36,6 +37,13 @@ func NewWithRelations(st store.Storer, nudgeActions, nudgeFallbackMins int, rel 
 	)
 
 	s.registerTools()
+	return s
+}
+
+// SetDataDir configura el directorio de datos para persistir checkpoints.
+// Llamar antes de ServeStdio.
+func (s *Server) SetDataDir(dir string) *Server {
+	s.dataDir = dir
 	return s
 }
 
@@ -71,6 +79,8 @@ func (s *Server) Call(ctx context.Context, tool string, arguments map[string]any
 		handler = s.handleMemSessionSummary
 	case "mem_save_prompt":
 		handler = s.handleMemSavePrompt
+	case "mem_checkpoint":
+		handler = s.handleMemCheckpoint
 	default:
 		return nil, fmt.Errorf("tool desconocido: %s", tool)
 	}
@@ -87,6 +97,7 @@ func (s *Server) registerTools() {
 	s.mcp.AddTool(toolMemSessionEnd(), s.handleMemSessionEnd)
 	s.mcp.AddTool(toolMemSessionSummary(), s.handleMemSessionSummary)
 	s.mcp.AddTool(toolMemSavePrompt(), s.handleMemSavePrompt)
+	s.mcp.AddTool(toolMemCheckpoint(), s.handleMemCheckpoint)
 }
 
 // helpers

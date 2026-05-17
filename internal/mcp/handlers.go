@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jjgarcia-app/kronos-v2/internal/checkpoint"
 	"github.com/jjgarcia-app/kronos-v2/internal/secrets"
 	"github.com/jjgarcia-app/kronos-v2/internal/store"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
@@ -239,6 +240,43 @@ func (s *Server) handleMemSessionSummary(ctx context.Context, req mcpgo.CallTool
 
 	s.activity.Remove(sessionID)
 	return ok("Resumen guardado. Sesión " + sessionID + " cerrada."), nil
+}
+
+func (s *Server) handleMemCheckpoint(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	if s.dataDir == "" {
+		return fail(fmt.Errorf("dataDir no configurado en el servidor")), nil
+	}
+
+	project := str(req, "project")
+	status := strOr(req, "status", "active")
+
+	if status == "completed" {
+		if err := checkpoint.Clear(s.dataDir, project); err != nil {
+			return fail(fmt.Errorf("limpiar checkpoint: %w", err)), nil
+		}
+		return ok("Checkpoint cerrado. La próxima sesión comenzará sin tarea en progreso."), nil
+	}
+
+	task := str(req, "task")
+	nextStep := str(req, "next_step")
+	if task == "" || nextStep == "" {
+		return fail(fmt.Errorf("task y next_step son obligatorios")), nil
+	}
+
+	cp := checkpoint.State{
+		Task:     task,
+		Progress: str(req, "progress"),
+		NextStep: nextStep,
+		Files:    str(req, "files"),
+		Notes:    str(req, "notes"),
+		Project:  project,
+	}
+
+	if err := checkpoint.Save(s.dataDir, project, cp); err != nil {
+		return fail(fmt.Errorf("guardar checkpoint: %w", err)), nil
+	}
+
+	return ok(fmt.Sprintf("Checkpoint guardado.\nTarea: %s\nPróximo paso: %s", task, nextStep)), nil
 }
 
 func (s *Server) handleMemSavePrompt(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {

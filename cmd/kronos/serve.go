@@ -39,6 +39,7 @@ func runServe() error {
 	rel := relations.New(vs)
 
 	srv := mcp.NewWithRelations(st, cfg.Nudge.ActionsThreshold, cfg.Nudge.FallbackMinutes, rel)
+	srv.SetDataDir(dataDir)
 	return srv.ServeStdio()
 }
 
