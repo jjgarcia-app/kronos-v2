@@ -355,7 +355,7 @@ func drainSetup(ch <-chan string) tea.Cmd {
 
 // cmdRunSetup starts a goroutine that installs agents (and optionally Ollama via
 // Docker) and returns the first drain command plus a cancel func.
-func cmdRunSetup(agents []agentItem, wantsDocker bool, wantsPostgresDocker bool, pgDSN string, ollamaModel string) (tea.Cmd, func()) {
+func cmdRunSetup(agents []agentItem, wantsDocker bool, wantsPostgresDocker bool, pgDSN string, ollamaModel string, llmModel string) (tea.Cmd, func()) {
 	ctx, cancel := context.WithCancel(context.Background())
 	ch := make(chan string, 64)
 	go func() {
@@ -449,18 +449,20 @@ func cmdRunSetup(agents []agentItem, wantsDocker bool, wantsPostgresDocker bool,
 		if cancelled() {
 			return
 		}
-		// Always check and pull the model whenever Ollama is reachable.
+		// Pull embed and LLM models when Ollama is reachable.
 		if waitOllamaReady(ollamaURL, 5*time.Second) {
-			if isModelInstalled(ollamaURL, ollamaModel) {
-				ch <- fmt.Sprintf("  ✓ Modelo %s ya instalado", ollamaModel)
-			} else {
-				ch <- fmt.Sprintf("Descargando modelo %s...", ollamaModel)
-				if err := pullModelViaAPI(ctx, ollamaURL, ollamaModel, ch); err != nil {
-					if ctx.Err() == nil {
-						ch <- fmt.Sprintf("  ! pull %s: %v", ollamaModel, err)
-					}
+			for _, m := range deduplicateModels(ollamaModel, llmModel) {
+				if isModelInstalled(ollamaURL, m) {
+					ch <- fmt.Sprintf("  ✓ Modelo %s ya instalado", m)
 				} else {
-					ch <- fmt.Sprintf("  ✓ Modelo %s listo", ollamaModel)
+					ch <- fmt.Sprintf("Descargando modelo %s...", m)
+					if err := pullModelViaAPI(ctx, ollamaURL, m, ch); err != nil {
+						if ctx.Err() == nil {
+							ch <- fmt.Sprintf("  ! pull %s: %v", m, err)
+						}
+					} else {
+						ch <- fmt.Sprintf("  ✓ Modelo %s listo", m)
+					}
 				}
 			}
 		}
@@ -683,4 +685,17 @@ func minI(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// deduplicateModels returns a deduplicated slice of non-empty model names.
+func deduplicateModels(models ...string) []string {
+	seen := make(map[string]bool)
+	var out []string
+	for _, m := range models {
+		if m != "" && !seen[m] {
+			seen[m] = true
+			out = append(out, m)
+		}
+	}
+	return out
 }

@@ -66,6 +66,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case llmTestMsg:
+		if msg.ok {
+			m.llmStatus = "ok: " + msg.detail
+		} else {
+			m.llmStatus = "fail: " + msg.detail
+		}
+		return m, nil
+
 	case exportDoneMsg:
 		if msg.err != nil {
 			m.exportDone = "Error: " + msg.err.Error()
@@ -123,6 +131,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m, cmd = m.updateConfig(msg)
 	case ScreenOllama:
 		m, cmd = m.updateOllama(msg)
+	case ScreenLLM:
+		m, cmd = m.updateLLM(msg)
 	case ScreenExport:
 		m, cmd = m.updateExport(msg)
 	case ScreenSetup:
@@ -145,6 +155,7 @@ var dashboardMenu = []struct {
 	{"Doctor", ScreenDoctor, "d"},
 	{"Configuracion", ScreenConfig, "c"},
 	{"Ollama", ScreenOllama, "o"},
+	{"LLM Config", ScreenLLM, "l"},
 	{"Exportar", ScreenExport, "e"},
 	{"Setup agentes", ScreenSetup, "a"},
 }
@@ -556,6 +567,61 @@ func (m Model) updateSetup(msg tea.Msg) (Model, tea.Cmd) {
 			if m.cursor < len(m.setupAgents) {
 				agent := m.setupAgents[m.cursor]
 				return m, m.doSetupAgent(agent)
+			}
+		}
+	}
+	return m, nil
+}
+
+func (m Model) updateLLM(msg tea.Msg) (Model, tea.Cmd) {
+	if m.llmEditing {
+		switch msg := msg.(type) {
+		case tea.KeyMsg:
+			switch msg.String() {
+			case "enter", "esc":
+				if m.cursor < len(m.llmFields) {
+					m.llmFields[m.cursor].value = m.configInput.Value()
+					_ = m.cfg.Set(
+						m.llmFields[m.cursor].section+"."+m.llmFields[m.cursor].key,
+						m.configInput.Value(),
+					)
+				}
+				m.llmEditing = false
+				m.configInput.Blur()
+				return m, nil
+			}
+		}
+		var cmd tea.Cmd
+		m.configInput, cmd = m.configInput.Update(msg)
+		return m, cmd
+	}
+
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "esc", "q":
+			m.screen = ScreenDashboard
+			m.cursor = 0
+			return m, nil
+		case "j", "down":
+			if m.cursor < len(m.llmFields)-1 {
+				m.cursor++
+			}
+		case "k", "up":
+			if m.cursor > 0 {
+				m.cursor--
+			}
+		case "t":
+			m.llmStatus = "testing..."
+			return m, m.testLLM()
+		case "s":
+			_ = m.cfg.Save()
+			m.errMsg = "LLM configuracion guardada."
+		case "enter":
+			if m.cursor < len(m.llmFields) {
+				m.llmEditing = true
+				m.configInput.SetValue(m.llmFields[m.cursor].value)
+				m.configInput.Focus()
 			}
 		}
 	}

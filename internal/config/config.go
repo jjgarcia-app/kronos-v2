@@ -49,9 +49,17 @@ type ExportConfig struct {
 	DefaultOutput string `json:"default_output"`
 }
 
+type LLMConfig struct {
+	Provider string `json:"provider"` // ollama | openai | openai-compatible | anthropic | disabled
+	Model    string `json:"model"`
+	APIKey   string `json:"api_key"`
+	BaseURL  string `json:"base_url"`
+}
+
 type Config struct {
 	DB         DBConfig         `json:"db"`
 	Embeddings EmbeddingsConfig `json:"embeddings"`
+	LLM        LLMConfig        `json:"llm"`
 	Memory     MemoryConfig     `json:"memory"`
 	Nudge      NudgeConfig      `json:"nudge"`
 	Secrets    SecretsConfig    `json:"secrets"`
@@ -277,6 +285,19 @@ func (c *Config) Set(key, value string) error {
 			c.Secrets.Enabled = parseBool(value)
 		default:
 			return fmt.Errorf("unknown secrets field: %s", field)
+		}
+	case "llm":
+		switch field {
+		case "provider":
+			c.LLM.Provider = value
+		case "model":
+			c.LLM.Model = value
+		case "api_key":
+			c.LLM.APIKey = value
+		case "base_url":
+			c.LLM.BaseURL = value
+		default:
+			return fmt.Errorf("unknown llm field: %s", field)
 		}
 	case "export":
 		switch field {

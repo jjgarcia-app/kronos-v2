@@ -32,6 +32,7 @@ const (
 	ScreenDoctorFix
 	ScreenConfig
 	ScreenOllama
+	ScreenLLM        // nueva
 	ScreenExport
 	ScreenSetup
 )
@@ -77,6 +78,11 @@ type doctorFixMsg struct {
 type ollamaModelsMsg struct {
 	models []string
 	err    error
+}
+
+type llmTestMsg struct {
+	ok     bool
+	detail string
 }
 
 type exportDoneMsg struct {
@@ -149,6 +155,11 @@ type Model struct {
 	// ollama
 	ollamaModels []string
 
+	// llm config editing
+	llmFields   []configField
+	llmEditing  bool
+	llmStatus   string // "" | "testing" | "ok" | "fail: ..."
+
 	// export
 	exportOutput string
 	exportDone   string
@@ -193,6 +204,7 @@ func New(st *store.Store, cfg config.Config) Model {
 	}
 
 	m.configFields = buildConfigFields(cfg)
+	m.llmFields = buildLLMFields(cfg)
 	return m
 }
 
@@ -316,6 +328,45 @@ func (m Model) checkOllama() tea.Cmd {
 	}
 }
 
+func (m Model) testLLM() tea.Cmd {
+	cfg := m.cfg
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		switch cfg.LLM.Provider {
+		case "ollama", "":
+			url := cfg.LLM.BaseURL
+			if url == "" {
+				url = cfg.Embeddings.OllamaURL
+			}
+			if url == "" {
+				url = "http://localhost:11434"
+			}
+			client := &http.Client{Timeout: 2 * time.Second}
+			resp, err := client.Get(url + "/api/tags")
+			if err != nil {
+				return llmTestMsg{ok: false, detail: err.Error()}
+			}
+			resp.Body.Close()
+			return llmTestMsg{ok: resp.StatusCode == 200, detail: url}
+		case "openai", "openai-compatible":
+			if cfg.LLM.APIKey == "" {
+				return llmTestMsg{ok: false, detail: "API Key no configurada"}
+			}
+			return llmTestMsg{ok: true, detail: "API Key configurada"}
+		case "anthropic":
+			if cfg.LLM.APIKey == "" {
+				return llmTestMsg{ok: false, detail: "API Key no configurada"}
+			}
+			return llmTestMsg{ok: true, detail: "API Key configurada"}
+		case "disabled":
+			return llmTestMsg{ok: false, detail: "LLM deshabilitado"}
+		}
+		_ = ctx
+		return llmTestMsg{ok: false, detail: "provider desconocido"}
+	}
+}
+
 func (m Model) loadTimeline(obsID int64) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -383,6 +434,15 @@ func buildConfigFields(cfg config.Config) []configField {
 		{section: "nudge", key: "fallback_minutes", label: "Nudge Fallback (min)", value: fmt.Sprintf("%d", cfg.Nudge.FallbackMinutes)},
 		{section: "secrets", key: "enabled", label: "Secrets Detection", value: fmt.Sprintf("%v", cfg.Secrets.Enabled)},
 		{section: "export", key: "default_output", label: "Export Output Dir", value: cfg.Export.DefaultOutput},
+	}
+}
+
+func buildLLMFields(cfg config.Config) []configField {
+	return []configField{
+		{section: "llm", key: "provider", label: "Provider", value: cfg.LLM.Provider},
+		{section: "llm", key: "model", label: "Model", value: cfg.LLM.Model},
+		{section: "llm", key: "api_key", label: "API Key", value: cfg.LLM.APIKey},
+		{section: "llm", key: "base_url", label: "Base URL", value: cfg.LLM.BaseURL},
 	}
 }
 

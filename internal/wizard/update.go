@@ -255,8 +255,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if ollamaModel == "" {
 				ollamaModel = "bge-m3"
 			}
+			llmModel := m.cfg.Embeddings.OllamaLLMModel
+			if llmModel == "" {
+				llmModel = "llama3.2"
+			}
 			var setupCmd tea.Cmd
-			setupCmd, m.cancelSetup = cmdRunSetup(m.agents, m.wantsDocker, m.wantsPostgresDocker, m.cfg.DB.PostgresDSN, ollamaModel)
+			setupCmd, m.cancelSetup = cmdRunSetup(m.agents, m.wantsDocker, m.wantsPostgresDocker, m.cfg.DB.PostgresDSN, ollamaModel, llmModel)
 			return m, tea.Batch(m.sp.Tick, setupCmd)
 		case "q", "ctrl+c":
 			return m, tea.Quit

@@ -39,6 +39,8 @@ func (m Model) View() string {
 		return m.viewConfig()
 	case ScreenOllama:
 		return m.viewOllama()
+	case ScreenLLM:
+		return m.viewLLM()
 	case ScreenExport:
 		return m.viewExport()
 	case ScreenSetup:
@@ -469,6 +471,57 @@ func (m Model) viewOllama() string {
 
 	b.WriteString("\n")
 	b.WriteString(styleHelp.Render("  j/k navegar · r refresh · esc volver"))
+	return b.String()
+}
+
+// --- llm config ---
+
+func (m Model) viewLLM() string {
+	var b strings.Builder
+	b.WriteString(m.headerLine("LLM Generativo"))
+	b.WriteString("\n")
+
+	if m.errMsg != "" {
+		b.WriteString("  " + styleOK.Render(m.errMsg) + "\n\n")
+	}
+
+	b.WriteString("  " + styleMuted.Render("Proveedor para juicio de conflictos (0.30-0.70 similitud)") + "\n\n")
+
+	for i, f := range m.llmFields {
+		val := f.value
+		if val == "" {
+			val = styleMuted.Render("(no configurado)")
+		}
+		if i == m.cursor && m.llmEditing {
+			val = m.configInput.View()
+		}
+		// ocultar api_key parcialmente
+		if f.key == "api_key" && len(f.value) > 8 {
+			val = f.value[:4] + strings.Repeat("*", len(f.value)-8) + f.value[len(f.value)-4:]
+		}
+		line := fmt.Sprintf("  %-16s %s", f.label+":", styleSubtext.Render(val))
+		if i == m.cursor {
+			b.WriteString(styleHighlight.Width(m.width).Render(styleCursor.Render("▶ ")+strings.TrimPrefix(line, "  ")) + "\n")
+		} else {
+			b.WriteString(line + "\n")
+		}
+	}
+
+	b.WriteString("\n")
+	// status del test
+	if m.llmStatus != "" {
+		if strings.HasPrefix(m.llmStatus, "ok") {
+			b.WriteString("  " + styleOK.Render("Estado: "+m.llmStatus) + "\n")
+		} else if strings.HasPrefix(m.llmStatus, "fail") {
+			b.WriteString("  " + styleFail.Render("Estado: "+m.llmStatus) + "\n")
+		} else {
+			b.WriteString("  " + styleMuted.Render("Estado: "+m.llmStatus) + "\n")
+		}
+		b.WriteString("\n")
+	}
+
+	b.WriteString("  " + styleMuted.Render("Providers: ollama · openai · openai-compatible · anthropic · disabled") + "\n\n")
+	b.WriteString(styleHelp.Render("  j/k navegar · enter editar · t probar · s guardar · esc volver"))
 	return b.String()
 }
 
