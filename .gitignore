@@ -1,0 +1,39 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+kronos
+kronos.exe
+
+# Test binaries
+*.test
+*.out
+
+# Go workspace
+go.work
+go.work.sum
+
+# Build output
+dist/
+
+# Session notes (internal)
+PLAN.md
+PROGRESS.md
+SPRINT_*.md
+SESSION_SUMMARY.md
+FINAL_SESSION_CHECKPOINT.md
+GLOBAL_PATTERNS.md
+MEMORY.md
+memory-*.json
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

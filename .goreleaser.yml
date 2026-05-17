@@ -1,0 +1,67 @@
+version: 2
+
+project_name: kronos
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: kronos
+    main: ./cmd/kronos
+    binary: kronos
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - windows
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    name_template: "kronos_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+release:
+  github:
+    owner: jjgarcia-app
+    name: kronos-v2
+  name_template: "v{{.Version}}"
+  draft: false
+  prerelease: auto
+  header: |
+    ## Kronos v{{ .Version }}
+
+    Memoria persistente para agentes de IA.
+
+    ### Instalación rápida
+
+    **macOS / Linux:**
+    ```bash
+    curl -fsSL https://raw.githubusercontent.com/jjgarcia-app/kronos-v2/main/install.sh | sh
+    ```
+
+    **Windows (PowerShell):**
+    ```powershell
+    irm https://raw.githubusercontent.com/jjgarcia-app/kronos-v2/main/install.ps1 | iex
+    ```
+
+    **Con Go instalado:**
+    ```bash
+    go install github.com/jjgarcia-app/kronos-v2/cmd/kronos@latest
+    ```
