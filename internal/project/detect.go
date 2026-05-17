@@ -1,6 +1,8 @@
 package project
 
 import (
+	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -8,23 +10,51 @@ import (
 	"time"
 )
 
+// ErrAmbiguousProject is returned when multiple child git repositories are found
+// and no config specifies which one to use.
+var ErrAmbiguousProject = errors.New("multiple child git repositories — specify project via .kronos/config.json")
+
 type Method string
 
 const (
-	MethodConfig    Method = "config"     // kronos.toml [project] name
+	MethodConfig    Method = "config"     // kronos.toml or .kronos/config.json [project] name
 	MethodGitRemote Method = "git_remote" // nombre del repo desde git remote
 	MethodGitRoot   Method = "git_root"   // basename del directorio git root
 	MethodSingle    Method = "git_child"  // único sub-repo en el directorio
 	MethodDirname   Method = "dir_basename"
+	MethodAmbiguous Method = "ambiguous"
 )
 
+// noiseDir are directories that should not be considered as child git repos.
+var noiseDirs = map[string]bool{
+	"node_modules": true,
+	"vendor":       true,
+	".venv":        true,
+	"target":       true,
+	"dist":         true,
+	"__pycache__":  true,
+	".git":         true,
+}
+
+// Result is the legacy detection result (backward compatible).
 type Result struct {
 	Name   string
 	Method Method
 }
 
+// DetectionResult is the full detection result with additional context.
+type DetectionResult struct {
+	Project           string   // vacío si ambiguous
+	Source            string   // git_remote | git_root | git_child | ambiguous | dir_basename | config
+	Path              string   // directorio canónico del repo
+	Warning           string   // "auto-promoted child repository" si git_child
+	Error             error    // ErrAmbiguousProject si múltiples children
+	AvailableProjects []string // si ambiguous
+}
+
 // Detect determina el nombre del proyecto para un directorio de trabajo.
 // Aplica el algoritmo de 6 casos en orden de prioridad.
+// Backward compatible: delegates to DetectFull internally.
 func Detect(cwd string) Result {
 	if cwd == "" {
 		var err error
@@ -34,28 +64,136 @@ func Detect(cwd string) Result {
 		}
 	}
 
-	// 1. kronos.toml explícito
-	if name := fromConfig(cwd); name != "" {
-		return Result{Name: normalize(name), Method: MethodConfig}
+	dr := DetectFull(cwd)
+
+	if dr.Error == ErrAmbiguousProject {
+		return Result{Name: "unknown", Method: MethodAmbiguous}
 	}
 
-	// 2. git remote origin → nombre del repo
-	if name := fromGitRemote(cwd); name != "" {
-		return Result{Name: normalize(name), Method: MethodGitRemote}
+	name := dr.Project
+	if name == "" {
+		name = "unknown"
+	}
+	return Result{Name: name, Method: Method(dr.Source)}
+}
+
+// DetectFull determina el proyecto con información completa incluyendo advertencias y errores.
+func DetectFull(cwd string) DetectionResult {
+	if cwd == "" {
+		var err error
+		cwd, err = os.Getwd()
+		if err != nil {
+			return DetectionResult{Project: "unknown", Source: string(MethodDirname), Path: cwd}
+		}
 	}
 
-	// 3. basename del git root
-	if name := fromGitRoot(cwd); name != "" {
-		return Result{Name: normalize(name), Method: MethodGitRoot}
+	absPath, err := filepath.Abs(cwd)
+	if err != nil {
+		absPath = cwd
 	}
 
-	// 4. único sub-repo dentro del directorio
-	if name := fromSingleChild(cwd); name != "" {
-		return Result{Name: normalize(name), Method: MethodSingle}
+	// 1. .kronos/config.json explícito
+	if name := fromKronosConfig(absPath); name != "" {
+		return DetectionResult{
+			Project: normalize(name),
+			Source:  string(MethodConfig),
+			Path:    absPath,
+		}
 	}
 
-	// 5 y 6. fallback: basename del cwd
-	return Result{Name: normalize(filepath.Base(cwd)), Method: MethodDirname}
+	// 2. kronos.toml explícito
+	if name := fromConfig(absPath); name != "" {
+		return DetectionResult{
+			Project: normalize(name),
+			Source:  string(MethodConfig),
+			Path:    absPath,
+		}
+	}
+
+	// 3. git remote origin → nombre del repo
+	if name := fromGitRemote(absPath); name != "" {
+		return DetectionResult{
+			Project: normalize(name),
+			Source:  string(MethodGitRemote),
+			Path:    absPath,
+		}
+	}
+
+	// 4. basename del git root
+	if name := fromGitRoot(absPath); name != "" {
+		return DetectionResult{
+			Project: normalize(name),
+			Source:  string(MethodGitRoot),
+			Path:    absPath,
+		}
+	}
+
+	// 5. único sub-repo (o ambiguous) dentro del directorio
+	children, gitPaths := findChildRepos(absPath)
+	if len(children) == 1 {
+		return DetectionResult{
+			Project: normalize(children[0]),
+			Source:  string(MethodSingle),
+			Path:    gitPaths[0],
+			Warning: "auto-promoted child repository",
+		}
+	}
+	if len(children) > 1 {
+		return DetectionResult{
+			Project:           "",
+			Source:            string(MethodAmbiguous),
+			Path:              absPath,
+			Error:             ErrAmbiguousProject,
+			AvailableProjects: children,
+		}
+	}
+
+	// 6. fallback: basename del cwd
+	return DetectionResult{
+		Project: normalize(filepath.Base(absPath)),
+		Source:  string(MethodDirname),
+		Path:    absPath,
+	}
+}
+
+// fromKronosConfig reads .kronos/config.json and returns project_name if valid.
+func fromKronosConfig(cwd string) string {
+	dir := cwd
+	for i := 0; i < 4; i++ {
+		path := filepath.Join(dir, ".kronos", "config.json")
+		data, err := os.ReadFile(path)
+		if err == nil {
+			var cfg struct {
+				ProjectName string `json:"project_name"`
+			}
+			if jsonErr := json.Unmarshal(data, &cfg); jsonErr == nil {
+				name := cfg.ProjectName
+				if isValidProjectName(name) {
+					return name
+				}
+			}
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return ""
+}
+
+// isValidProjectName checks that a project name is non-empty, has no control chars
+// and no path separators.
+func isValidProjectName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, r := range name {
+		if r < 32 || r == '/' || r == '\\' {
+			return false
+		}
+	}
+	return true
 }
 
 func fromConfig(cwd string) string {
@@ -100,35 +238,37 @@ func fromGitRoot(cwd string) string {
 	return filepath.Base(out)
 }
 
-func fromSingleChild(cwd string) string {
+// findChildRepos returns the basenames and absolute paths of child git repos,
+// filtering out noise directories.
+func findChildRepos(cwd string) ([]string, []string) {
 	entries, err := os.ReadDir(cwd)
 	if err != nil {
-		return ""
+		return nil, nil
 	}
 
-	var gitDirs []string
+	var names []string
+	var paths []string
 	deadline := time.Now().Add(200 * time.Millisecond)
 
 	for _, e := range entries {
 		if time.Now().After(deadline) {
 			break
 		}
-		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+		if !e.IsDir() {
 			continue
 		}
-		if _, err := os.Stat(filepath.Join(cwd, e.Name(), ".git")); err == nil {
-			gitDirs = append(gitDirs, e.Name())
+		// Filter noise directories
+		if noiseDirs[e.Name()] {
+			continue
 		}
-		if len(gitDirs) > 1 {
-			// ambiguous: más de un sub-repo, no aplica este caso
-			return ""
+		childPath := filepath.Join(cwd, e.Name())
+		if _, err := os.Stat(filepath.Join(childPath, ".git")); err == nil {
+			names = append(names, e.Name())
+			paths = append(paths, childPath)
 		}
 	}
 
-	if len(gitDirs) == 1 {
-		return gitDirs[0]
-	}
-	return ""
+	return names, paths
 }
 
 // gitCmd ejecuta un comando git con timeout de 200ms.
