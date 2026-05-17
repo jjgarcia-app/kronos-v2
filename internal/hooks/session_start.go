@@ -3,6 +3,8 @@ package hooks
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/jjgarcia-app/kronos-v2/internal/checkpoint"
@@ -30,10 +32,12 @@ func RunSessionStart(ctx context.Context, in Input, st *store.Store) error {
 
 	var sb strings.Builder
 
-	// Layer 1 harness — rules injected on every session start.
-	// These are read by the agent before any user message, making them
-	// the baseline enforcement mechanism even without a CLAUDE.md.
-	fmt.Fprintf(&sb, kronosRules)
+	// Layer 1 harness — inject rules only if no CLAUDE.md already covers them.
+	// If the user has configured Layer 2 (CLAUDE.md with Kronos section),
+	// skip injection to avoid doubling context and accelerating compaction.
+	if !kronosRulesInCLAUDEMD(in.CWD) {
+		fmt.Fprintf(&sb, kronosRules)
+	}
 
 	// Inject active checkpoint — re-orientation for in-progress tasks
 	if dataDir, err := platform.DataDir(); err == nil {
@@ -73,6 +77,33 @@ func RunSessionStart(ctx context.Context, in Input, st *store.Store) error {
 		fmt.Print(sb.String())
 	}
 	return nil
+}
+
+// kronosRulesInCLAUDEMD checks whether a CLAUDE.md file (project or global)
+// already contains Kronos usage rules. If it does, the hook skips injecting
+// the Layer 1 rules block to avoid redundant context.
+func kronosRulesInCLAUDEMD(cwd string) bool {
+	const marker = "Kronos"
+
+	// Check project-level CLAUDE.md
+	if cwd != "" {
+		if data, err := os.ReadFile(filepath.Join(cwd, "CLAUDE.md")); err == nil {
+			if strings.Contains(string(data), marker) {
+				return true
+			}
+		}
+	}
+
+	// Check global ~/.claude/CLAUDE.md
+	if claudeDir, err := platform.ClaudeDir(); err == nil {
+		if data, err := os.ReadFile(filepath.Join(claudeDir, "CLAUDE.md")); err == nil {
+			if strings.Contains(string(data), marker) {
+				return true
+			}
+		}
+	}
+
+	return false
 }
 
 // kronosRules is injected at every session start as the built-in harness.
