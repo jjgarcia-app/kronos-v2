@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jjgarcia-app/kronos-v2/internal/config"
 	"github.com/jjgarcia-app/kronos-v2/internal/embeddings"
@@ -55,11 +56,16 @@ func runServe(args ...string) error {
 	}
 	defer st.Close()
 
-	// arrancar HTTP server en background
+	// arrancar HTTP server en background; detener con graceful shutdown al salir
 	hs := httpserver.New(st, port, cfg.APIToken)
 	if err := hs.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "warn: http server no pudo arrancar: %v\n", err)
 	}
+	defer func() {
+		shutCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutCancel()
+		_ = hs.Stop(shutCtx)
+	}()
 
 	vs, _ := embeddings.New(ctx, filepath.Join(dataDir, "vectors"))
 	rel := relations.New(vs)

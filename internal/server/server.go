@@ -58,6 +58,7 @@ type Server struct {
 	token   string
 	mux     *http.ServeMux
 	limiter *rateLimiter
+	httpSrv *http.Server
 }
 
 // New crea un Server listo para arrancar.
@@ -78,16 +79,24 @@ func New(st store.Storer, port int, token string) *Server {
 
 // Start arranca el servidor HTTP en background (no bloqueante).
 func (srv *Server) Start() error {
-	httpSrv := &http.Server{
+	srv.httpSrv = &http.Server{
 		Addr:    srv.Addr(),
 		Handler: srv.authMiddleware(srv.mux),
 	}
 	go func() {
-		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := srv.httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			fmt.Printf("kronos http server error: %v\n", err)
 		}
 	}()
 	return nil
+}
+
+// Stop detiene el servidor HTTP con graceful shutdown.
+func (srv *Server) Stop(ctx context.Context) error {
+	if srv.httpSrv == nil {
+		return nil
+	}
+	return srv.httpSrv.Shutdown(ctx)
 }
 
 // authMiddleware protege los endpoints. /health siempre es libre.

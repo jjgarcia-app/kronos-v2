@@ -120,10 +120,15 @@ func judgeAmbiguous(ctx context.Context, st *store.Store, llmClient llm.Judger, 
 
 	result, err := llmClient.JudgeRelation(judgeCtx, src.Title, aContent, tgt.Title, bContent, similarity)
 	if err != nil || result == nil {
-		// un retry en caso de respuesta transitoria o JSON malformado
+		// espera 2s antes del retry para no saturar el LLM en caso de error transitorio
+		select {
+		case <-judgeCtx.Done():
+			return
+		case <-time.After(2 * time.Second):
+		}
 		result, err = llmClient.JudgeRelation(judgeCtx, src.Title, aContent, tgt.Title, bContent, similarity)
 		if err != nil || result == nil {
-			return // dejar pending
+			return // dejar pending hasta el próximo ciclo de 5 min
 		}
 	}
 
