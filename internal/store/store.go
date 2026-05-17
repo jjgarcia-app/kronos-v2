@@ -130,6 +130,25 @@ func (s *Store) rebind(query string) string {
 	return sb.String()
 }
 
+// CountSessionPrompts returns how many prompts have been saved for a session.
+func (s *Store) CountSessionPrompts(ctx context.Context, sessionID string) int {
+	row := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_prompts WHERE session_id = ?`, sessionID)
+	var n int
+	_ = row.Scan(&n)
+	return n
+}
+
+// CountSessionObservations returns non-passive, non-session observations saved this session.
+func (s *Store) CountSessionObservations(ctx context.Context, sessionID string) int {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM observations
+		 WHERE session_id = ? AND type NOT IN ('passive','session') AND deleted_at IS NULL`,
+		sessionID)
+	var n int
+	_ = row.Scan(&n)
+	return n
+}
+
 // SyncQueueCount returns the number of entries pending sync to PostgreSQL.
 // Returns 0 if the sync_queue table does not exist (SQLite-only setup).
 func (s *Store) SyncQueueCount(ctx context.Context) int {
