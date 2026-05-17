@@ -22,6 +22,10 @@ func (s *Server) handleMemSave(ctx context.Context, req mcpgo.CallToolRequest) (
 	topicKey := str(req, "topic_key")
 	scope := store.Scope(strOr(req, "scope", "project"))
 
+	if err := validateSaveParams(content, typ, topicKey); err != nil {
+		return fail(err), nil
+	}
+
 	obs, err := s.store.SaveObservation(ctx, store.SaveParams{
 		SessionID: sessionID,
 		Type:      typ,
@@ -175,6 +179,15 @@ func (s *Server) handleMemUpdate(ctx context.Context, req mcpgo.CallToolRequest)
 		p.Title = &v
 	}
 	if v := str(req, "content"); v != "" {
+		// Validate format when content is being updated
+		newType := store.ObservationType(strOr(req, "type", "discovery"))
+		if err := validateSaveParams(v, newType, ""); err != nil {
+			// topic_key not re-validated on update — it was set on creation
+			lower := strings.ToLower(v)
+			if !strings.Contains(lower, "qué:") && !strings.Contains(lower, "que:") {
+				return fail(err), nil
+			}
+		}
 		p.Content = &v
 	}
 	if v := str(req, "type"); v != "" {
@@ -221,6 +234,10 @@ func (s *Server) handleMemSessionSummary(ctx context.Context, req mcpgo.CallTool
 	sessionID := str(req, "session_id")
 	summary := str(req, "summary")
 	project := str(req, "project")
+
+	if err := validateSummaryFormat(summary); err != nil {
+		return fail(err), nil
+	}
 
 	if err := s.store.EndSession(ctx, sessionID, summary); err != nil {
 		return fail(err), nil
