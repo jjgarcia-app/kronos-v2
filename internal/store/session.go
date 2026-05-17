@@ -42,7 +42,8 @@ func (s *Store) EndSession(ctx context.Context, id, summary string) error {
 
 func (s *Store) GetSession(ctx context.Context, id string) (*Session, error) {
 	row := s.queryRow(ctx,
-		`SELECT id, project, directory, started_at, ended_at, summary FROM sessions WHERE id = ?`, id)
+		`SELECT id, project, directory, started_at, ended_at, summary FROM sessions
+		 WHERE id = ? AND deleted_at IS NULL`, id)
 	return scanSession(row)
 }
 
@@ -50,9 +51,15 @@ func (s *Store) GetActiveSession(ctx context.Context, project string) (*Session,
 	row := s.queryRow(ctx,
 		`SELECT id, project, directory, started_at, ended_at, summary
 		 FROM sessions
-		 WHERE project = ? AND ended_at IS NULL
+		 WHERE project = ? AND ended_at IS NULL AND deleted_at IS NULL
 		 ORDER BY started_at DESC LIMIT 1`, project)
 	return scanSession(row)
+}
+
+func (s *Store) DeleteSession(ctx context.Context, id string) error {
+	_, err := s.exec(ctx,
+		`UPDATE sessions SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL`, now(), id)
+	return err
 }
 
 func (s *Store) ListSessions(ctx context.Context, project string, limit int) ([]*Session, error) {
@@ -61,7 +68,7 @@ func (s *Store) ListSessions(ctx context.Context, project string, limit int) ([]
 	}
 	rows, err := s.query(ctx,
 		`SELECT id, project, directory, started_at, ended_at, summary
-		 FROM sessions WHERE project = ?
+		 FROM sessions WHERE project = ? AND deleted_at IS NULL
 		 ORDER BY started_at DESC LIMIT ?`, project, limit)
 	if err != nil {
 		return nil, err

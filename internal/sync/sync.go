@@ -178,11 +178,11 @@ func (s *Syncer) collectData(ctx context.Context, project, sinceTime string) (*C
 	var sessionArgs []any
 	if project != "" {
 		sessionQuery = `SELECT id, project, directory, started_at, ended_at, summary
-		                FROM sessions WHERE started_at > ? AND project = ? ORDER BY started_at ASC`
+		                FROM sessions WHERE started_at > ? AND project = ? AND deleted_at IS NULL ORDER BY started_at ASC`
 		sessionArgs = []any{sinceTime, project}
 	} else {
 		sessionQuery = `SELECT id, project, directory, started_at, ended_at, summary
-		                FROM sessions WHERE started_at > ? ORDER BY started_at ASC`
+		                FROM sessions WHERE started_at > ? AND deleted_at IS NULL ORDER BY started_at ASC`
 		sessionArgs = []any{sinceTime}
 	}
 
@@ -282,11 +282,11 @@ func (s *Syncer) collectData(ctx context.Context, project, sinceTime string) (*C
 	var promptArgs []any
 	if project != "" {
 		promptQuery = `SELECT id, session_id, content, project, created_at
-		               FROM user_prompts WHERE created_at > ? AND project = ? ORDER BY created_at ASC`
+		               FROM user_prompts WHERE created_at > ? AND project = ? AND deleted_at IS NULL ORDER BY created_at ASC`
 		promptArgs = []any{sinceTime, project}
 	} else {
 		promptQuery = `SELECT id, session_id, content, project, created_at
-		               FROM user_prompts WHERE created_at > ? ORDER BY created_at ASC`
+		               FROM user_prompts WHERE created_at > ? AND deleted_at IS NULL ORDER BY created_at ASC`
 		promptArgs = []any{sinceTime}
 	}
 

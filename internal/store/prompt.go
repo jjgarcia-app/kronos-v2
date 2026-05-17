@@ -18,13 +18,19 @@ func (s *Store) SavePrompt(ctx context.Context, sessionID, project, content stri
 	return err
 }
 
+func (s *Store) DeletePrompt(ctx context.Context, id int64) error {
+	_, err := s.exec(ctx,
+		`UPDATE user_prompts SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL`, now(), id)
+	return err
+}
+
 func (s *Store) ListPrompts(ctx context.Context, project string, limit int) ([]*UserPrompt, error) {
 	if limit <= 0 {
 		limit = 10
 	}
 	rows, err := s.query(ctx,
 		`SELECT id, session_id, content, project, created_at
-		 FROM user_prompts WHERE project = ?
+		 FROM user_prompts WHERE project = ? AND deleted_at IS NULL
 		 ORDER BY created_at DESC LIMIT ?`, project, limit)
 	if err != nil {
 		return nil, err

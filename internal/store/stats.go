@@ -24,12 +24,12 @@ func (s *Store) Stats(ctx context.Context) (*Stats, error) {
 		return nil, err
 	}
 
-	row = s.queryRow(ctx, `SELECT COUNT(*) FROM sessions`)
+	row = s.queryRow(ctx, `SELECT COUNT(*) FROM sessions WHERE deleted_at IS NULL`)
 	if err := row.Scan(&st.TotalSessions); err != nil {
 		return nil, err
 	}
 
-	row = s.queryRow(ctx, `SELECT COUNT(*) FROM user_prompts`)
+	row = s.queryRow(ctx, `SELECT COUNT(*) FROM user_prompts WHERE deleted_at IS NULL`)
 	if err := row.Scan(&st.TotalPrompts); err != nil && err != sql.ErrNoRows {
 		// user_prompts table may not exist in older DBs
 		st.TotalPrompts = 0
@@ -71,7 +71,7 @@ func (s *Store) AllSessions(ctx context.Context, limit int) ([]*Session, error) 
 	}
 	rows, err := s.query(ctx,
 		`SELECT id, project, directory, started_at, ended_at, summary
-		 FROM sessions ORDER BY started_at DESC LIMIT ?`, limit)
+		 FROM sessions WHERE deleted_at IS NULL ORDER BY started_at DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
 	}

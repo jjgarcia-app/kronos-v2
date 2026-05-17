@@ -155,4 +155,10 @@ var migrations = []string{
 	// v35–v36: soft-delete para memory_relations
 	`ALTER TABLE memory_relations ADD COLUMN deleted_at TEXT`,
 	`CREATE INDEX IF NOT EXISTS idx_memrel_deleted ON memory_relations(deleted_at)`,
+
+	// v37–v40: soft-delete para sessions y user_prompts
+	`ALTER TABLE sessions ADD COLUMN deleted_at TEXT`,
+	`CREATE INDEX IF NOT EXISTS idx_sessions_deleted ON sessions(deleted_at)`,
+	`ALTER TABLE user_prompts ADD COLUMN deleted_at TEXT`,
+	`CREATE INDEX IF NOT EXISTS idx_prompts_deleted ON user_prompts(deleted_at)`,
 }

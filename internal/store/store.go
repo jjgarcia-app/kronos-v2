@@ -132,7 +132,7 @@ func (s *Store) rebind(query string) string {
 
 // CountSessionPrompts returns how many prompts have been saved for a session.
 func (s *Store) CountSessionPrompts(ctx context.Context, sessionID string) int {
-	row := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_prompts WHERE session_id = ?`, sessionID)
+	row := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_prompts WHERE session_id = ? AND deleted_at IS NULL`, sessionID)
 	var n int
 	_ = row.Scan(&n)
 	return n
