@@ -29,6 +29,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.binaryOK = msg.ok
 		return m, nil
 
+	case binaryInstalledMsg:
+		if msg.err != nil {
+			m.binaryInstallErr = msg.err.Error()
+		} else {
+			m.binaryPath = msg.path
+			m.binaryOK = true
+		}
+		m.binaryInstalling = false
+		return m, nil
+
 	case ollamaCheckedMsg:
 		m.ollamaOK = msg.ok
 		m.ollamaURL = msg.url
@@ -79,11 +89,20 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// ── Binary in PATH ───────────────────────────────────────────────────────
 	case phaseBinary:
 		switch msg.String() {
+		case "i":
+			if !m.binaryOK && !m.binaryInstalling && m.binaryPath != "" {
+				m.binaryInstalling = true
+				m.binaryInstallErr = ""
+				return m, cmdInstallBinary(m.binaryPath)
+			}
 		case "enter", " ":
+			if m.binaryInstalling {
+				return m, nil // wait for install to finish
+			}
 			if m.binaryOK {
 				m.done = append(m.done, styleOK.Render("  ✓ Binario: ")+m.binaryPath)
 			} else {
-				m.done = append(m.done, styleWarn.Render("  !! Binario: no está en PATH"))
+				m.done = append(m.done, styleWarn.Render("  !! Binario: no está en PATH (instalar manualmente)"))
 			}
 			m.phase = phaseDBChoice
 			return m, nil

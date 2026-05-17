@@ -78,6 +78,11 @@ type binaryCheckedMsg struct {
 	ok   bool
 }
 
+type binaryInstalledMsg struct {
+	path string
+	err  error
+}
+
 type ollamaCheckedMsg struct {
 	ok  bool
 	url string
@@ -111,8 +116,10 @@ type Model struct {
 	width  int
 	height int
 
-	binaryPath string
-	binaryOK   bool
+	binaryPath       string
+	binaryOK         bool
+	binaryInstalling bool
+	binaryInstallErr string
 
 	dbCursor          int  // 0=SQLite 1=PostgreSQL
 	wantsPostgresDocker bool
@@ -213,6 +220,112 @@ func cmdCheckBinary() tea.Cmd {
 			}
 		}
 		return binaryCheckedMsg{path: exe, ok: false}
+	}
+}
+
+// cmdInstallBinary copies the running executable to an OS-appropriate directory
+// and updates the user PATH so future shells and Claude Code can find it.
+func cmdInstallBinary(srcPath string) tea.Cmd {
+	return func() tea.Msg {
+		destDir, err := installDir()
+		if err != nil {
+			return binaryInstalledMsg{err: err}
+		}
+		if err := os.MkdirAll(destDir, 0755); err != nil {
+			return binaryInstalledMsg{err: fmt.Errorf("crear directorio: %w", err)}
+		}
+
+		ext := ""
+		if runtime.GOOS == "windows" {
+			ext = ".exe"
+		}
+		destPath := filepath.Join(destDir, "kronos"+ext)
+
+		// Copy binary
+		src, err := os.Open(srcPath)
+		if err != nil {
+			return binaryInstalledMsg{err: fmt.Errorf("leer binario: %w", err)}
+		}
+		defer src.Close()
+
+		dst, err := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
+		if err != nil {
+			return binaryInstalledMsg{err: fmt.Errorf("escribir destino: %w", err)}
+		}
+		defer dst.Close()
+		if _, err := io.Copy(dst, src); err != nil {
+			return binaryInstalledMsg{err: fmt.Errorf("copiar binario: %w", err)}
+		}
+		dst.Close()
+
+		// Update user PATH
+		if err := addToUserPath(destDir); err != nil {
+			// Non-fatal — binary is there, just PATH not updated
+			return binaryInstalledMsg{path: destPath, err: fmt.Errorf("copiado a %s pero no se pudo actualizar PATH: %w", destPath, err)}
+		}
+
+		return binaryInstalledMsg{path: destPath}
+	}
+}
+
+// installDir returns the OS-specific directory for the Kronos binary.
+func installDir() (string, error) {
+	switch runtime.GOOS {
+	case "windows":
+		local := os.Getenv("LOCALAPPDATA")
+		if local == "" {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return "", err
+			}
+			local = filepath.Join(home, "AppData", "Local")
+		}
+		return filepath.Join(local, "Programs", "Kronos"), nil
+	default:
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		return filepath.Join(home, ".local", "bin"), nil
+	}
+}
+
+// addToUserPath adds dir to the user-level PATH environment variable.
+func addToUserPath(dir string) error {
+	switch runtime.GOOS {
+	case "windows":
+		// Read current user PATH from registry, append dir, write back.
+		out, err := exec.Command("powershell", "-NoProfile", "-Command",
+			fmt.Sprintf(`$cur=[Environment]::GetEnvironmentVariable("PATH","User"); if ($cur -notlike "*%s*") { [Environment]::SetEnvironmentVariable("PATH","$cur;%s","User") }`, dir, dir),
+		).CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err)
+		}
+		return nil
+	default:
+		// Append export to ~/.profile and ~/.bashrc / ~/.zshrc
+		line := fmt.Sprintf(`export PATH="$PATH:%s"`, dir)
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return err
+		}
+		for _, rc := range []string{".profile", ".bashrc", ".zshrc"} {
+			path := filepath.Join(home, rc)
+			if _, err := os.Stat(path); os.IsNotExist(err) {
+				continue
+			}
+			data, _ := os.ReadFile(path)
+			if strings.Contains(string(data), dir) {
+				continue
+			}
+			f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0644)
+			if err != nil {
+				continue
+			}
+			fmt.Fprintf(f, "\n# Kronos\n%s\n", line)
+			f.Close()
+		}
+		return nil
 	}
 }
 

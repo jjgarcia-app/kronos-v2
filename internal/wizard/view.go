@@ -62,22 +62,42 @@ func (m Model) View() string {
 				styleOK.Render("✓  kronos encontrado en:"),
 				styleText.Render("   "+m.binaryPath),
 			)
+		} else if m.binaryInstalling {
+			bodyLines = append(bodyLines,
+				m.sp.View()+"  Instalando kronos en PATH...",
+			)
 		} else {
 			bodyLines = append(bodyLines,
 				styleWarn.Render("!!  kronos no está en PATH"),
 				"",
 				styleText.Render("Ubicación actual del binario:"),
 				styleMuted.Render("   "+m.binaryPath),
-				"",
-				styleText.Render("Para añadirlo al PATH:"),
 			)
-			for _, l := range strings.Split(pathHint(), "\n") {
-				bodyLines = append(bodyLines, styleMuted.Render("   "+l))
+			if m.binaryInstallErr != "" {
+				bodyLines = append(bodyLines,
+					"",
+					styleFail.Render("Error: "+m.binaryInstallErr),
+					"",
+					styleText.Render("Instalar manualmente:"),
+				)
+				for _, l := range strings.Split(pathHint(), "\n") {
+					bodyLines = append(bodyLines, styleMuted.Render("   "+l))
+				}
+			} else {
+				bodyLines = append(bodyLines,
+					"",
+					styleHighlight.Render("  i")+"  Instalar automáticamente en PATH",
+					styleMuted.Render("  Enter")+"  Continuar sin instalar (configurar manualmente después)",
+				)
 			}
 		}
 		b.WriteString(renderBox(m.width, lines(bodyLines...)))
-		if m.binaryPath != "" {
-			b.WriteString(styleHelp.Render("\n  Enter para continuar"))
+		if m.binaryPath != "" && !m.binaryInstalling {
+			if m.binaryOK {
+				b.WriteString(styleHelp.Render("\n  Enter para continuar"))
+			} else {
+				b.WriteString(styleHelp.Render("\n  i instalar  ·  Enter saltar  ·  q salir"))
+			}
 		}
 
 	case phaseDBChoice:
