@@ -44,5 +44,12 @@ func runGC(args []string) error {
 		return err
 	}
 	fmt.Printf("GC completado: %d observaciones eliminadas (sin actualizar en %d días)\n", n, days)
+
+	orphaned, err := st.GCOrphanRelations(ctx, days)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warn: gc orphan relations: %v\n", err)
+	} else if orphaned > 0 {
+		fmt.Printf("GC relaciones: %d relaciones huérfanas marcadas (pending > %d días)\n", orphaned, days)
+	}
 	return nil
 }

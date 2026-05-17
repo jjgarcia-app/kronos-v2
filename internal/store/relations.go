@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // Tipos de relación (verbo cerrado).
@@ -455,6 +456,26 @@ func (s *Store) checkCrossProject(ctx context.Context, sourceID, targetID string
 		return fmt.Errorf("%w: %q vs %q", ErrCrossProjectRelation, src.Project, tgt.Project)
 	}
 	return nil
+}
+
+// GCOrphanRelations marca como 'orphaned' las relaciones que han estado
+// en estado 'pending' más de ageDays días sin ser resueltas.
+// Retorna el número de relaciones marcadas.
+func (s *Store) GCOrphanRelations(ctx context.Context, ageDays int) (int64, error) {
+	if ageDays <= 0 {
+		ageDays = 30
+	}
+	cutoff := time.Now().UTC().AddDate(0, 0, -ageDays).Format(time.RFC3339)
+	res, err := s.exec(ctx,
+		`UPDATE memory_relations SET judgment_status = 'orphaned', updated_at = ?
+		 WHERE judgment_status = 'pending' AND created_at < ?`,
+		now(), cutoff,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("gc orphan relations: %w", err)
+	}
+	affected, _ := res.RowsAffected()
+	return affected, nil
 }
 
 // sanitizeFTSCandidates convierte un título en una query FTS5 OR-based para búsqueda amplia.

@@ -21,7 +21,7 @@ const (
 // pending memory_relations using cosine similarity from bge-m3.
 // For the ambiguous range (0.30–0.70), uses the Ollama LLM (llmClient may be nil).
 // No-op when rel is nil or embeddings are disabled.
-func AutoJudge(ctx context.Context, st *store.Store, rel *relations.Detector, llmClient *llm.Client) {
+func AutoJudge(ctx context.Context, st *store.Store, rel *relations.Detector, llmClient llm.Judger) {
 	if rel == nil || !rel.Enabled() {
 		return
 	}
@@ -43,7 +43,7 @@ func AutoJudge(ctx context.Context, st *store.Store, rel *relations.Detector, ll
 	}()
 }
 
-func runBatch(ctx context.Context, st *store.Store, rel *relations.Detector, llmClient *llm.Client) {
+func runBatch(ctx context.Context, st *store.Store, rel *relations.Detector, llmClient llm.Judger) {
 	rels, err := st.ListRelations(ctx, "", store.JudgmentPending, batchSize, 0)
 	if err != nil || len(rels) == 0 {
 		return
@@ -56,7 +56,7 @@ func runBatch(ctx context.Context, st *store.Store, rel *relations.Detector, llm
 	}
 }
 
-func judgeOne(ctx context.Context, st *store.Store, rel *relations.Detector, llmClient *llm.Client, r store.Relation) {
+func judgeOne(ctx context.Context, st *store.Store, rel *relations.Detector, llmClient llm.Judger, r store.Relation) {
 	src, err := st.GetObservationBySyncID(ctx, r.SourceID)
 	if err != nil || src == nil {
 		return
@@ -67,7 +67,7 @@ func judgeOne(ctx context.Context, st *store.Store, rel *relations.Detector, llm
 	}
 
 	// buscar similitud coseno entre source y target
-	hits, err := rel.Similar(ctx, src.Title+" "+src.Content, 1, src.ID, 0.0)
+	hits, err := rel.Similar(ctx, src.Title+" "+src.Content, 10, src.ID, 0.0)
 	if err != nil {
 		return
 	}
@@ -102,7 +102,7 @@ func judgeOne(ctx context.Context, st *store.Store, rel *relations.Detector, llm
 
 // judgeAmbiguous uses the generative LLM to resolve ambiguous relations (0.30–0.70 similarity).
 // Falls back to leaving pending when the LLM is unavailable or returns an invalid response.
-func judgeAmbiguous(ctx context.Context, st *store.Store, llmClient *llm.Client, r store.Relation,
+func judgeAmbiguous(ctx context.Context, st *store.Store, llmClient llm.Judger, r store.Relation,
 	src, tgt *store.Observation, similarity float32) {
 
 	if llmClient == nil {
@@ -113,9 +113,18 @@ func judgeAmbiguous(ctx context.Context, st *store.Store, llmClient *llm.Client,
 	judgeCtx, cancel := context.WithTimeout(ctx, 40*time.Second)
 	defer cancel()
 
-	result, err := llmClient.JudgeRelation(judgeCtx, src.Title, src.Content, tgt.Title, tgt.Content, similarity)
+	// pasa el proyecto como contexto de dominio para que el LLM razone mejor
+	domainCtx := "[Proyecto: " + src.Project + "]"
+	aContent := domainCtx + "\n" + src.Content
+	bContent := domainCtx + "\n" + tgt.Content
+
+	result, err := llmClient.JudgeRelation(judgeCtx, src.Title, aContent, tgt.Title, bContent, similarity)
 	if err != nil || result == nil {
-		return // LLM no disponible → dejar pending
+		// un retry en caso de respuesta transitoria o JSON malformado
+		result, err = llmClient.JudgeRelation(judgeCtx, src.Title, aContent, tgt.Title, bContent, similarity)
+		if err != nil || result == nil {
+			return // dejar pending
+		}
 	}
 
 	model := "llama3.2"

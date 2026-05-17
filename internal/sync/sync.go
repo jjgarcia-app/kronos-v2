@@ -124,6 +124,13 @@ func (s *Syncer) Import() (*ImportResult, error) {
 		return &ImportResult{}, nil
 	}
 
+	// compactar manifest si crece demasiado (solo los últimos 500 chunks)
+	const maxChunks = 500
+	if len(manifest.Chunks) > maxChunks {
+		manifest.Chunks = manifest.Chunks[len(manifest.Chunks)-maxChunks:]
+		_ = saveManifest(s.syncDir, manifest)
+	}
+
 	result := &ImportResult{}
 
 	for _, entry := range manifest.Chunks {

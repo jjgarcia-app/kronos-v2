@@ -390,3 +390,43 @@ func scanObservations(rows *sql.Rows) ([]*Observation, error) {
 	}
 	return result, rows.Err()
 }
+
+// TouchLastSeen actualiza last_seen_at para las observaciones dadas.
+// Se llama cuando el agente encuentra observaciones via búsqueda (no solo al guardarlas),
+// para que GCStale no elimine observaciones activamente usadas.
+func (s *Store) TouchLastSeen(ctx context.Context, ids []int64) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids)+1)
+	args[0] = now()
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i+1] = id
+	}
+	_, err := s.exec(ctx,
+		`UPDATE observations SET last_seen_at = ? WHERE id IN (`+strings.Join(placeholders, ",")+`)`,
+		args...,
+	)
+	return err
+}
+
+// ListRecent retorna las N observaciones no borradas más recientemente actualizadas,
+// de todos los proyectos. Usado para re-indexación de embeddings al iniciar el servidor.
+func (s *Store) ListRecent(ctx context.Context, limit int) ([]*Observation, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	rows, err := s.query(ctx,
+		`SELECT id, sync_id, session_id, type, title, content, tool_name, project, scope, topic_key,
+		        normalized_hash, revision_count, duplicate_count, created_at, updated_at, deleted_at
+		 FROM observations
+		 WHERE deleted_at IS NULL
+		 ORDER BY updated_at DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanObservations(rows)
+}

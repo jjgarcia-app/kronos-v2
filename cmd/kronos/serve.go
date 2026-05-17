@@ -64,19 +64,46 @@ func runServe(args ...string) error {
 	vs, _ := embeddings.New(ctx, filepath.Join(dataDir, "vectors"))
 	rel := relations.New(vs)
 
-	// cliente LLM generativo para resolver conflictos ambiguos (0.30–0.70 similitud)
-	var llmClient *llm.Client
-	if cfg.Embeddings.Provider == "ollama" {
-		llmClient = llm.NewClient(cfg.Embeddings.OllamaURL, cfg.Embeddings.OllamaLLMModel)
+	var local *store.Store
+	if ls, ok := st.(*store.Store); ok {
+		local = ls
+	} else if ds, ok := st.(interface{ LocalStore() *store.Store }); ok {
+		local = ds.LocalStore()
+	}
+
+	// cliente LLM generativo — auto-detecta según cfg.LLM o usa Ollama si está disponible
+	llmJudger := llm.NewFromConfig(ctx, cfg)
+
+	// re-indexar observaciones recientes en background (captura importaciones via sync)
+	if rel.Enabled() {
+		go reindexRecent(ctx, local, rel)
 	}
 
 	toolFilter := mcp.ResolveTools(toolsFlag)
 	srv := mcp.NewWithOptions(st, cfg.Nudge.ActionsThreshold, cfg.Nudge.FallbackMinutes, rel, toolFilter)
 	srv.SetDataDir(dataDir)
 	if ls := srv.LocalStoreForJudge(); ls != nil {
-		judge.AutoJudge(ctx, ls, rel, llmClient)
+		judge.AutoJudge(ctx, ls, rel, llmJudger)
 	}
 	return srv.ServeStdio()
+}
+
+// reindexRecent indexa en background las observaciones más recientes en el vector store.
+// Captura observaciones importadas via sync --import mientras el servidor estaba apagado.
+func reindexRecent(ctx context.Context, st *store.Store, rel *relations.Detector) {
+	if st == nil || rel == nil {
+		return
+	}
+	obs, err := st.ListRecent(ctx, 200)
+	if err != nil {
+		return
+	}
+	for _, o := range obs {
+		if ctx.Err() != nil {
+			return
+		}
+		_ = rel.Index(ctx, o.ID, o.Title+" "+o.Content)
+	}
 }
 
 // openStore returns the appropriate Storer for the configured backend.

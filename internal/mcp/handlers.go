@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -85,50 +86,82 @@ func (s *Server) handleMemSearch(ctx context.Context, req mcpgo.CallToolRequest)
 	project := str(req, "project")
 	limit := intOr(req, "limit", 10)
 
-	results, err := s.store.Search(ctx, store.SearchParams{
+	// BM25 — recuperación léxica
+	bm25Results, err := s.store.Search(ctx, store.SearchParams{
 		Query:   query,
 		Project: project,
-		Limit:   limit,
+		Limit:   limit * 2, // traer más para fusión RRF
 	})
 	if err != nil {
 		return fail(err), nil
 	}
 
+	// RRF: acumular scores por observación (BM25 + vector)
+	const rrfK = 60.0
+	type rrfEntry struct {
+		result *store.SearchResult
+		score  float64
+	}
+	scored := make(map[int64]*rrfEntry, len(bm25Results))
+	for i, r := range bm25Results {
+		r := r
+		scored[r.ID] = &rrfEntry{result: r, score: 1.0 / (rrfK + float64(i+1))}
+	}
+
 	// búsqueda vectorial complementaria (bge-m3)
 	if s.rel != nil && s.rel.Enabled() {
-		hits, _ := s.rel.Similar(ctx, query, limit, 0, 0.60)
-		seen := make(map[int64]bool)
-		for _, r := range results {
-			seen[r.ID] = true
-		}
+		hits, _ := s.rel.Similar(ctx, query, limit*2, 0, 0.55)
 		if ls := s.localStore(); ls != nil {
-			for _, h := range hits {
-				if seen[h.ObsID] {
-					continue
+			for i, h := range hits {
+				vScore := 1.0 / (rrfK + float64(i+1))
+				if entry, exists := scored[h.ObsID]; exists {
+					entry.score += vScore
+				} else {
+					obs, err := ls.GetObservation(ctx, h.ObsID)
+					if err == nil && obs != nil {
+						scored[h.ObsID] = &rrfEntry{
+							result: &store.SearchResult{Observation: *obs, Rank: float64(h.Similarity)},
+							score:  vScore,
+						}
+					}
 				}
-				obs, err := ls.GetObservation(ctx, h.ObsID)
-				if err != nil || obs == nil {
-					continue
-				}
-				results = append(results, &store.SearchResult{
-					Observation: *obs,
-					Rank:        float64(h.Similarity),
-				})
-				seen[h.ObsID] = true
 			}
 		}
 	}
 
-	if len(results) == 0 {
+	// ordenar por score RRF descendente
+	entries := make([]*rrfEntry, 0, len(scored))
+	for _, e := range scored {
+		entries = append(entries, e)
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].score > entries[j].score
+	})
+
+	// truncar al límite solicitado
+	if len(entries) > limit {
+		entries = entries[:limit]
+	}
+
+	if len(entries) == 0 {
 		return ok("No se encontraron resultados para: " + query), nil
 	}
 
+	// actualizar last_seen_at para que GCStale no elimine observaciones activas
+	if ls := s.localStore(); ls != nil {
+		ids := make([]int64, len(entries))
+		for i, e := range entries {
+			ids[i] = e.result.ID
+		}
+		_ = ls.TouchLastSeen(ctx, ids)
+	}
+
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "## Resultados para \"%s\" (%d)\n\n", query, len(results))
-	for _, r := range results {
+	fmt.Fprintf(&sb, "## Resultados para \"%s\" (%d)\n\n", query, len(entries))
+	for _, e := range entries {
+		r := e.result
 		fmt.Fprintf(&sb, "**[%d] %s** (%s)\n", r.ID, r.Title, r.Type)
 		fmt.Fprintf(&sb, "Proyecto: %s | %s\n", r.Project, r.CreatedAt.Format("2006-01-02"))
-		// preview de 200 chars
 		preview := r.Content
 		if len(preview) > 200 {
 			preview = preview[:197] + "..."

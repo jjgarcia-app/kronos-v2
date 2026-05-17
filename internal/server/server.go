@@ -8,17 +8,56 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/jjgarcia-app/kronos-v2/internal/project"
 	"github.com/jjgarcia-app/kronos-v2/internal/store"
 )
 
+// rateLimiter implementa una ventana deslizante simple.
+// Permite máximo maxReqs requests en una ventana de windowDur.
+type rateLimiter struct {
+	mu        sync.Mutex
+	times     []time.Time
+	maxReqs   int
+	windowDur time.Duration
+}
+
+func newRateLimiter(maxReqs int, window time.Duration) *rateLimiter {
+	return &rateLimiter{
+		maxReqs:   maxReqs,
+		windowDur: window,
+	}
+}
+
+func (rl *rateLimiter) allow() bool {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	now := time.Now()
+	cutoff := now.Add(-rl.windowDur)
+	// eliminar entradas viejas
+	valid := rl.times[:0]
+	for _, t := range rl.times {
+		if t.After(cutoff) {
+			valid = append(valid, t)
+		}
+	}
+	rl.times = valid
+	if len(rl.times) >= rl.maxReqs {
+		return false
+	}
+	rl.times = append(rl.times, now)
+	return true
+}
+
 // Server expone la memoria de Kronos via HTTP REST local.
 type Server struct {
-	st    store.Storer
-	port  int
-	token string
-	mux   *http.ServeMux
+	st      store.Storer
+	port    int
+	token   string
+	mux     *http.ServeMux
+	limiter *rateLimiter
 }
 
 // New crea un Server listo para arrancar.
@@ -27,10 +66,11 @@ func New(st store.Storer, port int, token string) *Server {
 		port = 4317
 	}
 	srv := &Server{
-		st:    st,
-		port:  port,
-		token: token,
-		mux:   http.NewServeMux(),
+		st:      st,
+		port:    port,
+		token:   token,
+		mux:     http.NewServeMux(),
+		limiter: newRateLimiter(120, 10*time.Second),
 	}
 	srv.routes()
 	return srv
@@ -57,6 +97,11 @@ func (srv *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/health" {
 			next.ServeHTTP(w, r)
+			return
+		}
+		// rate limiting (excepto /health)
+		if !srv.limiter.allow() {
+			writeError(w, http.StatusTooManyRequests, "rate limit excedido — espera un momento")
 			return
 		}
 		if srv.token == "" {
