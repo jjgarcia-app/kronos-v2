@@ -151,4 +151,8 @@ var migrations = []string{
 		PRIMARY KEY (target_key, chunk_id)
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_sync_chunks_target ON sync_chunks(target_key)`,
+
+	// v35–v36: soft-delete para memory_relations
+	`ALTER TABLE memory_relations ADD COLUMN deleted_at TEXT`,
+	`CREATE INDEX IF NOT EXISTS idx_memrel_deleted ON memory_relations(deleted_at)`,
 }

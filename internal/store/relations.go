@@ -59,6 +59,7 @@ type Relation struct {
 	SupersededByRelationID *int64
 	CreatedAt              string
 	UpdatedAt              string
+	DeletedAt              *string
 
 	// anotaciones enriquecidas (no en DB)
 	SourceIntID    int64
@@ -282,6 +283,7 @@ func (s *Store) ListRelations(ctx context.Context, project, status string, limit
 
 	var args []any
 	var where []string
+	where = append(where, "r.deleted_at IS NULL")
 
 	if status != "" {
 		where = append(where, "r.judgment_status = ?")
@@ -292,10 +294,7 @@ func (s *Store) ListRelations(ctx context.Context, project, status string, limit
 		args = append(args, project, project)
 	}
 
-	whereClause := ""
-	if len(where) > 0 {
-		whereClause = "WHERE " + strings.Join(where, " AND ")
-	}
+	whereClause := "WHERE " + strings.Join(where, " AND ")
 
 	args = append(args, limit, offset)
 
@@ -353,7 +352,7 @@ func (s *Store) GetRelationStats(ctx context.Context, project string) (*Relation
 		FROM memory_relations r
 		LEFT JOIN observations src ON src.sync_id = r.source_id
 		LEFT JOIN observations tgt ON tgt.sync_id = r.target_id
-		WHERE (src.project = ? OR tgt.project = ?)
+		WHERE r.deleted_at IS NULL AND (src.project = ? OR tgt.project = ?)
 		GROUP BY r.judgment_status, r.relation`, project, project)
 	if err != nil {
 		return nil, err
@@ -397,7 +396,8 @@ func (s *Store) insertRelationPending(ctx context.Context, sourceID, targetID st
 func (s *Store) relationExists(ctx context.Context, sourceID, targetID string) (bool, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM memory_relations
-		WHERE (source_id = ? AND target_id = ?) OR (source_id = ? AND target_id = ?)`,
+		WHERE deleted_at IS NULL
+		  AND ((source_id = ? AND target_id = ?) OR (source_id = ? AND target_id = ?))`,
 		sourceID, targetID, targetID, sourceID,
 	)
 	var n int
@@ -408,7 +408,8 @@ func (s *Store) relationExists(ctx context.Context, sourceID, targetID string) (
 func (s *Store) findRelationBetween(ctx context.Context, sourceID, targetID string) (*Relation, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, sync_id FROM memory_relations
-		WHERE (source_id = ? AND target_id = ?) OR (source_id = ? AND target_id = ?)
+		WHERE deleted_at IS NULL
+		  AND ((source_id = ? AND target_id = ?) OR (source_id = ? AND target_id = ?))
 		LIMIT 1`,
 		sourceID, targetID, targetID, sourceID,
 	)
@@ -429,7 +430,7 @@ func (s *Store) getRelationByID(ctx context.Context, id int64) (*Relation, error
 		       COALESCE(reason,''), COALESCE(evidence,''), COALESCE(confidence,0),
 		       COALESCE(marked_by_actor,''), COALESCE(marked_by_kind,''), COALESCE(marked_by_model,''),
 		       COALESCE(session_id,''), created_at, updated_at
-		FROM memory_relations WHERE id = ?`, id)
+		FROM memory_relations WHERE id = ? AND deleted_at IS NULL`, id)
 	var r Relation
 	err := row.Scan(
 		&r.ID, &r.SyncID, &r.SourceID, &r.TargetID, &r.Relation, &r.JudgmentStatus,
@@ -458,24 +459,27 @@ func (s *Store) checkCrossProject(ctx context.Context, sourceID, targetID string
 	return nil
 }
 
-// GCRelations elimina físicamente relaciones basura en dos casos:
+// GCRelations marca como eliminadas (soft-delete) las relaciones basura en dos casos:
 //  1. Dangling: la observación fuente o destino fue soft-deleted (ya no existe activa).
-//  2. Stale pending: llevan más de staleDays días en estado 'pending' sin ser resueltas.
+//  2. Stale pending: llevan más de staleDays días sin ser resueltas por el LLM judge.
 //
-// Retorna el total de filas eliminadas.
+// Retorna el total de filas marcadas.
 func (s *Store) GCRelations(ctx context.Context, staleDays int) (int64, error) {
 	if staleDays <= 0 {
 		staleDays = 30
 	}
+	ts := now()
 
 	// 1. dangling: source o target ya no existe como observación activa
 	res1, err := s.exec(ctx, `
-		DELETE FROM memory_relations
-		WHERE NOT EXISTS (
-			SELECT 1 FROM observations WHERE sync_id = source_id AND deleted_at IS NULL
-		) OR NOT EXISTS (
-			SELECT 1 FROM observations WHERE sync_id = target_id AND deleted_at IS NULL
-		)`)
+		UPDATE memory_relations SET deleted_at = ?, updated_at = ?
+		WHERE deleted_at IS NULL AND (
+			NOT EXISTS (
+				SELECT 1 FROM observations WHERE sync_id = source_id AND deleted_at IS NULL
+			) OR NOT EXISTS (
+				SELECT 1 FROM observations WHERE sync_id = target_id AND deleted_at IS NULL
+			)
+		)`, ts, ts)
 	if err != nil {
 		return 0, fmt.Errorf("gc dangling relations: %w", err)
 	}
@@ -484,8 +488,9 @@ func (s *Store) GCRelations(ctx context.Context, staleDays int) (int64, error) {
 	// 2. stale pending: nunca fueron juzgadas después de staleDays días
 	cutoff := time.Now().UTC().AddDate(0, 0, -staleDays).Format(time.RFC3339)
 	res2, err := s.exec(ctx,
-		`DELETE FROM memory_relations WHERE judgment_status = 'pending' AND created_at < ?`,
-		cutoff,
+		`UPDATE memory_relations SET deleted_at = ?, updated_at = ?
+		 WHERE deleted_at IS NULL AND judgment_status = 'pending' AND created_at < ?`,
+		ts, ts, cutoff,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("gc stale relations: %w", err)
