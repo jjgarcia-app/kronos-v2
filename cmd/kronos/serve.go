@@ -67,6 +67,45 @@ func runServe(args ...string) error {
 		_ = hs.Stop(shutCtx)
 	}()
 
+	return runMCPCore(ctx, cfg, st, dataDir, toolsFlag)
+}
+
+// runMCP arranca solo el servidor MCP stdio, sin HTTP REST.
+// Es el punto de entrada para sesiones de Claude Code: no hay puerto que
+// conflictúe, múltiples sesiones pueden correr en paralelo sin problemas.
+func runMCP(args ...string) error {
+	toolsFlag := ""
+	for _, a := range args {
+		if strings.HasPrefix(a, "--tools=") {
+			toolsFlag = strings.TrimPrefix(a, "--tools=")
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cfg, _ := config.Load()
+
+	dbPath, err := platform.DBPath()
+	if err != nil {
+		return fmt.Errorf("resolve db path: %w", err)
+	}
+
+	dataDir := filepath.Dir(dbPath)
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
+		return fmt.Errorf("create data dir: %w", err)
+	}
+
+	st, err := openStore(cfg, dbPath)
+	if err != nil {
+		return fmt.Errorf("open store: %w", err)
+	}
+	defer st.Close()
+
+	return runMCPCore(ctx, cfg, st, dataDir, toolsFlag)
+}
+
+func runMCPCore(ctx context.Context, cfg config.Config, st store.Storer, dataDir, toolsFlag string) error {
 	vs, _ := embeddings.New(ctx, filepath.Join(dataDir, "vectors"))
 	rel := relations.New(vs)
 
@@ -77,10 +116,8 @@ func runServe(args ...string) error {
 		local = ds.LocalStore()
 	}
 
-	// cliente LLM generativo — auto-detecta según cfg.LLM o usa Ollama si está disponible
 	llmJudger := llm.NewFromConfig(ctx, cfg)
 
-	// re-indexar observaciones recientes en background (captura importaciones via sync)
 	if rel.Enabled() {
 		go reindexRecent(ctx, local, rel)
 	}
