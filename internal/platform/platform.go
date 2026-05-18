@@ -75,6 +75,16 @@ func ClaudeDir() (string, error) {
 	return filepath.Join(home, ".claude"), nil
 }
 
+// ClaudeMCPFile returns the path to ~/.claude.json where Claude Code stores
+// user-level MCP server definitions (flat map, not nested under "mcpServers").
+func ClaudeMCPFile() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".claude.json"), nil
+}
+
 // OS returns the current operating system identifier.
 // Values: "windows", "darwin", "linux", or the GOOS value for other systems.
 func OS() string {

@@ -37,6 +37,15 @@ var kronosToolPermissions = []string{
 	"mcp__kronos__mem_session_summary",
 	"mcp__kronos__mem_checkpoint",
 	"mcp__kronos__mem_save_prompt",
+	"mcp__kronos__mem_judge",
+	"mcp__kronos__mem_compare",
+	"mcp__kronos__mem_suggest_topic_key",
+	"mcp__kronos__mem_timeline",
+	"mcp__kronos__mem_stats",
+	"mcp__kronos__mem_current_project",
+	"mcp__kronos__mem_capture_passive",
+	"mcp__kronos__mem_merge_projects",
+	"mcp__kronos__mem_doctor",
 }
 
 // kronosHooks are the hooks we inject into Claude Code settings.json.
@@ -72,13 +81,15 @@ func InstallClaudeCode() error {
 
 	hooks := getOrInitHooks(settings)
 	legacyRemoved := removeLegacyNodeHooks(hooks)
-	hooksChanged := mergeHooks(hooks) || legacyRemoved
+	normalized := normalizeKronosHooks(hooks)
+	hooksChanged := mergeHooks(hooks) || legacyRemoved || normalized
 	settings["hooks"] = hooks
 
 	mcpChanged := mergeMCPServer(settings)
+	userMCPChanged, _ := mergeUserMCPFile()
 	permsChanged := mergePermissions(settings)
 
-	if !hooksChanged && !mcpChanged && !permsChanged {
+	if !hooksChanged && !mcpChanged && !userMCPChanged && !permsChanged {
 		fmt.Println("Kronos ya está configurado en Claude Code — sin cambios.")
 		return nil
 	}
@@ -91,13 +102,56 @@ func InstallClaudeCode() error {
 	if hooksChanged {
 		fmt.Println("  hooks: SessionStart, UserPromptSubmit, SubagentStop, Stop")
 	}
-	if mcpChanged {
+	if mcpChanged || userMCPChanged {
 		fmt.Println("  MCP server: kronos serve (stdio)")
 	}
 	if permsChanged {
 		fmt.Println("  permisos: tools mem_* auto-permitidos")
 	}
 	return nil
+}
+
+// mergeUserMCPFile updates mcpServers.kronos in ~/.claude.json, which is the
+// main Claude Code config file. MCPs live under the "mcpServers" key.
+func mergeUserMCPFile() (bool, error) {
+	mcpPath, err := platform.ClaudeMCPFile()
+	if err != nil {
+		return false, err
+	}
+
+	// Load entire ~/.claude.json preserving all existing keys
+	root := map[string]any{}
+	if data, err := os.ReadFile(mcpPath); err == nil {
+		_ = json.Unmarshal(data, &root)
+	}
+
+	// Navigate to mcpServers map
+	mcpServers, _ := root["mcpServers"].(map[string]any)
+	if mcpServers == nil {
+		mcpServers = map[string]any{}
+	}
+
+	desired := map[string]any{
+		"command": kronosBin(),
+		"args":    []string{"serve"},
+		"type":    "stdio",
+	}
+
+	// Skip if already correct
+	if existing, ok := mcpServers["kronos"].(map[string]any); ok {
+		if cmd, _ := existing["command"].(string); cmd == kronosBin() {
+			return false, nil
+		}
+	}
+
+	mcpServers["kronos"] = desired
+	root["mcpServers"] = mcpServers
+
+	out, err := json.MarshalIndent(root, "", "  ")
+	if err != nil {
+		return false, err
+	}
+	return true, os.WriteFile(mcpPath, append(out, '\n'), 0644)
 }
 
 // mergePermissions adds Kronos tool names to permissions.allow so Claude Code
@@ -133,7 +187,7 @@ func mergePermissions(settings map[string]any) bool {
 }
 
 // mergeMCPServer adds or updates the Kronos MCP server in settings["mcpServers"].
-// Updates if the existing entry still points to the old Node.js binary.
+// Only skips if the entry already has the canonical binary name (no path prefix).
 // Returns true if a change was made.
 func mergeMCPServer(settings map[string]any) bool {
 	servers, ok := settings["mcpServers"].(map[string]any)
@@ -141,45 +195,46 @@ func mergeMCPServer(settings map[string]any) bool {
 		servers = map[string]any{}
 	}
 	if existing, exists := servers["kronos"]; exists {
-		if !isLegacyNodeServer(existing) {
-			return false
+		if isCurrentGoServer(existing) {
+			return false // ya está correcto
 		}
-		// fall through to overwrite the legacy entry
+		// overwrite: legacy Node, absolute path, or anything else
 	}
 	servers["kronos"] = map[string]any{
 		"command": kronosBin(),
 		"args":    []string{"serve"},
+		"type":    "stdio",
 	}
 	settings["mcpServers"] = servers
 	return true
 }
 
-// isLegacyNodeServer returns true when the MCP entry is the old Node.js Kronos v1 config.
-func isLegacyNodeServer(entry any) bool {
+// isCurrentGoServer returns true only when the entry already uses the canonical
+// binary name (e.g. "kronos.exe" with no path prefix).
+func isCurrentGoServer(entry any) bool {
 	m, ok := entry.(map[string]any)
 	if !ok {
 		return false
 	}
 	cmd, _ := m["command"].(string)
-	if cmd == "node" {
-		return true
-	}
-	// also check args for .js files, just in case
-	if args, ok := m["args"].([]any); ok {
-		for _, a := range args {
-			if s, ok := a.(string); ok && len(s) > 3 && s[len(s)-3:] == ".js" {
-				return true
-			}
-		}
-	}
-	return false
+	return cmd == kronosBin()
 }
 
+// kronosBin returns the full path of the currently running kronos binary.
+// Using os.Executable() ensures Claude Code can find the binary regardless
+// of whether its directory is in PATH.
 func kronosBin() string {
-	if runtime.GOOS == "windows" {
-		return "kronos.exe"
+	exe, err := os.Executable()
+	if err != nil {
+		if runtime.GOOS == "windows" {
+			return "kronos.exe"
+		}
+		return "kronos"
 	}
-	return "kronos"
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		return resolved
+	}
+	return exe
 }
 
 // Uninstall removes Kronos hooks from ~/.claude/settings.json.
@@ -275,6 +330,45 @@ func filterLegacyNode(raw any) []hookMatcher {
 
 func isLegacyNodeHook(cmd string) bool {
 	return strings.HasPrefix(cmd, "node ") && strings.Contains(cmd, "kronos") && strings.HasSuffix(cmd, ".js")
+}
+
+// normalizeKronosHooks replaces any existing hook entry that calls kronos via an
+// absolute path (e.g. /usr/local/bin/kronos hook ...) with the canonical short
+// command (e.g. "kronos hook session-start"). Returns true if anything changed.
+func normalizeKronosHooks(hooks map[string]any) bool {
+	changed := false
+	for event, matchers := range kronosHooks {
+		canonicalCmd := matchers[0].Hooks[0].Command
+		// suffix is everything after the binary name, e.g. "hook session-start"
+		suffix := ""
+		if parts := strings.SplitN(canonicalCmd, " ", 2); len(parts) == 2 {
+			suffix = parts[1]
+		}
+		if suffix == "" {
+			continue
+		}
+		existing := toMatcherSlice(hooks[event])
+		var rebuilt []hookMatcher
+		for _, m := range existing {
+			var kept []hookEntry
+			for _, h := range m.Hooks {
+				// absolute-path variant: ends with " <suffix>" and has a path separator
+				if strings.HasSuffix(h.Command, " "+suffix) && strings.ContainsAny(h.Command, "/\\") {
+					kept = append(kept, hookEntry{Type: "command", Command: canonicalCmd})
+					changed = true
+				} else {
+					kept = append(kept, h)
+				}
+			}
+			if len(kept) > 0 {
+				rebuilt = append(rebuilt, hookMatcher{Hooks: kept})
+			}
+		}
+		if changed {
+			hooks[event] = rebuilt
+		}
+	}
+	return changed
 }
 
 // mergeHooks adds Kronos hooks that are not already present.

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -85,7 +86,7 @@ func (srv *Server) Start() error {
 	}
 	go func() {
 		if err := srv.httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			fmt.Printf("kronos http server error: %v\n", err)
+			fmt.Fprintf(os.Stderr, "kronos http server error: %v\n", err)
 		}
 	}()
 	return nil
