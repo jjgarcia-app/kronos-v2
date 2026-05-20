@@ -1,4 +1,4 @@
-package platform
+﻿package platform
 
 import (
 	"os"
@@ -83,6 +83,16 @@ func ClaudeMCPFile() (string, error) {
 		return "", err
 	}
 	return filepath.Join(home, ".claude.json"), nil
+}
+
+// CurrentSessionPath returns the path to the file that stores the active session ID.
+// Written by session-start, cleared by session-stop, read by the MCP server.
+func CurrentSessionPath() (string, error) {
+	dir, err := DataDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "current_session.txt"), nil
 }
 
 // OS returns the current operating system identifier.

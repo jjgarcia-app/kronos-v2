@@ -1,4 +1,4 @@
-package hooks
+﻿package hooks
 
 import (
 	"context"
@@ -31,6 +31,11 @@ func RunSessionStart(ctx context.Context, in Input, st store.Storer) error {
 	if err != nil {
 		// Non-fatal: session may already exist if Claude reconnects.
 		_ = err
+	}
+	if in.SessionID != "" {
+		if p, pErr := platform.CurrentSessionPath(); pErr == nil {
+			_ = os.WriteFile(p, []byte(in.SessionID), 0o644)
+		}
 	}
 
 	n, _ := st.CountObservations(ctx, proj.Name)

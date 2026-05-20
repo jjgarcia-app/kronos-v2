@@ -3,6 +3,7 @@
 import (
 	"context"
 	"fmt"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"unicode"
 
 	"github.com/jjgarcia-app/kronos-v2/internal/checkpoint"
+	"github.com/jjgarcia-app/kronos-v2/internal/platform"
 	"github.com/jjgarcia-app/kronos-v2/internal/project"
 	"github.com/jjgarcia-app/kronos-v2/internal/secrets"
 	"github.com/jjgarcia-app/kronos-v2/internal/store"
@@ -87,9 +89,11 @@ func (s *Server) handleMemSearch(ctx context.Context, req mcpgo.CallToolRequest)
 	sessionID := str(req, "session_id")
 	limit := intOr(req, "limit", 10)
 
-	if sessionID == "" && project != "" {
-		if active, aErr := s.store.GetActiveSession(ctx, project); aErr == nil && active != nil {
-			sessionID = active.ID
+	if sessionID == "" {
+		if p, pErr := platform.CurrentSessionPath(); pErr == nil {
+			if data, rErr := os.ReadFile(p); rErr == nil {
+				sessionID = strings.TrimSpace(string(data))
+			}
 		}
 	}
 	if sessionID != "" {
