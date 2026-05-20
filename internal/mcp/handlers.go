@@ -84,7 +84,12 @@ func (s *Server) handleMemSave(ctx context.Context, req mcpgo.CallToolRequest) (
 func (s *Server) handleMemSearch(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
 	query := str(req, "query")
 	project := str(req, "project")
+	sessionID := str(req, "session_id")
 	limit := intOr(req, "limit", 10)
+
+	if sessionID != "" {
+		_ = s.store.IncrementSearchCount(ctx, sessionID)
+	}
 
 	// BM25 — recuperación léxica
 	bm25Results, err := s.store.Search(ctx, store.SearchParams{

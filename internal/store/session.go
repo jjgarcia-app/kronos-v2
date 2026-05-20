@@ -43,14 +43,14 @@ func (s *Store) EndSession(ctx context.Context, id, summary string) error {
 
 func (s *Store) GetSession(ctx context.Context, id string) (*Session, error) {
 	row := s.queryRow(ctx,
-		`SELECT id, project, directory, started_at, ended_at, summary, injected_observation_ids FROM sessions
+		`SELECT id, project, directory, started_at, ended_at, summary, injected_observation_ids, search_count FROM sessions
 		 WHERE id = ? AND deleted_at IS NULL`, id)
 	return scanSession(row)
 }
 
 func (s *Store) GetActiveSession(ctx context.Context, project string) (*Session, error) {
 	row := s.queryRow(ctx,
-		`SELECT id, project, directory, started_at, ended_at, summary, injected_observation_ids
+		`SELECT id, project, directory, started_at, ended_at, summary, injected_observation_ids, search_count
 		 FROM sessions
 		 WHERE project = ? AND ended_at IS NULL AND deleted_at IS NULL
 		 ORDER BY started_at DESC LIMIT 1`, project)
@@ -68,7 +68,7 @@ func (s *Store) ListSessions(ctx context.Context, project string, limit int) ([]
 		limit = 20
 	}
 	rows, err := s.query(ctx,
-		`SELECT id, project, directory, started_at, ended_at, summary, injected_observation_ids
+		`SELECT id, project, directory, started_at, ended_at, summary, injected_observation_ids, search_count
 		 FROM sessions WHERE project = ? AND deleted_at IS NULL
 		 ORDER BY started_at DESC LIMIT ?`, project, limit)
 	if err != nil {
@@ -135,7 +135,7 @@ func scanSession(sc sessionScanner) (*Session, error) {
 	var endedAt sql.NullString
 	var injectedIDs sql.NullString
 
-	err := sc.Scan(&sess.ID, &sess.Project, &sess.Directory, &startedAt, &endedAt, &sess.Summary, &injectedIDs)
+	err := sc.Scan(&sess.ID, &sess.Project, &sess.Directory, &startedAt, &endedAt, &sess.Summary, &injectedIDs, &sess.SearchCount)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -148,4 +148,14 @@ func scanSession(sc sessionScanner) (*Session, error) {
 		_ = json.Unmarshal([]byte(injectedIDs.String), &sess.InjectedObservationIDs)
 	}
 	return &sess, nil
+}
+
+// IncrementSearchCount atomically increments the search_count for a session.
+// Silently succeeds (no error) if the session does not exist — fail-open contract.
+func (s *Store) IncrementSearchCount(ctx context.Context, sessionID string) error {
+	_, err := s.exec(ctx,
+		`UPDATE sessions SET search_count = search_count + 1 WHERE id = ?`,
+		sessionID,
+	)
+	return err
 }

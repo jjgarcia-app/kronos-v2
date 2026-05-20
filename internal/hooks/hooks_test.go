@@ -671,3 +671,189 @@ func TestRun_UnknownHook(t *testing.T) {
 	// so we test the dispatch logic indirectly via the exported helpers.
 	_ = hooks.RunSessionStop // just verify it's exported
 }
+
+// --- RunPreToolUse (task 3.4) ---
+
+// captureStderr redirects os.Stderr during fn, returns captured string.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	old := os.Stderr
+	os.Stderr = w
+	fn()
+	w.Close()
+	os.Stderr = old
+	var buf bytes.Buffer
+	io.Copy(&buf, r)
+	r.Close()
+	return buf.String()
+}
+
+// errStore is a fake Storer that returns an error on GetSession.
+type errStore struct {
+	store.Storer
+}
+
+func (e *errStore) GetSession(_ context.Context, _ string) (*store.Session, error) {
+	return nil, fmt.Errorf("db unavailable")
+}
+
+func TestRunPreToolUse_NoSearchYet_WarnMode(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	st.CreateSession(ctx, "sess-gate-warn", "proj", "/tmp")
+
+	var exitCode *int
+	hooks.SetExitFn(func(code int) { exitCode = &code })
+	defer hooks.SetExitFn(nil)
+
+	in := hooks.Input{SessionID: "sess-gate-warn", ToolName: "Edit"}
+	stderr := captureStderr(t, func() {
+		hooks.RunPreToolUse(ctx, in, st)
+	})
+
+	if !strings.Contains(stderr, "[kronos]") {
+		t.Errorf("expected [kronos] warning on stderr, got: %q", stderr)
+	}
+	if exitCode != nil {
+		t.Errorf("exitFn should NOT be called in warn mode, got code %d", *exitCode)
+	}
+}
+
+func TestRunPreToolUse_AfterSearch_Pass(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	st.CreateSession(ctx, "sess-gate-pass", "proj", "/tmp")
+	st.IncrementSearchCount(ctx, "sess-gate-pass")
+
+	var exitCode *int
+	hooks.SetExitFn(func(code int) { exitCode = &code })
+	defer hooks.SetExitFn(nil)
+
+	in := hooks.Input{SessionID: "sess-gate-pass", ToolName: "Edit"}
+	stderr := captureStderr(t, func() {
+		hooks.RunPreToolUse(ctx, in, st)
+	})
+
+	if strings.Contains(stderr, "[kronos]") {
+		t.Errorf("no warning expected after search, got: %q", stderr)
+	}
+	if exitCode != nil {
+		t.Errorf("exitFn should not be called, got code %d", *exitCode)
+	}
+}
+
+func TestRunPreToolUse_NonGatedTool_Pass(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	st.CreateSession(ctx, "sess-gate-read", "proj", "/tmp")
+	// No search — but tool is Read (not gated).
+
+	var exitCode *int
+	hooks.SetExitFn(func(code int) { exitCode = &code })
+	defer hooks.SetExitFn(nil)
+
+	in := hooks.Input{SessionID: "sess-gate-read", ToolName: "Read"}
+	stderr := captureStderr(t, func() {
+		hooks.RunPreToolUse(ctx, in, st)
+	})
+
+	if strings.Contains(stderr, "[kronos]") {
+		t.Errorf("Read tool should not trigger gate, got: %q", stderr)
+	}
+	if exitCode != nil {
+		t.Errorf("exitFn should not be called for Read tool, got code %d", *exitCode)
+	}
+}
+
+func TestRunPreToolUse_EmptySessionID_Pass(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	var exitCode *int
+	hooks.SetExitFn(func(code int) { exitCode = &code })
+	defer hooks.SetExitFn(nil)
+
+	in := hooks.Input{SessionID: "", ToolName: "Edit"}
+	stderr := captureStderr(t, func() {
+		hooks.RunPreToolUse(ctx, in, st)
+	})
+
+	if strings.Contains(stderr, "[kronos]") {
+		t.Errorf("empty session_id should not trigger gate, got: %q", stderr)
+	}
+	if exitCode != nil {
+		t.Errorf("exitFn should not be called for empty session, got code %d", *exitCode)
+	}
+}
+
+func TestRunPreToolUse_GateOff_Pass(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	st.CreateSession(ctx, "sess-gate-off", "proj", "/tmp")
+
+	t.Setenv("KRONOS_PRETOOL_GATE", "off")
+
+	var exitCode *int
+	hooks.SetExitFn(func(code int) { exitCode = &code })
+	defer hooks.SetExitFn(nil)
+
+	in := hooks.Input{SessionID: "sess-gate-off", ToolName: "Edit"}
+	stderr := captureStderr(t, func() {
+		hooks.RunPreToolUse(ctx, in, st)
+	})
+
+	if strings.Contains(stderr, "[kronos]") {
+		t.Errorf("gate=off should suppress warning, got: %q", stderr)
+	}
+	if exitCode != nil {
+		t.Errorf("exitFn should not be called when gate is off, got code %d", *exitCode)
+	}
+}
+
+func TestRunPreToolUse_BlockMode(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	st.CreateSession(ctx, "sess-gate-block", "proj", "/tmp")
+
+	t.Setenv("KRONOS_GATE_BLOCK", "1")
+	hooks.ResetGatedTools()
+
+	var exitCode *int
+	hooks.SetExitFn(func(code int) { exitCode = &code })
+	defer hooks.SetExitFn(nil)
+
+	in := hooks.Input{SessionID: "sess-gate-block", ToolName: "Edit"}
+	captureStderr(t, func() {
+		hooks.RunPreToolUse(ctx, in, st)
+	})
+
+	if exitCode == nil {
+		t.Error("exitFn should be called in block mode")
+	} else if *exitCode != 2 {
+		t.Errorf("exitFn called with code %d, want 2", *exitCode)
+	}
+}
+
+func TestRunPreToolUse_DBUnavailable_FailOpen(t *testing.T) {
+	ctx := context.Background()
+
+	var exitCode *int
+	hooks.SetExitFn(func(code int) { exitCode = &code })
+	defer hooks.SetExitFn(nil)
+
+	in := hooks.Input{SessionID: "sess-gate-dberr", ToolName: "Edit"}
+	stderr := captureStderr(t, func() {
+		hooks.RunPreToolUse(ctx, in, &errStore{})
+	})
+
+	if strings.Contains(stderr, "[kronos]") {
+		t.Errorf("DB error should fail-open (no warning), got: %q", stderr)
+	}
+	if exitCode != nil {
+		t.Errorf("exitFn should not be called on DB error, got code %d", *exitCode)
+	}
+}
