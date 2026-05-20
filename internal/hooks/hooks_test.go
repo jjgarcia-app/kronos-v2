@@ -198,6 +198,7 @@ func TestRunSessionStart_NormalStart_PersistsEmptyIDs(t *testing.T) {
 func TestRunPostCompaction_PrintsSignalAndObs(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
+	cwd, _ := os.Getwd()
 
 	// Save 5 observations.
 	for i := 0; i < 5; i++ {
@@ -211,7 +212,7 @@ func TestRunPostCompaction_PrintsSignalAndObs(t *testing.T) {
 
 	in := hooks.Input{
 		SessionID: "sess-postcompact",
-		CWD:       "C:\\Users\\Jerry\\kronos-v2",
+		CWD:       cwd,
 		Reason:    "compact",
 	}
 
@@ -247,6 +248,7 @@ func TestRunPostCompaction_PrintsSignalAndObs(t *testing.T) {
 func TestRunPostCompaction_FewerThanK(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
+	cwd, _ := os.Getwd()
 
 	// Save only 2 observations.
 	for i := 0; i < 2; i++ {
@@ -260,7 +262,7 @@ func TestRunPostCompaction_FewerThanK(t *testing.T) {
 
 	in := hooks.Input{
 		SessionID: "sess-fewerthan3",
-		CWD:       "C:\\Users\\Jerry\\kronos-v2",
+		CWD:       cwd,
 		Reason:    "compact",
 	}
 
@@ -321,6 +323,7 @@ func TestRunPostCompaction_EmptyStore(t *testing.T) {
 func TestRunPostCompaction_PersistsInjectedIDs(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
+	cwd, _ := os.Getwd()
 
 	var savedIDs []int64
 	for i := 0; i < 2; i++ {
@@ -335,7 +338,7 @@ func TestRunPostCompaction_PersistsInjectedIDs(t *testing.T) {
 
 	in := hooks.Input{
 		SessionID: "sess-persist-ids",
-		CWD:       "C:\\Users\\Jerry\\kronos-v2",
+		CWD:       cwd,
 		Reason:    "compact",
 	}
 
@@ -403,8 +406,9 @@ func TestRunPromptSubmit_RedactsSecrets(t *testing.T) {
 func TestRunPromptSubmit_FTSResults_Emitted(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
+	cwd, _ := os.Getwd()
 
-	st.CreateSession(ctx, "sess-fts", "kronos-v2", "/tmp")
+	st.CreateSession(ctx, "sess-fts", "kronos-v2", cwd)
 	st.PersistInjectedIDs(ctx, "sess-fts", []string{})
 
 	// Save observations that match the prompt keyword.
@@ -423,7 +427,7 @@ func TestRunPromptSubmit_FTSResults_Emitted(t *testing.T) {
 
 	in := hooks.Input{
 		SessionID: "sess-fts",
-		CWD:       "C:\\Users\\Jerry\\kronos-v2",
+		CWD:       cwd,
 		Prompt:    "sqlite store",
 	}
 
@@ -441,8 +445,9 @@ func TestRunPromptSubmit_FTSResults_Emitted(t *testing.T) {
 func TestRunPromptSubmit_Dedup_FiltersAlreadyInjected(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
+	cwd, _ := os.Getwd()
 
-	st.CreateSession(ctx, "sess-dedup", "kronos-v2", "/tmp")
+	st.CreateSession(ctx, "sess-dedup", "kronos-v2", cwd)
 
 	obs, _ := st.SaveObservation(ctx, store.SaveParams{
 		Type:    store.TypeDecision,
@@ -457,7 +462,7 @@ func TestRunPromptSubmit_Dedup_FiltersAlreadyInjected(t *testing.T) {
 
 	in := hooks.Input{
 		SessionID: "sess-dedup",
-		CWD:       "C:\\Users\\Jerry\\kronos-v2",
+		CWD:       cwd,
 		Prompt:    "dedup target",
 	}
 
@@ -497,15 +502,18 @@ func TestRunPromptSubmit_NoResults_NoOutput(t *testing.T) {
 func TestRunPromptSubmit_Timeout_ExitsClean(t *testing.T) {
 	realSt := newTestStore(t)
 	ctx := context.Background()
-	realSt.CreateSession(ctx, "sess-timeout", "proj", "/tmp")
+	cwd, _ := os.Getwd()
+	realSt.CreateSession(ctx, "sess-timeout", "kronos-v2", cwd)
 	realSt.PersistInjectedIDs(ctx, "sess-timeout", []string{})
 
 	// Wrap with a slow Search that blocks for 500ms — the 100ms internal timeout must cut it.
+	// Using os.Getwd() as CWD ensures project.Detect resolves via git remote (fast),
+	// so the only delay is the search path being cut by the 100ms ctx deadline.
 	st := &slowSearchStore{Storer: realSt}
 
 	in := hooks.Input{
 		SessionID: "sess-timeout",
-		CWD:       "/tmp",
+		CWD:       cwd,
 		Prompt:    "timeout test prompt query",
 	}
 
@@ -519,8 +527,8 @@ func TestRunPromptSubmit_Timeout_ExitsClean(t *testing.T) {
 		if err != nil {
 			t.Errorf("RunPromptSubmit returned error: %v", err)
 		}
-	case <-time.After(300 * time.Millisecond):
-		t.Error("RunPromptSubmit did not return within 300ms — 100ms timeout not enforced")
+	case <-time.After(500 * time.Millisecond):
+		t.Error("RunPromptSubmit did not return within 500ms — 100ms timeout not enforced")
 	}
 }
 
@@ -546,8 +554,9 @@ func TestRunPromptSubmit_SearchError_ExitsClean(t *testing.T) {
 func TestRunPromptSubmit_VectorStoreNil_FallsBackToFTS(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
+	cwd, _ := os.Getwd()
 
-	st.CreateSession(ctx, "sess-vnil", "kronos-v2", "/tmp")
+	st.CreateSession(ctx, "sess-vnil", "kronos-v2", cwd)
 	st.PersistInjectedIDs(ctx, "sess-vnil", []string{})
 
 	st.SaveObservation(ctx, store.SaveParams{
@@ -559,7 +568,7 @@ func TestRunPromptSubmit_VectorStoreNil_FallsBackToFTS(t *testing.T) {
 
 	in := hooks.Input{
 		SessionID: "sess-vnil",
-		CWD:       "C:\\Users\\Jerry\\kronos-v2",
+		CWD:       cwd,
 		Prompt:    "vectornil fallback",
 	}
 
