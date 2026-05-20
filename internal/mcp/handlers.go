@@ -54,11 +54,15 @@ func (s *Server) handleMemSave(ctx context.Context, req mcpgo.CallToolRequest) (
 	msg := fmt.Sprintf("Observación %s. ID: %d | Topic: %s", action, obs.ID, obs.TopicKey)
 
 	// Index embedding and check for related observations (best-effort).
+	// Hard timeout: Ollama HTTP client has no built-in timeout; without this the
+	// handler blocks indefinitely on cold-start or an unresponsive embedder.
 	if s.rel != nil {
 		indexText := title + " " + content
-		_ = s.rel.Index(ctx, obs.ID, indexText)
+		embCtx, embCancel := context.WithTimeout(ctx, 5*time.Second)
+		defer embCancel()
+		_ = s.rel.Index(embCtx, obs.ID, indexText)
 
-		related, _ := s.rel.Check(ctx, obs.ID, indexText)
+		related, _ := s.rel.Check(embCtx, obs.ID, indexText)
 		if len(related) > 0 {
 			msg += "\n\nObservaciones relacionadas:"
 			for _, r := range related {
