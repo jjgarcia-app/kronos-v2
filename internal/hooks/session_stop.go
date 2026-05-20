@@ -15,7 +15,9 @@ func RunSessionStop(ctx context.Context, in Input, st store.Storer) error {
 		return nil
 	}
 	if p, err := platform.CurrentSessionPath(); err == nil {
-		_ = os.Remove(p)
+		if data, readErr := os.ReadFile(p); readErr == nil && string(data) == in.SessionID {
+			_ = os.Remove(p)
+		}
 	}
 	return st.EndSession(ctx, in.SessionID, "")
 }
