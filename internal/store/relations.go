@@ -141,25 +141,30 @@ func (s *Store) FindCandidates(ctx context.Context, savedObs *Observation, opts 
 	if err != nil {
 		return nil, fmt.Errorf("find candidates: %w", err)
 	}
-	defer rows.Close()
 
-	var candidates []Candidate
+	// Collect raw rows before any secondary DB calls.
+	// With MaxOpenConns(1), a nested query inside rows.Next() deadlocks.
+	var raw []Candidate
 	for rows.Next() {
 		var c Candidate
 		var topicKey sql.NullString
-		var score float64
-		if err := rows.Scan(&c.ID, &c.SyncID, &c.Title, &c.Type, &topicKey, &score); err != nil {
+		if err := rows.Scan(&c.ID, &c.SyncID, &c.Title, &c.Type, &topicKey, &c.Score); err != nil {
+			rows.Close()
 			return nil, err
 		}
 		c.TopicKey = topicKey.String
-		c.Score = score
-
-		// filtrar por calidad BM25
-		if score < opts.BM25Floor {
-			continue
+		if c.Score >= opts.BM25Floor {
+			raw = append(raw, c)
 		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
 
-		// verificar si ya existe relación entre estos dos
+	var candidates []Candidate
+	for _, c := range raw {
 		exists, err := s.relationExists(ctx, savedObs.SyncID, c.SyncID)
 		if err != nil {
 			return nil, err
@@ -182,7 +187,7 @@ func (s *Store) FindCandidates(ctx context.Context, savedObs *Observation, opts 
 			break
 		}
 	}
-	return candidates, rows.Err()
+	return candidates, nil
 }
 
 // JudgeRelation registra el veredicto de un agente sobre una relación pendiente.
