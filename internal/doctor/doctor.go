@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jjgarcia-app/kronos-v2/internal/config"
+	"github.com/jjgarcia-app/kronos-v2/internal/embeddings"
 	"github.com/jjgarcia-app/kronos-v2/internal/platform"
 	"github.com/jjgarcia-app/kronos-v2/internal/setup"
 	"github.com/jjgarcia-app/kronos-v2/internal/store"
@@ -232,7 +233,7 @@ func checkEmbeddingModel(ctx context.Context, cfg config.Config) Check {
 	}
 	model := cfg.Embeddings.OllamaModel
 	if model == "" {
-		model = "bge-m3"
+		model = embeddings.DefaultOllamaModel
 	}
 
 	client := &http.Client{Timeout: 2 * time.Second}
@@ -432,7 +433,7 @@ func fixPostgresDB(ctx context.Context, cfg config.Config, progress chan<- strin
 func fixOllama(cfg config.Config, progress chan<- string) error {
 	model := cfg.Embeddings.OllamaModel
 	if model == "" {
-		model = "bge-m3"
+		model = embeddings.DefaultOllamaModel
 	}
 
 	if cfg.Embeddings.OllamaDocker {
@@ -466,7 +467,7 @@ func fixOllama(cfg config.Config, progress chan<- string) error {
 func fixEmbeddingModel(cfg config.Config, progress chan<- string) error {
 	model := cfg.Embeddings.OllamaModel
 	if model == "" {
-		model = "bge-m3"
+		model = embeddings.DefaultOllamaModel
 	}
 	progress <- fmt.Sprintf("Descargando modelo %s...", model)
 	cmd := exec.Command("ollama", "pull", model)

@@ -76,7 +76,7 @@ func Default() Config {
 		Embeddings: EmbeddingsConfig{
 			Provider:       "ollama",
 			OllamaURL:      "http://localhost:11434",
-			OllamaModel:    "bge-m3",
+			OllamaModel:    "nomic-embed-text",
 			OllamaLLMModel: "llama3.2",
 		},
 		Memory: MemoryConfig{

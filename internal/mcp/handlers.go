@@ -113,7 +113,7 @@ func (s *Server) handleMemSearch(ctx context.Context, req mcpgo.CallToolRequest)
 		scored[r.ID] = &rrfEntry{result: r, score: 1.0 / (rrfK + float64(i+1))}
 	}
 
-	// búsqueda vectorial complementaria (bge-m3)
+	// búsqueda vectorial complementaria
 	if s.rel != nil && s.rel.Enabled() {
 		hits, _ := s.rel.Similar(ctx, query, limit*2, 0, 0.55)
 		if ls := s.localStore(); ls != nil {

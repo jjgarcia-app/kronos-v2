@@ -5,6 +5,8 @@ import (
 
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/jjgarcia-app/kronos-v2/internal/embeddings"
 )
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -253,7 +255,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.setupDone = false
 			ollamaModel := m.cfg.Embeddings.OllamaModel
 			if ollamaModel == "" {
-				ollamaModel = "bge-m3"
+				ollamaModel = embeddings.DefaultOllamaModel
 			}
 			llmModel := m.cfg.Embeddings.OllamaLLMModel
 			if llmModel == "" {

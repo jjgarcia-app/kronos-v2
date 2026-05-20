@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jjgarcia-app/kronos-v2/internal/embeddings"
 	"github.com/jjgarcia-app/kronos-v2/internal/llm"
 	"github.com/jjgarcia-app/kronos-v2/internal/relations"
 	"github.com/jjgarcia-app/kronos-v2/internal/store"
@@ -18,7 +19,7 @@ const (
 )
 
 // AutoJudge starts a background goroutine that periodically resolves
-// pending memory_relations using cosine similarity from bge-m3.
+// pending memory_relations using cosine similarity from the configured embedding model.
 // For the ambiguous range (0.30–0.70), uses the Ollama LLM (llmClient may be nil).
 // No-op when rel is nil or embeddings are disabled.
 func AutoJudge(ctx context.Context, st *store.Store, rel *relations.Detector, llmClient llm.Judger) {
@@ -87,12 +88,12 @@ func judgeOne(ctx context.Context, st *store.Store, rel *relations.Detector, llm
 	case similarity < notConflictThreshold:
 		// similitud muy baja → falso positivo del detector BM25
 		reason := fmt.Sprintf("baja similitud semántica (%.2f) — falso positivo del detector BM25", similarity)
-		_, _ = st.JudgeBySemantic(ctx, r.SourceID, r.TargetID, store.RelationNotConflict, 0.90, reason, "bge-m3")
+		_, _ = st.JudgeBySemantic(ctx, r.SourceID, r.TargetID, store.RelationNotConflict, 0.90, reason, embeddings.DefaultOllamaModel)
 
 	case similarity >= relatedThreshold:
 		// similitud alta → relacionadas
 		reason := fmt.Sprintf("alta similitud semántica (%.2f) — observaciones relacionadas", similarity)
-		_, _ = st.JudgeBySemantic(ctx, r.SourceID, r.TargetID, store.RelationRelated, float64(similarity), reason, "bge-m3")
+		_, _ = st.JudgeBySemantic(ctx, r.SourceID, r.TargetID, store.RelationRelated, float64(similarity), reason, embeddings.DefaultOllamaModel)
 
 	default:
 		// zona ambigua (0.30–0.70): delegar al LLM generativo
