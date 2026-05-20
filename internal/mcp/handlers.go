@@ -1,4 +1,4 @@
-package mcp
+﻿package mcp
 
 import (
 	"context"
@@ -87,6 +87,11 @@ func (s *Server) handleMemSearch(ctx context.Context, req mcpgo.CallToolRequest)
 	sessionID := str(req, "session_id")
 	limit := intOr(req, "limit", 10)
 
+	if sessionID == "" && project != "" {
+		if active, aErr := s.store.GetActiveSession(ctx, project); aErr == nil && active != nil {
+			sessionID = active.ID
+		}
+	}
 	if sessionID != "" {
 		_ = s.store.IncrementSearchCount(ctx, sessionID)
 	}

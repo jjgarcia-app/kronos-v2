@@ -1,4 +1,4 @@
-package hooks_test
+﻿package hooks_test
 
 import (
 	"bytes"
@@ -702,6 +702,8 @@ func (e *errStore) GetSession(_ context.Context, _ string) (*store.Session, erro
 }
 
 func TestRunPreToolUse_NoSearchYet_WarnMode(t *testing.T) {
+	t.Setenv("KRONOS_GATE_BLOCK", "")
+	hooks.ResetGatedTools()
 	st := newTestStore(t)
 	ctx := context.Background()
 	st.CreateSession(ctx, "sess-gate-warn", "proj", "/tmp")
