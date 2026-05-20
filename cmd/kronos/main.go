@@ -5,6 +5,8 @@ import (
 	"os"
 )
 
+var version = "dev"
+
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -43,7 +45,7 @@ func run(args []string) error {
 	case "gc":
 		return runGC(args[1:])
 	case "version", "--version", "-v":
-		fmt.Printf("kronos v2.0.0-dev\n")
+		fmt.Printf("kronos %s\n", version)
 		return nil
 	default:
 		return fmt.Errorf("unknown command %q — use: init | serve | mcp [--tools=PROFILE] | hook | setup | export | doctor | tui | config | sync [--export|--import] | rules | gc | version", args[0])
