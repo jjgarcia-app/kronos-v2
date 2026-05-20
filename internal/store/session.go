@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"time"
 )
@@ -42,14 +43,14 @@ func (s *Store) EndSession(ctx context.Context, id, summary string) error {
 
 func (s *Store) GetSession(ctx context.Context, id string) (*Session, error) {
 	row := s.queryRow(ctx,
-		`SELECT id, project, directory, started_at, ended_at, summary FROM sessions
+		`SELECT id, project, directory, started_at, ended_at, summary, injected_observation_ids FROM sessions
 		 WHERE id = ? AND deleted_at IS NULL`, id)
 	return scanSession(row)
 }
 
 func (s *Store) GetActiveSession(ctx context.Context, project string) (*Session, error) {
 	row := s.queryRow(ctx,
-		`SELECT id, project, directory, started_at, ended_at, summary
+		`SELECT id, project, directory, started_at, ended_at, summary, injected_observation_ids
 		 FROM sessions
 		 WHERE project = ? AND ended_at IS NULL AND deleted_at IS NULL
 		 ORDER BY started_at DESC LIMIT 1`, project)
@@ -67,7 +68,7 @@ func (s *Store) ListSessions(ctx context.Context, project string, limit int) ([]
 		limit = 20
 	}
 	rows, err := s.query(ctx,
-		`SELECT id, project, directory, started_at, ended_at, summary
+		`SELECT id, project, directory, started_at, ended_at, summary, injected_observation_ids
 		 FROM sessions WHERE project = ? AND deleted_at IS NULL
 		 ORDER BY started_at DESC LIMIT ?`, project, limit)
 	if err != nil {
@@ -86,6 +87,44 @@ func (s *Store) ListSessions(ctx context.Context, project string, limit int) ([]
 	return sessions, rows.Err()
 }
 
+// PersistInjectedIDs stores the given observation IDs as a JSON array on the session row.
+// Pass nil or empty slice to persist an empty set (used as dedup baseline).
+func (s *Store) PersistInjectedIDs(ctx context.Context, sessionID string, ids []string) error {
+	if ids == nil {
+		ids = []string{}
+	}
+	data, err := json.Marshal(ids)
+	if err != nil {
+		return fmt.Errorf("marshal injected ids: %w", err)
+	}
+	_, err = s.exec(ctx,
+		`UPDATE sessions SET injected_observation_ids = ? WHERE id = ?`,
+		string(data), sessionID,
+	)
+	return err
+}
+
+// LoadInjectedIDs reads the injected observation IDs for the given session.
+// Returns an empty slice (not nil) if the column is NULL or empty.
+func (s *Store) LoadInjectedIDs(ctx context.Context, sessionID string) ([]string, error) {
+	row := s.queryRow(ctx,
+		`SELECT injected_observation_ids FROM sessions WHERE id = ?`, sessionID)
+	var raw sql.NullString
+	if err := row.Scan(&raw); err == sql.ErrNoRows {
+		return []string{}, nil
+	} else if err != nil {
+		return nil, err
+	}
+	if !raw.Valid || raw.String == "" {
+		return []string{}, nil
+	}
+	var ids []string
+	if err := json.Unmarshal([]byte(raw.String), &ids); err != nil {
+		return []string{}, nil
+	}
+	return ids, nil
+}
+
 type sessionScanner interface {
 	Scan(dest ...any) error
 }
@@ -94,8 +133,9 @@ func scanSession(sc sessionScanner) (*Session, error) {
 	var sess Session
 	var startedAt string
 	var endedAt sql.NullString
+	var injectedIDs sql.NullString
 
-	err := sc.Scan(&sess.ID, &sess.Project, &sess.Directory, &startedAt, &endedAt, &sess.Summary)
+	err := sc.Scan(&sess.ID, &sess.Project, &sess.Directory, &startedAt, &endedAt, &sess.Summary, &injectedIDs)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -104,5 +144,8 @@ func scanSession(sc sessionScanner) (*Session, error) {
 	}
 	sess.StartedAt, _ = time.Parse(time.RFC3339, startedAt)
 	sess.EndedAt = nullableTime(endedAt)
+	if injectedIDs.Valid && injectedIDs.String != "" {
+		_ = json.Unmarshal([]byte(injectedIDs.String), &sess.InjectedObservationIDs)
+	}
 	return &sess, nil
 }

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/jjgarcia-app/kronos-v2/internal/embeddings"
 	"github.com/jjgarcia-app/kronos-v2/internal/hooks"
 	"github.com/jjgarcia-app/kronos-v2/internal/platform"
 	"github.com/jjgarcia-app/kronos-v2/internal/store"
@@ -19,6 +20,7 @@ import (
 //	kronos hook <name> [--reason <reason>]
 //	kronos hook <name> <reason>
 //
+// Supported hooks: session-start, prompt-submit, subagent-stop, session-stop.
 // For session-start, reason="compact" triggers post-compaction recovery.
 // Reason "startup", "clear", or empty all trigger the normal session start.
 func runHook(args []string) error {
@@ -44,7 +46,14 @@ func runHook(args []string) error {
 	}
 	defer st.Close()
 
-	return hooks.RunWithReason(context.Background(), hookName, reason, st)
+	// Build VectorStore — nil if no embedder is configured, which is the normal case.
+	// RunPromptSubmit handles nil gracefully (skips vector, uses FTS only).
+	var vs *embeddings.VectorStore
+	if dataDir, err := platform.DataDir(); err == nil {
+		vs, _ = embeddings.New(context.Background(), dataDir)
+	}
+
+	return hooks.RunWithReason(context.Background(), hookName, reason, st, vs)
 }
 
 // parseReason extracts the reason value from remaining args.

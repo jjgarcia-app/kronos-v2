@@ -161,4 +161,7 @@ var migrations = []string{
 	`CREATE INDEX IF NOT EXISTS idx_sessions_deleted ON sessions(deleted_at)`,
 	`ALTER TABLE user_prompts ADD COLUMN deleted_at TEXT`,
 	`CREATE INDEX IF NOT EXISTS idx_prompts_deleted ON user_prompts(deleted_at)`,
+
+	// v41: dedup support — injected observation IDs per session
+	`ALTER TABLE sessions ADD COLUMN injected_observation_ids TEXT NULL`,
 }

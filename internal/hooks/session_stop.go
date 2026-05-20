@@ -8,7 +8,7 @@ import (
 
 // RunSessionStop handles the Stop hook.
 // Closes the active memory session. Runs async so failures are non-critical.
-func RunSessionStop(ctx context.Context, in Input, st *store.Store) error {
+func RunSessionStop(ctx context.Context, in Input, st store.Storer) error {
 	if in.SessionID == "" {
 		return nil
 	}

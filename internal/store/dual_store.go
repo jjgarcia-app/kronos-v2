@@ -316,6 +316,38 @@ func (d *DualStore) Search(ctx context.Context, p SearchParams) ([]*SearchResult
 	return d.buffer.Search(ctx, p)
 }
 
+func (d *DualStore) PersistInjectedIDs(ctx context.Context, sessionID string, ids []string) error {
+	if !d.isPrimaryDown() {
+		if err := d.primary.PersistInjectedIDs(ctx, sessionID, ids); err == nil {
+			return nil
+		}
+		d.markDown()
+	}
+	return d.buffer.PersistInjectedIDs(ctx, sessionID, ids)
+}
+
+func (d *DualStore) LoadInjectedIDs(ctx context.Context, sessionID string) ([]string, error) {
+	if !d.isPrimaryDown() {
+		ids, err := d.primary.LoadInjectedIDs(ctx, sessionID)
+		if err == nil {
+			return ids, nil
+		}
+		d.markDown()
+	}
+	return d.buffer.LoadInjectedIDs(ctx, sessionID)
+}
+
+func (d *DualStore) CountObservations(ctx context.Context, project string) (int, error) {
+	if !d.isPrimaryDown() {
+		n, err := d.primary.CountObservations(ctx, project)
+		if err == nil {
+			return n, nil
+		}
+		d.markDown()
+	}
+	return d.buffer.CountObservations(ctx, project)
+}
+
 // LocalStore retorna el Store SQLite local (buffer).
 // Usar para operaciones que siempre deben ejecutarse en local: conflictos, sync, checkpoints.
 func (d *DualStore) LocalStore() *Store {
