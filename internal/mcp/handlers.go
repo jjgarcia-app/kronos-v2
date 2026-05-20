@@ -122,9 +122,11 @@ func (s *Server) handleMemSearch(ctx context.Context, req mcpgo.CallToolRequest)
 		scored[r.ID] = &rrfEntry{result: r, score: 1.0 / (rrfK + float64(i+1))}
 	}
 
-	// búsqueda vectorial complementaria
+	// búsqueda vectorial complementaria — timeout corto para no bloquear si chromem está ocupado
 	if s.rel != nil && s.rel.Enabled() {
-		hits, _ := s.rel.Similar(ctx, query, limit*2, 0, 0.55)
+		vecCtx, vecCancel := context.WithTimeout(ctx, 2*time.Second)
+		hits, _ := s.rel.Similar(vecCtx, query, limit*2, 0, 0.55)
+		vecCancel()
 		if ls := s.localStore(); ls != nil {
 			for i, h := range hits {
 				vScore := 1.0 / (rrfK + float64(i+1))

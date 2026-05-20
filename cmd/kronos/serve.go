@@ -1,4 +1,4 @@
-package main
+﻿package main
 
 import (
 	"context"
@@ -133,6 +133,8 @@ func runMCPCore(ctx context.Context, cfg config.Config, st store.Storer, dataDir
 
 // reindexRecent indexa en background las observaciones más recientes en el vector store.
 // Captura observaciones importadas via sync --import mientras el servidor estaba apagado.
+// Usa timeout por item y pausa entre llamadas para no bloquear el read lock de chromem-go
+// mientras el MCP server atiende requests concurrentes.
 func reindexRecent(ctx context.Context, st *store.Store, rel *relations.Detector) {
 	if st == nil || rel == nil {
 		return
@@ -145,7 +147,15 @@ func reindexRecent(ctx context.Context, st *store.Store, rel *relations.Detector
 		if ctx.Err() != nil {
 			return
 		}
-		_ = rel.Index(ctx, o.ID, o.Title+" "+o.Content)
+		itemCtx, itemCancel := context.WithTimeout(ctx, 30*time.Second)
+		_ = rel.Index(itemCtx, o.ID, o.Title+" "+o.Content)
+		itemCancel()
+		// yield para no saturar el lock de chromem-go: permite que Query() pase entre items
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(50 * time.Millisecond):
+		}
 	}
 }
 
