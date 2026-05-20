@@ -11,7 +11,7 @@ import (
 // RunSubagentStop handles the SubagentStop hook.
 // Extracts passive learnings from the subagent's response and saves them
 // using SavePassive, which auto-generates a meaningful title from the content.
-func RunSubagentStop(ctx context.Context, in Input, st *store.Store) error {
+func RunSubagentStop(ctx context.Context, in Input, st store.Storer) error {
 	if in.Response == "" {
 		return nil
 	}

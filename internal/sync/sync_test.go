@@ -125,7 +125,7 @@ func TestIdempotentImport(t *testing.T) {
 	}
 
 	// verificar que solo hay una observación en destino
-	n := dst.CountObservations(ctx, "test-project")
+	n, _ := dst.CountObservations(ctx, "test-project")
 	if n != 1 {
 		t.Errorf("esperaba 1 observación, got %d (posible duplicado)", n)
 	}
@@ -218,7 +218,7 @@ func TestManifestCompaction(t *testing.T) {
 		t.Fatalf("import: %v", err)
 	}
 
-	n := dst.CountObservations(ctx, "test")
+	n, _ := dst.CountObservations(ctx, "test")
 	if n != 1 {
 		t.Errorf("esperaba 1 observación, got %d", n)
 	}

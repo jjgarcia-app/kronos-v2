@@ -21,6 +21,13 @@ type Storer interface {
 	GetActiveSession(ctx context.Context, project string) (*Session, error)
 	ListSessions(ctx context.Context, project string, limit int) ([]*Session, error)
 
+	// Phase 1, Change 1: injected-IDs dedup support
+	PersistInjectedIDs(ctx context.Context, sessionID string, ids []string) error
+	LoadInjectedIDs(ctx context.Context, sessionID string) ([]string, error)
+
+	// Phase 1, Change 1: observation count for bootstrapping signal
+	CountObservations(ctx context.Context, project string) (int, error)
+
 	SavePrompt(ctx context.Context, sessionID, project, content string) error
 	Search(ctx context.Context, p SearchParams) ([]*SearchResult, error)
 

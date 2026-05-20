@@ -24,12 +24,13 @@ const (
 )
 
 type Session struct {
-	ID        string
-	Project   string
-	Directory string
-	StartedAt time.Time
-	EndedAt   *time.Time
-	Summary   string
+	ID                     string
+	Project                string
+	Directory              string
+	StartedAt              time.Time
+	EndedAt                *time.Time
+	Summary                string
+	InjectedObservationIDs []string // decoded from JSON column; nil if never set
 }
 
 type Observation struct {

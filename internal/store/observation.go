@@ -252,8 +252,10 @@ func (s *Store) RenameProject(ctx context.Context, from, to string) (int64, erro
 	return affected, nil
 }
 
-// CountObservations retorna el total de observaciones no borradas.
-func (s *Store) CountObservations(ctx context.Context, project string) int {
+// CountObservations returns the count of non-deleted observations for the given project.
+// If project is empty, counts all observations across all projects.
+// Satisfies store.Storer.
+func (s *Store) CountObservations(ctx context.Context, project string) (int, error) {
 	var row *sql.Row
 	if project != "" {
 		row = s.db.QueryRowContext(ctx,
@@ -263,8 +265,10 @@ func (s *Store) CountObservations(ctx context.Context, project string) int {
 			`SELECT COUNT(*) FROM observations WHERE deleted_at IS NULL`)
 	}
 	var n int
-	_ = row.Scan(&n)
-	return n
+	if err := row.Scan(&n); err != nil {
+		return 0, err
+	}
+	return n, nil
 }
 
 // internos

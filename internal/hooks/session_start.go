@@ -7,21 +7,24 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/jjgarcia-app/kronos-v2/internal/checkpoint"
 	"github.com/jjgarcia-app/kronos-v2/internal/platform"
 	"github.com/jjgarcia-app/kronos-v2/internal/project"
 	"github.com/jjgarcia-app/kronos-v2/internal/store"
 )
 
+// ReasonCompact is the value of Input.Reason (or Input.Source) that indicates
+// the session started after a context compaction event.
+const ReasonCompact = "compact"
+
 // RunSessionStart handles the SessionStart hook.
-// It detects the project, creates a memory session, and prints context
-// to stdout so Claude picks it up at the start of the conversation.
 //
-// Output order:
-//  1. Kronos usage rules — injected always, act as the built-in harness
-//  2. Active checkpoint (if any) — re-orientation banner for in-progress tasks
-//  3. Recent project observations
-func RunSessionStart(ctx context.Context, in Input, st *store.Store) error {
+// Normal start: emits a 2-line bootstrapping signal only — no observation content.
+// Post-compaction (reason == "compact"): delegates to RunPostCompaction.
+func RunSessionStart(ctx context.Context, in Input, st store.Storer) error {
+	if in.EffectiveReason() == ReasonCompact {
+		return RunPostCompaction(ctx, in, st)
+	}
+
 	proj := project.Detect(in.CWD)
 
 	_, err := st.CreateSession(ctx, in.SessionID, proj.Name, in.CWD)
@@ -30,58 +33,18 @@ func RunSessionStart(ctx context.Context, in Input, st *store.Store) error {
 		_ = err
 	}
 
-	var sb strings.Builder
+	n, _ := st.CountObservations(ctx, proj.Name)
+	fmt.Printf("[kronos] %d observations available for %s\n", n, proj.Name)
+	fmt.Println("[kronos] call mem_search with keywords from your task before editing")
 
-	// Layer 1 harness — inject rules only if no CLAUDE.md already covers them.
-	// If the user has configured Layer 2 (CLAUDE.md with Kronos section),
-	// skip injection to avoid doubling context and accelerating compaction.
-	if !kronosRulesInCLAUDEMD(in.CWD) {
-		fmt.Fprintf(&sb, kronosRules)
-	}
+	// Persist empty set as dedup baseline for RunPromptSubmit.
+	_ = st.PersistInjectedIDs(ctx, in.SessionID, nil)
 
-	// Inject active checkpoint — re-orientation for in-progress tasks
-	if dataDir, err := platform.DataDir(); err == nil {
-		if cp, err := checkpoint.Load(dataDir, proj.Name); err == nil && cp != nil {
-			fmt.Fprintf(&sb, "## TAREA EN PROGRESO — retomar exactamente desde aquí\n\n")
-			fmt.Fprintf(&sb, "**Estabas trabajando en:** %s\n\n", cp.Task)
-			if cp.Progress != "" {
-				fmt.Fprintf(&sb, "**Último paso completado:** %s\n\n", cp.Progress)
-			}
-			fmt.Fprintf(&sb, "**Próximo paso (ejecutar esto):** %s\n\n", cp.NextStep)
-			if cp.Files != "" {
-				fmt.Fprintf(&sb, "**Archivos activos:** %s\n\n", cp.Files)
-			}
-			if cp.Notes != "" {
-				fmt.Fprintf(&sb, "**Restricciones/notas importantes:** %s\n\n", cp.Notes)
-			}
-			fmt.Fprintf(&sb, "_Checkpoint: %s_\n\n", cp.UpdatedAt.Format("2006-01-02 15:04"))
-			fmt.Fprintf(&sb, "---\n\n")
-		}
-	}
-
-	// Recent project observations
-	observations, err := st.ListObservations(ctx, proj.Name, 8)
-	if err == nil && len(observations) > 0 {
-		fmt.Fprintf(&sb, "## Kronos — Contexto previo (%s)\n\n", proj.Name)
-		for _, o := range observations {
-			fmt.Fprintf(&sb, "**[%d] %s** (%s) — %s\n", o.ID, o.Title, o.Type, o.CreatedAt.Format("2006-01-02"))
-			preview := o.Content
-			if len(preview) > 120 {
-				preview = preview[:117] + "..."
-			}
-			fmt.Fprintf(&sb, "%s\n\n", preview)
-		}
-	}
-
-	if sb.Len() > 0 {
-		fmt.Print(sb.String())
-	}
 	return nil
 }
 
 // kronosRulesInCLAUDEMD checks whether a CLAUDE.md file (project or global)
-// already contains Kronos usage rules. If it does, the hook skips injecting
-// the Layer 1 rules block to avoid redundant context.
+// already contains Kronos usage rules. Kept for potential use by other callers.
 func kronosRulesInCLAUDEMD(cwd string) bool {
 	const marker = "Kronos"
 
@@ -106,8 +69,8 @@ func kronosRulesInCLAUDEMD(cwd string) bool {
 	return false
 }
 
-// kronosRules is injected at every session start as the built-in harness.
-// Kept short so it doesn't bloat context — 6 rules, action-oriented.
+// kronosRules is retained for reference by other callers.
+// It is no longer injected at session start; the bootstrapping signal replaces it.
 const kronosRules = `## Kronos — Reglas de memoria (seguir siempre)
 
 1. **Tarea multi-paso → checkpoint inmediato:** Al recibir cualquier tarea que tome más de un turno, llama ` + "`mem_checkpoint`" + ` ahora con ` + "`task`" + ` y ` + "`next_step`" + `. Actualiza el checkpoint después de cada paso completado.
