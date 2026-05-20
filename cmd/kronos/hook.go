@@ -25,7 +25,7 @@ import (
 // Reason "startup", "clear", or empty all trigger the normal session start.
 func runHook(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("uso: kronos hook <session-start|prompt-submit|subagent-stop|session-stop> [--reason compact]")
+		return fmt.Errorf("uso: kronos hook <session-start|prompt-submit|subagent-stop|session-stop|pre-tool-use> [--reason compact]")
 	}
 
 	hookName := args[0]

@@ -348,6 +348,16 @@ func (d *DualStore) CountObservations(ctx context.Context, project string) (int,
 	return d.buffer.CountObservations(ctx, project)
 }
 
+func (d *DualStore) IncrementSearchCount(ctx context.Context, sessionID string) error {
+	if !d.isPrimaryDown() {
+		if err := d.primary.IncrementSearchCount(ctx, sessionID); err == nil {
+			return nil
+		}
+		d.markDown()
+	}
+	return d.buffer.IncrementSearchCount(ctx, sessionID)
+}
+
 // LocalStore retorna el Store SQLite local (buffer).
 // Usar para operaciones que siempre deben ejecutarse en local: conflictos, sync, checkpoints.
 func (d *DualStore) LocalStore() *Store {

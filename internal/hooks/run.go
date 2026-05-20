@@ -39,6 +39,8 @@ func RunWithReason(ctx context.Context, hookName string, reason string, st store
 		return RunSubagentStop(ctx, in, st)
 	case "session-stop":
 		return RunSessionStop(ctx, in, st)
+	case "pre-tool-use":
+		return RunPreToolUse(ctx, in, st)
 	default:
 		return fmt.Errorf("hook desconocido: %s", hookName)
 	}

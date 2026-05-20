@@ -31,6 +31,7 @@ type Session struct {
 	EndedAt                *time.Time
 	Summary                string
 	InjectedObservationIDs []string // decoded from JSON column; nil if never set
+	SearchCount            int
 }
 
 type Observation struct {

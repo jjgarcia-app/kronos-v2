@@ -350,6 +350,76 @@ func TestMemSavePrompt(t *testing.T) {
 	}
 }
 
+// newTestServerWithStore crea un Server y retorna también el store subyacente para inspección.
+func newTestServerWithStore(t *testing.T) (*kronosmcp.Server, *store.Store) {
+	t.Helper()
+	f, err := os.CreateTemp("", "kronos-mcp-test-*.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	t.Cleanup(func() { os.Remove(f.Name()) })
+
+	st, err := store.New(f.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	return kronosmcp.New(st, 10, 20), st
+}
+
+// --- mem_search search_count instrumentation ---
+
+func TestMemSearch_IncrementsSearchCount(t *testing.T) {
+	srv, st := newTestServerWithStore(t)
+	ctx := context.Background()
+
+	st.CreateSession(ctx, "sess-sc-mcp", "proj", "/tmp")
+
+	call(t, srv, "mem_search", map[string]any{
+		"query":      "anything",
+		"project":    "proj",
+		"session_id": "sess-sc-mcp",
+	})
+
+	sess, err := st.GetSession(ctx, "sess-sc-mcp")
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if sess == nil {
+		t.Fatal("GetSession returned nil")
+	}
+	if sess.SearchCount != 1 {
+		t.Errorf("SearchCount = %d, want 1", sess.SearchCount)
+	}
+}
+
+func TestMemSearch_IncrementsOnEmptyResults(t *testing.T) {
+	srv, st := newTestServerWithStore(t)
+	ctx := context.Background()
+
+	st.CreateSession(ctx, "sess-sc-empty", "proj", "/tmp")
+
+	// Query that returns 0 results — should still increment.
+	call(t, srv, "mem_search", map[string]any{
+		"query":      "zzznomatch",
+		"project":    "proj",
+		"session_id": "sess-sc-empty",
+	})
+
+	sess, err := st.GetSession(ctx, "sess-sc-empty")
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if sess == nil {
+		t.Fatal("GetSession returned nil")
+	}
+	if sess.SearchCount != 1 {
+		t.Errorf("SearchCount = %d, want 1 (even for empty results)", sess.SearchCount)
+	}
+}
+
 // --- helpers ---
 
 func contains(s, sub string) bool {

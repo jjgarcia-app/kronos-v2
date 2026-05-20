@@ -28,6 +28,9 @@ type Storer interface {
 	// Phase 1, Change 1: observation count for bootstrapping signal
 	CountObservations(ctx context.Context, project string) (int, error)
 
+	// Phase 2: pre-tool-use gate — track mem_search calls per session
+	IncrementSearchCount(ctx context.Context, sessionID string) error
+
 	SavePrompt(ctx context.Context, sessionID, project, content string) error
 	Search(ctx context.Context, p SearchParams) ([]*SearchResult, error)
 

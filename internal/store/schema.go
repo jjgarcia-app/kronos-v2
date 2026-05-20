@@ -164,4 +164,7 @@ var migrations = []string{
 
 	// v41: dedup support — injected observation IDs per session
 	`ALTER TABLE sessions ADD COLUMN injected_observation_ids TEXT NULL`,
+
+	// v42: pre-tool-use gate — track mem_search calls per session
+	`ALTER TABLE sessions ADD COLUMN search_count INTEGER NOT NULL DEFAULT 0`,
 }
