@@ -369,7 +369,7 @@ func checkSyncQueue(ctx context.Context) Check {
 	}
 	return Check{
 		Name:         "Sync queue",
-		Detail:       fmt.Sprintf("%d observación(es) pendiente(s) de sync → ejecuta: kronos sync", n),
+		Detail:       fmt.Sprintf("%d observación(es) pendiente(s) de sync → ejecuta: kronos sync --pg-flush", n),
 		Status:       StatusWarn,
 		FixAvailable: false,
 	}

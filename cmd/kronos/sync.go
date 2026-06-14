@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/jjgarcia-app/kronos-v2/internal/config"
 	"github.com/jjgarcia-app/kronos-v2/internal/platform"
 	"github.com/jjgarcia-app/kronos-v2/internal/store"
 	kronosSync "github.com/jjgarcia-app/kronos-v2/internal/sync"
@@ -18,6 +20,7 @@ import (
 //	kronos sync                              → export (modo default)
 //	kronos sync --export [--project=name] [--dir=path]
 //	kronos sync --import [--dir=path]
+//	kronos sync --pg-flush                   → flush pending ops to PostgreSQL
 //
 // --dir apunta al directorio raíz del proyecto (default: cwd).
 // Los archivos de sync viven en {dir}/.kronos/.
@@ -25,6 +28,7 @@ func runSync(args []string) error {
 	var (
 		doExport  = false
 		doImport  = false
+		doPGFlush = false
 		project   = ""
 		targetDir = ""
 		createdBy = "local"
@@ -36,6 +40,8 @@ func runSync(args []string) error {
 			doExport = true
 		case args[i] == "--import" || args[i] == "-i":
 			doImport = true
+		case args[i] == "--pg-flush":
+			doPGFlush = true
 		case strings.HasPrefix(args[i], "--project="):
 			project = strings.TrimPrefix(args[i], "--project=")
 		case args[i] == "--project" || args[i] == "-p":
@@ -55,6 +61,11 @@ func runSync(args []string) error {
 		case strings.HasPrefix(args[i], "--created-by="):
 			createdBy = strings.TrimPrefix(args[i], "--created-by=")
 		}
+	}
+
+	// --pg-flush: drain the SQLite sync_queue to PostgreSQL
+	if doPGFlush {
+		return runPGFlush()
 	}
 
 	// default: export
@@ -121,5 +132,55 @@ func runSync(args []string) error {
 		return nil
 	}
 
+	return nil
+}
+
+// runPGFlush drains the SQLite sync_queue to PostgreSQL.
+// Called by `kronos sync --pg-flush`.
+func runPGFlush() error {
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("cargar config: %w", err)
+	}
+	if cfg.DB.Backend != "postgres" {
+		fmt.Println("Backend no es PostgreSQL — nada que sincronizar.")
+		return nil
+	}
+
+	dbPath, err := platform.DBPath()
+	if err != nil {
+		return fmt.Errorf("resolver db path: %w", err)
+	}
+	if cfg.DB.SQLitePath != "" {
+		dbPath = cfg.DB.SQLitePath
+	}
+
+	buffer, err := store.New(dbPath)
+	if err != nil {
+		return fmt.Errorf("abrir store local: %w", err)
+	}
+
+	dual, err := store.NewDualFromDSN(buffer, cfg.DB.PostgresDSN)
+	if err != nil {
+		return fmt.Errorf("abrir dual store: %w", err)
+	}
+	defer dual.Close()
+
+	ctx := context.Background()
+	pending := dual.PendingCount()
+	if pending == 0 {
+		fmt.Println("Sync queue vacía — nada que sincronizar.")
+		return nil
+	}
+
+	fmt.Printf("Sincronizando %d operación(es) pendiente(s) a PostgreSQL...\n", pending)
+	ok, flushErr := dual.FlushPendingVerbose(ctx)
+	if !ok {
+		return fmt.Errorf("flush a PostgreSQL falló: %w", flushErr)
+	}
+
+	remaining := dual.PendingCount()
+	flushed := pending - remaining
+	fmt.Printf("Sincronizadas: %d  |  Pendientes restantes: %d\n", flushed, remaining)
 	return nil
 }

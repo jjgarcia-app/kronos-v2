@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -378,6 +379,12 @@ func (d *DualStore) Close() error {
 // ── sync loop ───────────────────────────────────────────────────────────────
 
 func (d *DualStore) syncLoop(ctx context.Context) {
+	// attempt an immediate flush on startup so short-lived MCP sessions
+	// (< 60s) don't leave the queue un-drained indefinitely.
+	if !d.queue.isEmpty() {
+		d.FlushPending(ctx)
+	}
+
 	state := &retryState{}
 	for {
 		interval := state.nextInterval()
@@ -478,6 +485,12 @@ func (d *DualStore) replayEntry(ctx context.Context, primary *Store, e syncEntry
 			return nil // corrupt: discard
 		}
 		_, err := primary.SaveObservation(ctx, p)
+		if err != nil && isFKError(err) && p.SessionID != "" {
+			// parent session missing from primary (e.g. PG was wiped after
+			// this entry was queued) — preserve content without session link.
+			p.SessionID = ""
+			_, err = primary.SaveObservation(ctx, p)
+		}
 		return err
 
 	case "update_observation":
@@ -486,6 +499,9 @@ func (d *DualStore) replayEntry(ctx context.Context, primary *Store, e syncEntry
 			return nil
 		}
 		_, err := primary.UpdateObservation(ctx, p)
+		if err != nil && strings.Contains(err.Error(), "observation") && strings.Contains(err.Error(), "not found") {
+			return nil // observation gone from primary — discard update
+		}
 		return err
 
 	case "delete_observation":
@@ -501,6 +517,9 @@ func (d *DualStore) replayEntry(ctx context.Context, primary *Store, e syncEntry
 			return nil
 		}
 		_, err := primary.CreateSession(ctx, p.ID, p.Project, p.Directory)
+		if err != nil && isDuplicateError(err) {
+			return nil // session already exists in primary — idempotent
+		}
 		return err
 
 	case "end_session":
@@ -508,14 +527,46 @@ func (d *DualStore) replayEntry(ctx context.Context, primary *Store, e syncEntry
 		if err := json.Unmarshal([]byte(e.Payload), &p); err != nil {
 			return nil
 		}
-		return primary.EndSession(ctx, p.ID, p.Summary)
+		err := primary.EndSession(ctx, p.ID, p.Summary)
+		// session may not exist in the primary if PG was wiped/rebuilt after
+		// the entry was queued — treat as already resolved and discard.
+		if err != nil && strings.Contains(err.Error(), "session not found") {
+			return nil
+		}
+		return err
 
 	case "save_prompt":
 		var p struct{ SessionID, Project, Content string }
 		if err := json.Unmarshal([]byte(e.Payload), &p); err != nil {
 			return nil
 		}
-		return primary.SavePrompt(ctx, p.SessionID, p.Project, p.Content)
+		err := primary.SavePrompt(ctx, p.SessionID, p.Project, p.Content)
+		if err != nil && isFKError(err) {
+			return nil // session missing from primary — discard orphaned prompt
+		}
+		return err
 	}
 	return nil
+}
+
+// isFKError returns true when err is a foreign key constraint violation
+// from either the PostgreSQL or SQLite driver.
+func isFKError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "foreign key constraint") ||
+		strings.Contains(s, "FOREIGN KEY constraint")
+}
+
+// isDuplicateError returns true when err signals a unique/primary-key conflict.
+func isDuplicateError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "duplicate key") ||
+		strings.Contains(s, "UNIQUE constraint") ||
+		strings.Contains(s, "already exists")
 }

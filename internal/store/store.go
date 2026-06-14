@@ -61,7 +61,16 @@ func (s *Store) migrate() error {
 		}
 
 		if _, err := s.db.ExecContext(ctx, sql); err != nil {
-			return fmt.Errorf("migration v%d: %w", version, err)
+			// ALTER TABLE ADD COLUMN is idempotent: a "duplicate column name" error
+			// means the column already exists (e.g. from a dev build that skipped
+			// migration tracking). Safe to treat as applied and continue.
+			sqlLower := strings.ToLower(strings.TrimSpace(sql))
+			isAddColumn := strings.Contains(sqlLower, "alter table") && strings.Contains(sqlLower, "add column")
+			if isAddColumn && strings.Contains(err.Error(), "duplicate column name") {
+				// column already present — record migration as applied and continue
+			} else {
+				return fmt.Errorf("migration v%d: %w", version, err)
+			}
 		}
 
 		// registrar migración aplicada (schema_migrations puede no existir en v1)
