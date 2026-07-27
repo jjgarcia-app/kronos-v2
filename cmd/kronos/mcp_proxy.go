@@ -9,12 +9,9 @@ package main
 import (
 	"context"
 	"fmt"
-	"os"
-	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/jjgarcia-app/kronos-v2/internal/mcp"
@@ -22,10 +19,6 @@ import (
 	mcptypes "github.com/mark3labs/mcp-go/mcp"
 	mcpgoserver "github.com/mark3labs/mcp-go/server"
 )
-
-// DETACHED_PROCESS no está en el paquete syscall estándar de Go — es una
-// constante fija de la API de Windows (winbase.h).
-const detachedProcess = 0x00000008
 
 var spawnBackoff = []time.Duration{
 	200 * time.Millisecond, 500 * time.Millisecond,
@@ -185,22 +178,5 @@ func tryConnect(ctx context.Context, daemonURL string) (*mcpgoclient.Client, err
 	return c, nil
 }
 
-// spawnDaemonDetached lanza `kronos serve --daemon-mode` como proceso
-// independiente que sobrevive a que esta sesión (y su terminal) cierren.
-// Validado en el spike de la Fase 1: DETACHED_PROCESS + CREATE_NEW_PROCESS_GROUP,
-// sin heredar handles de consola del padre (Stdin/Stdout/Stderr en nil — el
-// propio daemon redirige su salida a daemon.log apenas arranca).
-func spawnDaemonDetached(port int) error {
-	exe, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	cmd := exec.Command(exe, "serve", "--daemon-mode", fmt.Sprintf("--port=%d", port))
-	cmd.Stdin = nil
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		CreationFlags: detachedProcess | syscall.CREATE_NEW_PROCESS_GROUP,
-	}
-	return cmd.Start()
-}
+// spawnDaemonDetached vive en cmd/kronos/detach_windows.go y detach_other.go
+// (build tags) — el mecanismo de detach de proceso es específico de cada SO.
