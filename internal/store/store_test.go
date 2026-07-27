@@ -74,6 +74,34 @@ func TestGetActiveSession(t *testing.T) {
 	}
 }
 
+// TestEndSession_EmptySummaryDoesNotOverwriteExisting reproduce el bug real:
+// mem_session_end llamado después de mem_session_summary (por error, o
+// porque el docstring viejo lo sugería) pasaba summary="" y borraba el
+// resumen ya guardado. EndSession ahora preserva el summary existente
+// cuando la llamada nueva viene vacía.
+func TestEndSession_EmptySummaryDoesNotOverwriteExisting(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	s.CreateSession(ctx, "s-summary", "p", "/tmp")
+	if err := s.EndSession(ctx, "s-summary", "resumen real de la sesión"); err != nil {
+		t.Fatalf("EndSession (summary real): %v", err)
+	}
+
+	// llamada redundante con summary vacío — no debe borrar el resumen
+	if err := s.EndSession(ctx, "s-summary", ""); err != nil {
+		t.Fatalf("EndSession (summary vacío): %v", err)
+	}
+
+	sess, err := s.GetSession(ctx, "s-summary")
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if sess.Summary != "resumen real de la sesión" {
+		t.Errorf("Summary = %q, want el resumen original preservado", sess.Summary)
+	}
+}
+
 func TestEndSessionNotFound(t *testing.T) {
 	s := newTestStore(t)
 	err := s.EndSession(context.Background(), "no-existe", "")

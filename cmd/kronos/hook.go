@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/jjgarcia-app/kronos-v2/internal/embeddings"
 	"github.com/jjgarcia-app/kronos-v2/internal/hooks"
@@ -46,11 +47,23 @@ func runHook(args []string) error {
 	}
 	defer st.Close()
 
-	// Build VectorStore — nil if no embedder is configured, which is the normal case.
-	// RunPromptSubmit handles nil gracefully (skips vector, uses FTS only).
+	// Build VectorStore solo para prompt-submit — es el único hook que lo usa
+	// (ver hooks.RunWithReason). Los otros 4 hooks (session-start, session-stop,
+	// subagent-stop, pre-tool-use) antes pagaban igual el costo de un ping a
+	// Ollama + cargar el vector store entero desde disco en CADA invocación,
+	// sin usarlo nunca — puro desperdicio y contención innecesaria contra
+	// Ollama en cada evento de sesión, no solo en cada prompt.
+	//
+	// Nil es manejado con gracia por RunPromptSubmit (cae a FTS-only). Timeout
+	// corto: esto es un hook fire-and-forget, no vale la pena esperar 2s+ a
+	// que Ollama responda si está ocupado — mejor degradar rápido a FTS.
 	var vs *embeddings.VectorStore
-	if dataDir, err := platform.DataDir(); err == nil {
-		vs, _ = embeddings.New(context.Background(), dataDir)
+	if hookName == "prompt-submit" {
+		if dataDir, err := platform.DataDir(); err == nil {
+			vsCtx, vsCancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+			vs, _ = embeddings.New(vsCtx, dataDir)
+			vsCancel()
+		}
 	}
 
 	return hooks.RunWithReason(context.Background(), hookName, reason, st, vs)

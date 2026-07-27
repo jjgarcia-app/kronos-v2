@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 // DataDir returns the OS-specific data directory for Kronos.
@@ -85,14 +86,49 @@ func ClaudeMCPFile() (string, error) {
 	return filepath.Join(home, ".claude.json"), nil
 }
 
-// CurrentSessionPath returns the path to the file that stores the active session ID.
-// Written by session-start, cleared by session-stop, read by the MCP server.
-func CurrentSessionPath() (string, error) {
+// CurrentSessionPath returns the path to the file that stores the active
+// session ID for a given project. Written by session-start, cleared by
+// session-stop, read by the MCP server as a session_id fallback.
+//
+// Namespaced por proyecto (no un único archivo global): con varias sesiones
+// de Claude Code concurrentes en distintos proyectos, un archivo global hacía
+// que la última sesión en arrancar pisara el puntero de todas las demás —
+// mem_search terminaba contando búsquedas para la sesión equivocada. No es
+// una solución perfecta (dos sesiones en el MISMO proyecto todavía compiten),
+// pero cubre el caso común y no requiere rediseñar el transporte MCP.
+//
+// project == "" cae al path histórico sin namespacing, para callers que no
+// tienen contexto de proyecto disponible (ej. mem_search sin "project").
+func CurrentSessionPath(project string) (string, error) {
 	dir, err := DataDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "current_session.txt"), nil
+	if project == "" {
+		return filepath.Join(dir, "current_session.txt"), nil
+	}
+	safe := sanitizeForFilename(project)
+	return filepath.Join(dir, "sessions", "current_session_"+safe+".txt"), nil
+}
+
+// sanitizeForFilename reemplaza caracteres no seguros para nombre de archivo
+// por "-". No pretende ser una normalización canónica (eso es project.normalize,
+// en otro paquete) — solo evitar separadores de path u otros caracteres inválidos.
+func sanitizeForFilename(s string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(s) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-', r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('-')
+		}
+	}
+	out := strings.Trim(b.String(), "-")
+	if out == "" {
+		return "unknown"
+	}
+	return out
 }
 
 // OS returns the current operating system identifier.

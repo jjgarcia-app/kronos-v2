@@ -3,15 +3,18 @@ package project
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
 
-// ErrAmbiguousProject is returned when multiple child git repositories are found
-// and no config specifies which one to use.
+// ErrAmbiguousProject se conserva por compatibilidad — DetectFull ya no lo
+// usa para bloquear (ver pickMostLikely), pero queda exportado por si algún
+// caller externo lo comparaba explícitamente.
 var ErrAmbiguousProject = errors.New("multiple child git repositories — specify project via .kronos/config.json")
 
 type Method string
@@ -139,11 +142,16 @@ func DetectFull(cwd string) DetectionResult {
 		}
 	}
 	if len(children) > 1 {
+		best := pickMostLikely(gitPaths)
 		return DetectionResult{
-			Project:           "",
-			Source:            string(MethodAmbiguous),
-			Path:              absPath,
-			Error:             ErrAmbiguousProject,
+			Project: normalize(children[best]),
+			Source:  string(MethodAmbiguous),
+			Path:    gitPaths[best],
+			Warning: fmt.Sprintf(
+				"múltiples repos git en este directorio — se eligió %q por actividad reciente (commit más nuevo). "+
+					"Si no es el correcto, especificá project explícito o creá .kronos/config.json",
+				children[best],
+			),
 			AvailableProjects: children,
 		}
 	}
@@ -269,6 +277,36 @@ func findChildRepos(cwd string) ([]string, []string) {
 	}
 
 	return names, paths
+}
+
+// pickMostLikely elige el candidato más probable entre varios repos git
+// hermanos ambiguos: el que tuvo el commit más reciente (heurística simple
+// pero efectiva — el repo que se está usando activamente ahora mismo). Si
+// git falla o se acaba el presupuesto de tiempo para algún candidato, ese
+// candidato simplemente se ignora — nunca bloquea, en el peor caso devuelve
+// el primero encontrado (índice 0).
+func pickMostLikely(paths []string) int {
+	best := 0
+	var bestTime int64 = -1
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for i, p := range paths {
+		if time.Now().After(deadline) {
+			break
+		}
+		out := gitCmd(p, "log", "-1", "--format=%ct")
+		if out == "" {
+			continue
+		}
+		ts, err := strconv.ParseInt(out, 10, 64)
+		if err != nil {
+			continue
+		}
+		if ts > bestTime {
+			bestTime = ts
+			best = i
+		}
+	}
+	return best
 }
 
 // gitCmd ejecuta un comando git con timeout de 200ms.

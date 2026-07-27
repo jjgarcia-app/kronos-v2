@@ -15,9 +15,11 @@ func toolMemSave() mcpgo.Tool {
 
 NO LLAMAR para: información trivial u obvia, cosas ya documentadas en el código, estado transitorio, resúmenes de conversación.
 
-CAMPO topic_key — OBLIGATORIO para types: decision / architecture / pattern / config
+CAMPO topic_key — recomendado pasarlo siempre para types: decision / architecture / pattern / config
   Usa una clave path-like estable. Ejemplos: "db/postgres-driver", "auth/jwt-strategy", "api/rate-limiting"
   El topic_key permite upsert: si el mismo tema se actualiza, no se crea duplicado.
+  Si se omite para estos types, se autosugiere a partir del título — pero un topic_key elegido a mano
+  suele ser más estable para upsert entre sesiones que uno derivado automáticamente.
 
 CAMPO content — usa esta estructura:
   Qué: [descripción del hecho]
@@ -32,7 +34,7 @@ CAMPO scope — usa "global" solo para patrones reutilizables entre proyectos. D
 		mcpgo.WithString("project", mcpgo.Description("Nombre del proyecto. Si se omite, se detecta automáticamente a partir de 'directory' (o del cwd del server si tampoco se pasa 'directory')")),
 		mcpgo.WithString("directory", mcpgo.Description("Directorio de trabajo actual, usado para autodetectar 'project' si se omite. Recomendado pasarlo siempre que se conozca — el servidor MCP es un proceso persistente y su propio cwd puede no coincidir con el del repo actual")),
 		mcpgo.WithString("session_id", mcpgo.Description("ID de la sesión activa. Proveerlo si está disponible")),
-		mcpgo.WithString("topic_key", mcpgo.Description("OBLIGATORIO para types decision/architecture/pattern/config. Clave estable tipo path. Ej: 'db/connection-pool'. Permite upsert — actualiza sin duplicar")),
+		mcpgo.WithString("topic_key", mcpgo.Description("Recomendado para types decision/architecture/pattern/config — si se omite para esos types, se autosugiere del título. Clave estable tipo path. Ej: 'db/connection-pool'. Permite upsert — actualiza sin duplicar")),
 		mcpgo.WithString("scope", mcpgo.Description("'project' (default) para observaciones del proyecto actual. 'global' solo si el patrón aplica a cualquier proyecto")),
 	)
 }
@@ -122,9 +124,9 @@ project es OBLIGATORIO. session_id: si se omite, Kronos genera uno automáticame
 
 func toolMemSessionEnd() mcpgo.Tool {
 	return mcpgo.NewTool("mem_session_end",
-		mcpgo.WithDescription(`IMPORTANTE: siempre llama mem_session_summary ANTES de este tool. Cerrar una sesión sin resumen pierde el registro de aprendizajes de esa sesión.
+		mcpgo.WithDescription(`USO NORMAL: casi nunca hace falta llamar este tool directamente — mem_session_summary ya cierra la sesión como parte de su propio flujo (guarda el resumen Y termina la sesión en un solo paso). Si ya llamaste mem_session_summary, no llames también este tool.
 
-NOTA: el hook Stop cierra la sesión automáticamente al terminar la conversación en Claude Code. Llama este tool manualmente solo cuando cierras una sub-sesión que iniciaste explícitamente con mem_session_start.`),
+CUÁNDO SÍ LLAMARLO: solo para cerrar sin resumen una sub-sesión que vos mismo arrancaste a mano con mem_session_start (ej. una tarea aislada de corta duración donde no aplica un resumen completo). El hook Stop ya cierra automáticamente la sesión principal de Claude Code al terminar la conversación — no hace falta llamarlo para eso tampoco.`),
 		mcpgo.WithString("session_id", mcpgo.Required(), mcpgo.Description("ID de la sesión a cerrar")),
 	)
 }
@@ -137,6 +139,8 @@ func toolMemSessionSummary() mcpgo.Tool {
   • Antes de que el usuario cierre Claude Code
 
 El hook Stop cierra la sesión automáticamente, pero NO guarda el resumen — eso es responsabilidad del agente.
+
+Este tool YA cierra la sesión como parte de su ejecución (guarda el resumen y termina la sesión en un solo paso) — no hace falta llamar mem_session_end después.
 
 ESTRUCTURA OBLIGATORIA del summary:
 

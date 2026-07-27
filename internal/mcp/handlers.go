@@ -45,6 +45,15 @@ func (s *Server) handleMemSave(ctx context.Context, req mcpgo.CallToolRequest) (
 	topicKey := str(req, "topic_key")
 	scope := store.Scope(strOr(req, "scope", "project"))
 
+	// topic_key es lo que habilita upsert (evita duplicar el mismo tema en
+	// entradas separadas) — para los types donde el protocolo lo pide, si el
+	// caller lo omitió se autosugiere en vez de dejarlo vacío. Antes esto
+	// requería una llamada separada a mem_suggest_topic_key que casi nunca
+	// se usaba en la práctica.
+	if topicKey == "" && needsTopicKey(typ) {
+		topicKey = buildTopicKey(title, string(typ))
+	}
+
 	if err := validateSaveParams(content, typ, topicKey); err != nil {
 		return fail(err), nil
 	}
@@ -113,7 +122,7 @@ func (s *Server) handleMemSearch(ctx context.Context, req mcpgo.CallToolRequest)
 	fetchN := (limit + offset) * 2
 
 	if sessionID == "" {
-		if p, pErr := platform.CurrentSessionPath(); pErr == nil {
+		if p, pErr := platform.CurrentSessionPath(project); pErr == nil {
 			if data, rErr := os.ReadFile(p); rErr == nil {
 				sessionID = strings.TrimSpace(string(data))
 			}
@@ -608,6 +617,9 @@ func (s *Server) handleMemCurrentProject(_ context.Context, req mcpgo.CallToolRe
 	if dr.Warning != "" {
 		fmt.Fprintf(&sb, "**Advertencia**: %s\n", dr.Warning)
 	}
+	if len(dr.AvailableProjects) > 0 {
+		fmt.Fprintf(&sb, "**Otros repos en este directorio**: %s\n", strings.Join(dr.AvailableProjects, ", "))
+	}
 	return ok(sb.String()), nil
 }
 
@@ -700,6 +712,17 @@ func resolveObsSyncID(ctx context.Context, st *store.Store, idOrSync string) (st
 		return obs.SyncID, nil
 	}
 	return idOrSync, nil
+}
+
+// needsTopicKey reporta si el type requiere topic_key para habilitar upsert
+// — mismo criterio documentado en el protocolo (mem_save docstring/CLAUDE.md).
+func needsTopicKey(typ store.ObservationType) bool {
+	switch typ {
+	case store.TypeDecision, store.TypeArchitecture, store.TypePattern, store.TypeConfig:
+		return true
+	default:
+		return false
+	}
 }
 
 // buildTopicKey generates a stable path-like topic key from a title and type.

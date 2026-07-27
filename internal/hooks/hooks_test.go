@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/jjgarcia-app/kronos-v2/internal/hooks"
+	"github.com/jjgarcia-app/kronos-v2/internal/platform"
+	"github.com/jjgarcia-app/kronos-v2/internal/project"
 	"github.com/jjgarcia-app/kronos-v2/internal/store"
 )
 
@@ -668,42 +670,102 @@ func TestRunSubagentStop_NoLearnings_Noop(t *testing.T) {
 
 // --- current_session.txt persistence ---
 
+// storerWithPending envuelve un *store.Store real y le agrega PendingCount()
+// — alcanza para satisfacer el chequeo `interface{ PendingCount() int }` que
+// usa printBacklogWarnings, sin tener que levantar un DualStore/Postgres real.
+type storerWithPending struct {
+	*store.Store
+	pending int
+}
+
+func (s *storerWithPending) PendingCount() int { return s.pending }
+
+// TestRunSessionStart_WarnsOnSyncBacklog verifica que un backlog de sync por
+// encima del umbral se avise proactivo en SessionStart, en vez de quedar
+// invisible salvo que alguien pregunte mem_doctor explícitamente.
+func TestRunSessionStart_WarnsOnSyncBacklog(t *testing.T) {
+	setupTempDataDir(t)
+	base := newTestStore(t)
+	st := &storerWithPending{Store: base, pending: 150}
+
+	in := hooks.Input{SessionID: "sess-backlog", CWD: t.TempDir()}
+	out := captureStdout(t, func() {
+		if err := hooks.RunSessionStart(context.Background(), in, st); err != nil {
+			t.Fatalf("RunSessionStart: %v", err)
+		}
+	})
+
+	if !strings.Contains(out, "150") || !strings.Contains(out, "sincronizar") {
+		t.Errorf("expected sync backlog warning mentioning 150 pending ops, got: %s", out)
+	}
+}
+
+// TestRunSessionStart_NoWarningBelowThreshold verifica que no se emite aviso
+// cuando el backlog está por debajo del umbral (ruido innecesario).
+func TestRunSessionStart_NoWarningBelowThreshold(t *testing.T) {
+	setupTempDataDir(t)
+	base := newTestStore(t)
+	st := &storerWithPending{Store: base, pending: 5}
+
+	in := hooks.Input{SessionID: "sess-nobacklog", CWD: t.TempDir()}
+	out := captureStdout(t, func() {
+		if err := hooks.RunSessionStart(context.Background(), in, st); err != nil {
+			t.Fatalf("RunSessionStart: %v", err)
+		}
+	})
+
+	if strings.Contains(out, "sincronizar") {
+		t.Errorf("did not expect sync backlog warning below threshold, got: %s", out)
+	}
+}
+
 // TestRunSessionStart_WritesSessionIDToFile verifies that session-start persists
 // the session ID to current_session.txt so the pre-tool-use gate can resolve it.
 func TestRunSessionStart_WritesSessionIDToFile(t *testing.T) {
-	kronosDir := setupTempDataDir(t)
+	setupTempDataDir(t)
 	st := newTestStore(t)
 	ctx := context.Background()
 
-	in := hooks.Input{SessionID: "sess-file-write", CWD: t.TempDir()}
+	cwd := t.TempDir()
+	in := hooks.Input{SessionID: "sess-file-write", CWD: cwd}
 	captureStdout(t, func() {
 		if err := hooks.RunSessionStart(ctx, in, st); err != nil {
 			t.Fatalf("RunSessionStart: %v", err)
 		}
 	})
 
-	data, err := os.ReadFile(filepath.Join(kronosDir, "current_session.txt"))
+	projName := project.Detect(cwd).Name
+	sessPath, err := platform.CurrentSessionPath(projName)
 	if err != nil {
-		t.Fatalf("current_session.txt not written: %v", err)
+		t.Fatalf("CurrentSessionPath: %v", err)
+	}
+	data, err := os.ReadFile(sessPath)
+	if err != nil {
+		t.Fatalf("current_session file not written at %s: %v", sessPath, err)
 	}
 	if got := string(data); got != "sess-file-write" {
-		t.Errorf("current_session.txt = %q, want %q", got, "sess-file-write")
+		t.Errorf("current_session file = %q, want %q", got, "sess-file-write")
 	}
 }
 
 // TestRunSessionStart_EmptySessionID_DoesNotWriteFile verifies that no file is
 // written when session_id is absent from the hook payload.
 func TestRunSessionStart_EmptySessionID_DoesNotWriteFile(t *testing.T) {
-	kronosDir := setupTempDataDir(t)
+	setupTempDataDir(t)
 	st := newTestStore(t)
 
-	in := hooks.Input{SessionID: "", CWD: t.TempDir()}
+	cwd := t.TempDir()
+	in := hooks.Input{SessionID: "", CWD: cwd}
 	captureStdout(t, func() {
 		hooks.RunSessionStart(context.Background(), in, st)
 	})
 
-	if _, err := os.ReadFile(filepath.Join(kronosDir, "current_session.txt")); err == nil {
-		t.Error("current_session.txt must not be written when session_id is empty")
+	sessPath, err := platform.CurrentSessionPath(project.Detect(cwd).Name)
+	if err != nil {
+		t.Fatalf("CurrentSessionPath: %v", err)
+	}
+	if _, err := os.ReadFile(sessPath); err == nil {
+		t.Error("current_session file must not be written when session_id is empty")
 	}
 }
 
@@ -736,23 +798,30 @@ func TestRunSessionStart_SessionIDPersistedInDB(t *testing.T) {
 // TestRunSessionStop_DeletesFile_WhenOwner verifies that session-stop deletes
 // current_session.txt when its content matches the stopping session ID.
 func TestRunSessionStop_DeletesFile_WhenOwner(t *testing.T) {
-	kronosDir := setupTempDataDir(t)
+	setupTempDataDir(t)
 	st := newTestStore(t)
 	ctx := context.Background()
 
 	const sid = "sess-stop-owner"
-	filePath := filepath.Join(kronosDir, "current_session.txt")
+	cwd := t.TempDir()
+	filePath, err := platform.CurrentSessionPath(project.Detect(cwd).Name)
+	if err != nil {
+		t.Fatalf("CurrentSessionPath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filePath, []byte(sid), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
 	st.CreateSession(ctx, sid, "p", "/tmp")
-	if err := hooks.RunSessionStop(ctx, hooks.Input{SessionID: sid}, st); err != nil {
+	if err := hooks.RunSessionStop(ctx, hooks.Input{SessionID: sid, CWD: cwd}, st); err != nil {
 		t.Fatalf("RunSessionStop: %v", err)
 	}
 
 	if _, err := os.ReadFile(filePath); err == nil {
-		t.Error("current_session.txt should be deleted when session owns the file")
+		t.Error("current_session file should be deleted when session owns the file")
 	}
 }
 
@@ -760,27 +829,34 @@ func TestRunSessionStop_DeletesFile_WhenOwner(t *testing.T) {
 // if a newer session already wrote its ID to current_session.txt, the old
 // session's Stop hook must NOT delete it.
 func TestRunSessionStop_PreservesFile_WhenNotOwner(t *testing.T) {
-	kronosDir := setupTempDataDir(t)
+	setupTempDataDir(t)
 	st := newTestStore(t)
 	ctx := context.Background()
 
-	filePath := filepath.Join(kronosDir, "current_session.txt")
+	cwd := t.TempDir()
+	filePath, err := platform.CurrentSessionPath(project.Detect(cwd).Name)
+	if err != nil {
+		t.Fatalf("CurrentSessionPath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	// Simulate: new session already wrote its ID.
 	if err := os.WriteFile(filePath, []byte("sess-new"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
 	st.CreateSession(ctx, "sess-old", "p", "/tmp")
-	if err := hooks.RunSessionStop(ctx, hooks.Input{SessionID: "sess-old"}, st); err != nil {
+	if err := hooks.RunSessionStop(ctx, hooks.Input{SessionID: "sess-old", CWD: cwd}, st); err != nil {
 		t.Fatalf("RunSessionStop: %v", err)
 	}
 
 	data, err := os.ReadFile(filePath)
 	if err != nil {
-		t.Fatalf("current_session.txt must not be deleted by a different session: %v", err)
+		t.Fatalf("current_session file must not be deleted by a different session: %v", err)
 	}
 	if got := string(data); got != "sess-new" {
-		t.Errorf("current_session.txt = %q, want %q", got, "sess-new")
+		t.Errorf("current_session file = %q, want %q", got, "sess-new")
 	}
 }
 

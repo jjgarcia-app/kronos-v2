@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/jjgarcia-app/kronos-v2/internal/platform"
+	"github.com/jjgarcia-app/kronos-v2/internal/project"
 	"github.com/jjgarcia-app/kronos-v2/internal/store"
 )
 
@@ -14,7 +15,8 @@ func RunSessionStop(ctx context.Context, in Input, st store.Storer) error {
 	if in.SessionID == "" {
 		return nil
 	}
-	if p, err := platform.CurrentSessionPath(); err == nil {
+	proj := project.Detect(in.CWD)
+	if p, err := platform.CurrentSessionPath(proj.Name); err == nil {
 		if data, readErr := os.ReadFile(p); readErr == nil && string(data) == in.SessionID {
 			_ = os.Remove(p)
 		}

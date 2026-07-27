@@ -232,10 +232,17 @@ func (d *DualStore) SavePrompt(ctx context.Context, sessionID, project, content 
 func (d *DualStore) GetObservation(ctx context.Context, id int64) (*Observation, error) {
 	if !d.isPrimaryDown() {
 		obs, err := d.primary.GetObservation(ctx, id)
-		if err == nil {
+		if err == nil && obs != nil {
 			return obs, nil
 		}
-		d.markDown()
+		if err != nil {
+			d.markDown()
+		}
+		// err == nil && obs == nil: primary está sano pero no tiene esta fila
+		// (puede existir solo en buffer — ej. drift de IDs entre SQLite y
+		// Postgres, cada uno con su propio autoincrement). No es motivo para
+		// marcar primary down, pero sí para probar el buffer antes de
+		// devolver "no encontrado".
 	}
 	return d.buffer.GetObservation(ctx, id)
 }
@@ -276,10 +283,12 @@ func (d *DualStore) ListSessionObservations(ctx context.Context, sessionID strin
 func (d *DualStore) GetSession(ctx context.Context, id string) (*Session, error) {
 	if !d.isPrimaryDown() {
 		sess, err := d.primary.GetSession(ctx, id)
-		if err == nil {
+		if err == nil && sess != nil {
 			return sess, nil
 		}
-		d.markDown()
+		if err != nil {
+			d.markDown()
+		}
 	}
 	return d.buffer.GetSession(ctx, id)
 }
@@ -287,10 +296,12 @@ func (d *DualStore) GetSession(ctx context.Context, id string) (*Session, error)
 func (d *DualStore) GetActiveSession(ctx context.Context, project string) (*Session, error) {
 	if !d.isPrimaryDown() {
 		sess, err := d.primary.GetActiveSession(ctx, project)
-		if err == nil {
+		if err == nil && sess != nil {
 			return sess, nil
 		}
-		d.markDown()
+		if err != nil {
+			d.markDown()
+		}
 	}
 	return d.buffer.GetActiveSession(ctx, project)
 }

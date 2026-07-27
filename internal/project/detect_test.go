@@ -2,11 +2,32 @@ package project_test
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/jjgarcia-app/kronos-v2/internal/project"
 )
+
+// initRepoWithCommit crea un repo git real en dir con un commit vacío,
+// para poder ejercitar la heurística real de pickMostLikely (git log -1)
+// en vez de solo su fallback.
+func initRepoWithCommit(t *testing.T, dir string) {
+	t.Helper()
+	run := func(args ...string) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	run("init", "-q")
+	run("-c", "user.email=t@t.com", "-c", "user.name=t", "commit", "--allow-empty", "-q", "-m", "init")
+}
 
 func TestNormalize(t *testing.T) {
 	cases := []struct{ input, want string }{
@@ -192,17 +213,41 @@ func TestDetectFull_MultipleChildren_Ambiguous(t *testing.T) {
 	}
 
 	r := project.DetectFull(parent)
-	if r.Project != "" {
-		t.Errorf("Project should be empty for ambiguous, got %q", r.Project)
+	// Ambiguo ya no bloquea: se elige el candidato más probable (fallback al
+	// primero encontrado si git log falla, como acá — no son repos reales)
+	// y se surfacea vía Warning, no Error.
+	if r.Project == "" {
+		t.Errorf("Project should not be empty for ambiguous (best-guess fallback), got empty")
 	}
 	if r.Source != "ambiguous" {
 		t.Errorf("Source = %q, want ambiguous", r.Source)
 	}
-	if r.Error != project.ErrAmbiguousProject {
-		t.Errorf("Error = %v, want ErrAmbiguousProject", r.Error)
+	if r.Error != nil {
+		t.Errorf("Error = %v, want nil (ambiguous no longer blocks)", r.Error)
+	}
+	if r.Warning == "" {
+		t.Errorf("Warning should be set when detection was ambiguous")
 	}
 	if len(r.AvailableProjects) != 2 {
 		t.Errorf("AvailableProjects len = %d, want 2", len(r.AvailableProjects))
+	}
+}
+
+func TestDetectFull_MultipleChildren_PicksMostRecentCommit(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git no disponible en PATH")
+	}
+	parent := t.TempDir()
+	initRepoWithCommit(t, filepath.Join(parent, "repo-old"))
+	time.Sleep(1100 * time.Millisecond) // %ct es en segundos — asegurar timestamps distintos
+	initRepoWithCommit(t, filepath.Join(parent, "repo-new"))
+
+	r := project.DetectFull(parent)
+	if r.Project != "repo-new" {
+		t.Errorf("Project = %q, want repo-new (commit más reciente)", r.Project)
+	}
+	if r.Error != nil {
+		t.Errorf("unexpected error: %v", r.Error)
 	}
 }
 
@@ -243,8 +288,12 @@ func TestDetect_BackwardCompat_Ambiguous(t *testing.T) {
 	}
 
 	r := project.Detect(parent)
-	// Ambiguous case: Detect returns "unknown" with ambiguous method
-	if r.Name != "unknown" {
-		t.Errorf("Detect ambiguous: Name = %q, want unknown", r.Name)
+	// Ambiguous case: Detect now returns a best-guess project (not "unknown")
+	// since ambiguity no longer blocks — it's surfaced as a warning instead.
+	if r.Name == "unknown" || r.Name == "" {
+		t.Errorf("Detect ambiguous: Name = %q, want a best-guess project name", r.Name)
+	}
+	if r.Method != project.MethodAmbiguous {
+		t.Errorf("Detect ambiguous: Method = %q, want ambiguous", r.Method)
 	}
 }

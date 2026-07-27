@@ -233,12 +233,14 @@ func (s *Store) JudgeRelation(ctx context.Context, p JudgeRelationParams) (*Rela
 // Si relation == "not_conflict" → no inserta nada, retorna "".
 // UPSERT: si ya existe relación en cualquier dirección, actualiza.
 func (s *Store) JudgeBySemantic(ctx context.Context, sourceID, targetID, relation string, confidence float64, reason, model string) (string, error) {
-	if relation == RelationNotConflict {
-		return "", nil
-	}
 	if !validRelationVerbs[relation] {
 		return "", fmt.Errorf("%w: %q", ErrInvalidRelation, relation)
 	}
+	// Antes, not_conflict retornaba temprano sin tocar la DB — la fila
+	// 'pending' original (creada por insertRelationPending vía FindCandidates)
+	// nunca pasaba a 'judged', así que AutoJudge la reprocesaba en CADA ciclo
+	// para siempre, aunque ya estuviera resuelta. Ahora fluye por el mismo
+	// camino update/insert que cualquier otro veredicto.
 
 	ts := now()
 
@@ -305,7 +307,8 @@ func (s *Store) ListRelations(ctx context.Context, project, status string, limit
 
 	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`
 		SELECT r.id, r.sync_id, r.source_id, r.target_id, r.relation, r.judgment_status,
-		       r.reason, r.confidence, r.marked_by_actor, r.marked_by_kind, r.created_at, r.updated_at,
+		       COALESCE(r.reason,''), COALESCE(r.confidence,0), COALESCE(r.marked_by_actor,''),
+		       COALESCE(r.marked_by_kind,''), r.created_at, r.updated_at,
 		       COALESCE(src.id, 0), COALESCE(src.title, ''), COALESCE(src.project, ''),
 		       COALESCE(tgt.id, 0), COALESCE(tgt.title, ''), COALESCE(tgt.project, '')
 		FROM memory_relations r

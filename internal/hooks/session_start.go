@@ -33,18 +33,62 @@ func RunSessionStart(ctx context.Context, in Input, st store.Storer) error {
 		_ = err
 	}
 	if in.SessionID != "" {
-		if p, pErr := platform.CurrentSessionPath(); pErr == nil {
-			_ = os.WriteFile(p, []byte(in.SessionID), 0o644)
+		if p, pErr := platform.CurrentSessionPath(proj.Name); pErr == nil {
+			if err := os.MkdirAll(filepath.Dir(p), 0o755); err == nil {
+				_ = os.WriteFile(p, []byte(in.SessionID), 0o644)
+			}
 		}
 	}
 
 	n, _ := st.CountObservations(ctx, proj.Name)
 	fmt.Printf("[kronos] %d observations available for %s\n", n, proj.Name)
 	fmt.Println("[kronos] call mem_search with keywords from your task before editing")
+	printBacklogWarnings(ctx, st, proj.Name)
 
 	// Persist empty set as dedup baseline for RunPromptSubmit.
 	_ = st.PersistInjectedIDs(ctx, in.SessionID, nil)
 
+	return nil
+}
+
+// backlogSyncThreshold/backlogRelationsThreshold: a partir de cuánto se
+// avisa proactivo en SessionStart. Antes esto era invisible salvo que
+// alguien preguntara mem_doctor explícitamente — con Postgres caído un
+// rato o Ollama sin correr, el backlog podía crecer sin que nadie se
+// enterara.
+const (
+	backlogSyncThreshold      = 100
+	backlogRelationsThreshold = 20
+)
+
+// printBacklogWarnings avisa si hay backlog de sync a Postgres o de
+// relaciones sin juzgar por encima de un umbral. Todo best-effort — nunca
+// bloquea ni falla el hook si algo no está disponible.
+func printBacklogWarnings(ctx context.Context, st store.Storer, proj string) {
+	if d, ok := st.(interface{ PendingCount() int }); ok {
+		if pending := d.PendingCount(); pending > backlogSyncThreshold {
+			fmt.Printf("[kronos] aviso: %d operaciones sin sincronizar a PostgreSQL (correr `kronos sync --pg-flush` o revisar `mem_doctor`)\n", pending)
+		}
+	}
+	ls := localStoreOf(st)
+	if ls == nil {
+		return
+	}
+	rels, err := ls.ListRelations(ctx, proj, store.JudgmentPending, backlogRelationsThreshold+1, 0)
+	if err == nil && len(rels) > backlogRelationsThreshold {
+		fmt.Printf("[kronos] aviso: más de %d relaciones sin juzgar para %s (usar mem_judge, o revisar si Ollama está corriendo)\n", backlogRelationsThreshold, proj)
+	}
+}
+
+// localStoreOf resuelve el *store.Store SQLite subyacente sea cual sea el
+// backend — mismo patrón que internal/mcp.Server.localStore().
+func localStoreOf(st store.Storer) *store.Store {
+	if ls, ok := st.(interface{ LocalStore() *store.Store }); ok {
+		return ls.LocalStore()
+	}
+	if s, ok := st.(*store.Store); ok {
+		return s
+	}
 	return nil
 }
 

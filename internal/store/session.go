@@ -27,9 +27,12 @@ func (s *Store) CreateSession(ctx context.Context, id, project, directory string
 }
 
 func (s *Store) EndSession(ctx context.Context, id, summary string) error {
+	// summary solo se sobreescribe si viene no-vacío — un EndSession
+	// posterior con summary="" (ej. mem_session_end llamado después de
+	// mem_session_summary por error) no debe borrar un resumen ya guardado.
 	res, err := s.exec(ctx,
-		`UPDATE sessions SET ended_at = ?, summary = ? WHERE id = ?`,
-		now(), summary, id,
+		`UPDATE sessions SET ended_at = ?, summary = CASE WHEN ? = '' THEN summary ELSE ? END WHERE id = ?`,
+		now(), summary, summary, id,
 	)
 	if err != nil {
 		return fmt.Errorf("end session: %w", err)

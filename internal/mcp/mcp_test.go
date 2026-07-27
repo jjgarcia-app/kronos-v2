@@ -155,6 +155,35 @@ func TestMemSave_Upsert(t *testing.T) {
 	}
 }
 
+// TestMemSave_AutoSuggestsTopicKey verifica que omitir topic_key en un type
+// que lo requiere (decision/architecture/pattern/config) ya no deja el
+// upsert roto — se autosugiere a partir del título, y un segundo save con
+// el mismo título actualiza en vez de duplicar.
+func TestMemSave_AutoSuggestsTopicKey(t *testing.T) {
+	srv := newTestServer(t)
+
+	text := call(t, srv, "mem_save", map[string]any{
+		"title":   "Elegimos pgx sobre lib/pq",
+		"content": "Qué: Usamos pgx como driver de Postgres.\nPor qué: Soporta RETURNING nativo.\nArchivos: go.mod\nCómo aplicar: No agregar lib/pq de nuevo.",
+		"type":    "decision",
+		"project": "p",
+		// topic_key omitido a propósito
+	})
+	if !contains(text, "guardado") {
+		t.Errorf("expected 'guardado' in response: %s", text)
+	}
+
+	text2 := call(t, srv, "mem_save", map[string]any{
+		"title":   "Elegimos pgx sobre lib/pq",
+		"content": "Qué: Confirmamos pgx como driver de Postgres, ahora en producción.\nPor qué: Funcionó bien en staging.\nArchivos: go.mod\nCómo aplicar: N/A.",
+		"type":    "decision",
+		"project": "p",
+	})
+	if !contains(text2, "actualizado") {
+		t.Errorf("expected 'actualizado' (upsert vía topic_key autosugerido), got: %s", text2)
+	}
+}
+
 func TestMemSave_MissingTitle(t *testing.T) {
 	srv := newTestServer(t)
 	callExpectError(t, srv, "mem_save", map[string]any{
