@@ -395,14 +395,30 @@ func (d *DualStore) CountSessionObservations(ctx context.Context, sessionID stri
 	return d.buffer.CountSessionObservations(ctx, sessionID)
 }
 
+// IncrementSearchCount — antes, si primary estaba sano pero no tenía esta
+// fila de sesión (ver GetSession: divergencia de IDs entre SQLite y
+// Postgres, o una sesión creada en buffer mientras primary estaba caído),
+// el UPDATE de primary afectaba 0 filas SIN error — *store.Store tiene
+// contrato fail-open a propósito — y DualStore lo trataba como "listo",
+// sin probar nunca el buffer. Resultado real: search_count nunca se
+// incrementaba para esas sesiones y el gate de pre-tool-use quedaba
+// bloqueado para siempre pese a buscar de verdad.
 func (d *DualStore) IncrementSearchCount(ctx context.Context, sessionID string) error {
 	if !d.isPrimaryDown() {
-		if err := d.primary.IncrementSearchCount(ctx, sessionID); err == nil {
+		n, err := d.primary.incrementSearchCountAffected(ctx, sessionID)
+		if err == nil && n > 0 {
 			return nil
 		}
-		d.markDown()
+		if err != nil {
+			d.markDown()
+		}
 	}
-	return d.buffer.IncrementSearchCount(ctx, sessionID)
+	if err := d.buffer.IncrementSearchCount(ctx, sessionID); err != nil {
+		return err
+	}
+	type searchCountPayload struct{ SessionID string }
+	_ = d.queue.enqueue("increment_search_count", searchCountPayload{sessionID})
+	return nil
 }
 
 // LocalStore retorna el Store SQLite local (buffer).
@@ -618,6 +634,13 @@ func (d *DualStore) replayEntry(ctx context.Context, primary *Store, e syncEntry
 			return nil
 		}
 		return primary.RecordToolUse(ctx, p.SessionID, p.Project, p.ToolName)
+
+	case "increment_search_count":
+		var p struct{ SessionID string }
+		if err := json.Unmarshal([]byte(e.Payload), &p); err != nil {
+			return nil
+		}
+		return primary.IncrementSearchCount(ctx, p.SessionID)
 	}
 	return nil
 }

@@ -132,6 +132,47 @@ func TestDualStore_CountSessionMethods(t *testing.T) {
 	}
 }
 
+// TestDualStore_IncrementSearchCount_FallsBackWhenPrimaryLacksSession
+// reproduce el bug real: si primary está sano pero no tiene la fila de esta
+// sesión (ej. sesión creada en buffer mientras primary estaba caído), el
+// UPDATE en primary afecta 0 filas SIN error (*store.Store tiene contrato
+// fail-open a propósito) — antes del fix, DualStore trataba eso como "listo"
+// y jamás probaba el buffer, así que search_count nunca se incrementaba de
+// verdad para esas sesiones y el gate de pre-tool-use quedaba bloqueado para
+// siempre pese a buscar en serio. Confirmado en vivo contra la sesión real
+// de esta conversación.
+func TestDualStore_IncrementSearchCount_FallsBackWhenPrimaryLacksSession(t *testing.T) {
+	ds := newTestDualStore(t)
+	ctx := context.Background()
+
+	// Solo se crea en buffer, simulando que primary nunca recibió esta sesión.
+	sess, err := ds.buffer.CreateSession(ctx, "s-solo-buffer-search", "p", "/tmp")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ds.IncrementSearchCount(ctx, sess.ID); err != nil {
+		t.Fatalf("IncrementSearchCount: %v", err)
+	}
+
+	got, err := ds.buffer.GetSession(ctx, sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SearchCount != 1 {
+		t.Errorf("SearchCount = %d, want 1 — el incremento no llegó al buffer", got.SearchCount)
+	}
+
+	// primary sigue "up" — un simple "0 filas afectadas" no debe marcarlo down.
+	if ds.isPrimaryDown() {
+		t.Error("primary no debería marcarse down por 0 filas afectadas (no es un error real)")
+	}
+
+	if ds.PendingCount() != 1 {
+		t.Errorf("PendingCount = %d, want 1 (debería quedar encolado para replay)", ds.PendingCount())
+	}
+}
+
 // TestDualStore_RecordToolUse_FallsBackAndEnqueues sigue el mismo patrón de
 // escritura que el resto de DualStore: si primary falla, va a buffer y
 // queda encolada para replay.

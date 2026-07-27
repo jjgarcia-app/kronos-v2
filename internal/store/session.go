@@ -156,9 +156,24 @@ func scanSession(sc sessionScanner) (*Session, error) {
 // IncrementSearchCount atomically increments the search_count for a session.
 // Silently succeeds (no error) if the session does not exist — fail-open contract.
 func (s *Store) IncrementSearchCount(ctx context.Context, sessionID string) error {
-	_, err := s.exec(ctx,
+	_, err := s.incrementSearchCountAffected(ctx, sessionID)
+	return err
+}
+
+// incrementSearchCountAffected is like IncrementSearchCount but also reports
+// rows affected — used internally by DualStore to detect "primary is up but
+// doesn't have this session row" (err == nil, 0 rows) and fall back to the
+// buffer instead of silently treating it as done. Not exported: the public
+// contract (fail-open, no error either way) stays unchanged for direct
+// single-backend callers.
+func (s *Store) incrementSearchCountAffected(ctx context.Context, sessionID string) (int64, error) {
+	res, err := s.exec(ctx,
 		`UPDATE sessions SET search_count = search_count + 1 WHERE id = ?`,
 		sessionID,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
 }
