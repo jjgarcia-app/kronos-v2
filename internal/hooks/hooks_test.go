@@ -897,6 +897,98 @@ func TestRunSessionStop_EmptySessionID_Noop(t *testing.T) {
 	}
 }
 
+// TestRunSessionStop_AutoSavesCheckpointWhenNoSummary reproduce el gap real
+// que Jerry señaló: cuando la sesión termina por compactación, PreCompact
+// deja una red de seguridad (checkpoint auto-generado) si el agente se
+// olvidó de llamar mem_session_summary. Pero un cierre NORMAL (Stop, sin
+// compactar) no tenía ninguna red — si el agente se olvidaba, no quedaba
+// nada. Mismo patrón que PreCompact acá.
+func TestRunSessionStop_AutoSavesCheckpointWhenNoSummary(t *testing.T) {
+	dataDir := setupTempDataDir(t)
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	cwd := t.TempDir()
+	projName := project.Detect(cwd).Name
+
+	if _, err := st.CreateSession(ctx, "sess-stop-nosummary", projName, cwd); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := hooks.RunSessionStop(ctx, hooks.Input{SessionID: "sess-stop-nosummary", CWD: cwd}, st); err != nil {
+		t.Fatalf("RunSessionStop: %v", err)
+	}
+
+	cp, err := checkpoint.Load(dataDir, projName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cp == nil {
+		t.Fatal("Stop debería autoguardar un checkpoint de respaldo cuando la sesión termina sin mem_session_summary")
+	}
+}
+
+// TestRunSessionStop_NoCheckpointWhenSummaryAlreadySaved confirma que si el
+// agente sí llamó mem_session_summary (que deja un Summary no vacío en la
+// sesión vía EndSession), Stop no agrega ruido de "sesión sin resumen" —
+// ya hay uno real.
+func TestRunSessionStop_NoCheckpointWhenSummaryAlreadySaved(t *testing.T) {
+	dataDir := setupTempDataDir(t)
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	cwd := t.TempDir()
+	projName := project.Detect(cwd).Name
+
+	if _, err := st.CreateSession(ctx, "sess-stop-hassummary", projName, cwd); err != nil {
+		t.Fatal(err)
+	}
+	// simula lo que hace mem_session_summary: EndSession con resumen real.
+	if err := st.EndSession(ctx, "sess-stop-hassummary", "## Objetivo\nresumen real de la sesión"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := hooks.RunSessionStop(ctx, hooks.Input{SessionID: "sess-stop-hassummary", CWD: cwd}, st); err != nil {
+		t.Fatalf("RunSessionStop: %v", err)
+	}
+
+	if cp, _ := checkpoint.Load(dataDir, projName); cp != nil {
+		t.Errorf("no debería autoguardar checkpoint cuando ya hay un resumen real, got: %+v", cp)
+	}
+}
+
+// TestRunSessionStop_DoesNotOverwriteExistingCheckpoint — si ya hay un
+// checkpoint activo (ej. de una compactación previa en la misma sesión de
+// trabajo), Stop no debe pisarlo con el fallback genérico.
+func TestRunSessionStop_DoesNotOverwriteExistingCheckpoint(t *testing.T) {
+	dataDir := setupTempDataDir(t)
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	cwd := t.TempDir()
+	projName := project.Detect(cwd).Name
+
+	if _, err := st.CreateSession(ctx, "sess-stop-hascp", projName, cwd); err != nil {
+		t.Fatal(err)
+	}
+	real := checkpoint.State{Task: "checkpoint real de una compactación previa", Project: projName}
+	if err := checkpoint.Save(dataDir, projName, real); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := hooks.RunSessionStop(ctx, hooks.Input{SessionID: "sess-stop-hascp", CWD: cwd}, st); err != nil {
+		t.Fatalf("RunSessionStop: %v", err)
+	}
+
+	cp, err := checkpoint.Load(dataDir, projName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cp == nil || cp.Task != "checkpoint real de una compactación previa" {
+		t.Errorf("checkpoint existente no debería pisarse, got: %+v", cp)
+	}
+}
+
 func TestRun_UnknownHook(t *testing.T) {
 	// Run with unknown hook name should return error without panicking.
 	// We can't easily test Run() directly since it reads stdin,
