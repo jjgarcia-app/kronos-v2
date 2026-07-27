@@ -294,9 +294,15 @@ func kronosBin() string {
 		return "kronos"
 	}
 	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
-		return resolved
+		exe = resolved
 	}
-	return exe
+	// Hook commands se ejecutan vía shell (bash), no como argv directo — un
+	// path de Windows con backslashes ("C:\Users\...") se corrompe ahí, bash
+	// los interpreta como escapes y los borra. "/" es válido en Windows tanto
+	// para exec directo (MCP server) como dentro de un comando de shell, así
+	// que normalizamos siempre a forward slashes — portable en cualquier SO,
+	// no específico a ninguna máquina.
+	return filepath.ToSlash(exe)
 }
 
 // Uninstall removes Kronos hooks from ~/.claude/settings.json.

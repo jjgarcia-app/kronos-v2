@@ -129,6 +129,28 @@ func TestInstallClaudeCode_MergesExistingSettings(t *testing.T) {
 // usa ruta absoluta) corre el nuevo. Los hooks quedan ejecutando codigo
 // desactualizado sin ningun aviso. Correr setup debe normalizar cualquier
 // comando pelado preexistente a la ruta absoluta del binario actual.
+// TestInstallClaudeCode_HookCommandHasNoBackslashes reproduce un bug real
+// encontrado en producción (Windows): los hooks se ejecutan vía shell
+// (bash), no como argv directo. Un path de Windows con backslashes
+// ("C:\Users\...") se corrompe ahí — bash los interpreta como escapes y los
+// borra, dejando el comando irreconocible ("C:UsersJerry..."). El fix
+// normaliza siempre a forward slashes, válidos en Windows tanto para exec
+// directo como dentro de un comando de shell.
+func TestInstallClaudeCode_HookCommandHasNoBackslashes(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+
+	if err := setup.InstallClaudeCode(); err != nil {
+		t.Fatalf("InstallClaudeCode: %v", err)
+	}
+
+	result, _ := os.ReadFile(filepath.Join(tmpHome, ".claude", "settings.json"))
+	if strings.Contains(string(result), `\\`) {
+		t.Errorf("comando de hook con backslashes — se corrompe al ejecutarse vía bash:\n%s", result)
+	}
+}
+
 func TestInstallClaudeCode_NormalizesBareCommandToAbsolutePath(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
