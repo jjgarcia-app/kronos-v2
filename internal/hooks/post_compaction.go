@@ -56,7 +56,7 @@ func RunPostCompaction(ctx context.Context, in Input, st store.Storer) error {
 // ordered by created_at DESC. Used by the post-compaction branch to rebuild
 // minimal continuity.
 func pickRestoreObs(ctx context.Context, st store.Storer, project, sessionID string, k int) ([]*store.Observation, error) {
-	obs, err := st.ListObservations(ctx, project, k)
+	obs, err := st.ListObservations(ctx, project, k, 0)
 	if err != nil {
 		return nil, err
 	}

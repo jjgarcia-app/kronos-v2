@@ -231,7 +231,7 @@ func (m Model) loadRecent() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		obs, err := m.store.ListObservations(ctx, "", 50)
+		obs, err := m.store.ListObservations(ctx, "", 50, 0)
 		return recentMsg{obs: obs, err: err}
 	}
 }

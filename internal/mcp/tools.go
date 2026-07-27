@@ -29,7 +29,8 @@ CAMPO scope — usa "global" solo para patrones reutilizables entre proyectos. D
 		mcpgo.WithString("title", mcpgo.Required(), mcpgo.Description("Frase verbal corta y buscable. Formato: Verbo + qué. Ej: 'Elegimos pgx sobre lib/pq por compatibilidad con RETURNING'")),
 		mcpgo.WithString("content", mcpgo.Required(), mcpgo.Description("Nota estructurada: Qué ocurrió | Por qué importa | Archivos relevantes (path:línea) | Cómo aplicar o reproducir")),
 		mcpgo.WithString("type", mcpgo.Required(), mcpgo.Description("Tipo: bugfix | decision | architecture | discovery | pattern | config | preference | passive")),
-		mcpgo.WithString("project", mcpgo.Description("Nombre del proyecto. Si se omite, se detecta automáticamente del directorio de trabajo")),
+		mcpgo.WithString("project", mcpgo.Description("Nombre del proyecto. Si se omite, se detecta automáticamente a partir de 'directory' (o del cwd del server si tampoco se pasa 'directory')")),
+		mcpgo.WithString("directory", mcpgo.Description("Directorio de trabajo actual, usado para autodetectar 'project' si se omite. Recomendado pasarlo siempre que se conozca — el servidor MCP es un proceso persistente y su propio cwd puede no coincidir con el del repo actual")),
 		mcpgo.WithString("session_id", mcpgo.Description("ID de la sesión activa. Proveerlo si está disponible")),
 		mcpgo.WithString("topic_key", mcpgo.Description("OBLIGATORIO para types decision/architecture/pattern/config. Clave estable tipo path. Ej: 'db/connection-pool'. Permite upsert — actualiza sin duplicar")),
 		mcpgo.WithString("scope", mcpgo.Description("'project' (default) para observaciones del proyecto actual. 'global' solo si el patrón aplica a cualquier proyecto")),
@@ -54,7 +55,8 @@ TIPS:
 		mcpgo.WithString("query", mcpgo.Required(), mcpgo.Description("Términos de búsqueda. Ej: 'postgres driver error', 'jwt auth decision', 'migrations FK constraint'")),
 		mcpgo.WithString("project", mcpgo.Description("Filtrar por proyecto. Si se omite, busca en todos los proyectos")),
 		mcpgo.WithString("session_id", mcpgo.Description("ID de la sesión activa. Proveerlo para registrar la búsqueda en el gate de pre-tool-use")),
-		mcpgo.WithString("limit", mcpgo.Description("Máximo de resultados (default: 10)")),
+		mcpgo.WithNumber("limit", mcpgo.Description("Máximo de resultados (default: 10)")),
+		mcpgo.WithNumber("offset", mcpgo.Description("Cuántos resultados saltar antes de devolver 'limit' (default: 0). Usar para paginar más allá de los primeros resultados")),
 	)
 }
 
@@ -71,7 +73,8 @@ CUÁNDO LLAMAR:
 Retorna observaciones ordenadas por fecha descendente.`),
 		mcpgo.WithString("project", mcpgo.Required(), mcpgo.Description("Nombre del proyecto")),
 		mcpgo.WithString("session_id", mcpgo.Description("Si se provee, retorna solo observaciones de esa sesión")),
-		mcpgo.WithString("limit", mcpgo.Description("Máximo de observaciones (default: 10)")),
+		mcpgo.WithNumber("limit", mcpgo.Description("Máximo de observaciones (default: 10)")),
+		mcpgo.WithNumber("offset", mcpgo.Description("Cuántas observaciones saltar antes de devolver 'limit' (default: 0). Usar para paginar más allá de las primeras")),
 	)
 }
 
@@ -198,7 +201,8 @@ CAMPOS:
 		mcpgo.WithString("progress", mcpgo.Description("Último paso completado antes de este checkpoint")),
 		mcpgo.WithString("files", mcpgo.Description("Archivos activos separados por coma: path/to/file.go, path/to/other.go")),
 		mcpgo.WithString("notes", mcpgo.Description("Restricciones críticas, blockers o contexto no obvio que debe recordarse")),
-		mcpgo.WithString("project", mcpgo.Description("Nombre del proyecto. Si se omite, se usa el configurado")),
+		mcpgo.WithString("project", mcpgo.Description("Nombre del proyecto. Si se omite, se detecta automáticamente a partir de 'directory' (o del cwd del server si tampoco se pasa 'directory')")),
+		mcpgo.WithString("directory", mcpgo.Description("Directorio de trabajo actual, usado para autodetectar 'project' si se omite. Recomendado pasarlo siempre que se conozca")),
 		mcpgo.WithString("status", mcpgo.Description("'active' (default) para guardar/actualizar. 'completed' para cerrar el checkpoint cuando la tarea termina")),
 	)
 }

@@ -214,7 +214,7 @@ func TestDeleteObservation(t *testing.T) {
 	}
 
 	// soft delete: no aparece en ListObservations
-	list, _ := s.ListObservations(ctx, "p", 50)
+	list, _ := s.ListObservations(ctx, "p", 50, 0)
 	for _, o := range list {
 		if o.ID == obs.ID {
 			t.Error("deleted observation still appears in list")

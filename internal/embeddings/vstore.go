@@ -73,6 +73,16 @@ func (vs *VectorStore) Provider() string {
 	return vs.provider
 }
 
+// Has reports whether an observation already has an embedding indexed.
+// Used to skip re-embedding on incremental backfill passes.
+func (vs *VectorStore) Has(ctx context.Context, id int64) bool {
+	if vs == nil {
+		return false
+	}
+	_, err := vs.collection.GetByID(ctx, obsDocID(id))
+	return err == nil
+}
+
 // Index adds or replaces an observation's embedding.
 func (vs *VectorStore) Index(ctx context.Context, id int64, content string) error {
 	if vs == nil {

@@ -10,7 +10,7 @@ type Storer interface {
 	GetObservation(ctx context.Context, id int64) (*Observation, error)
 	UpdateObservation(ctx context.Context, p UpdateParams) (*Observation, error)
 	DeleteObservation(ctx context.Context, id int64) error
-	ListObservations(ctx context.Context, project string, limit int) ([]*Observation, error)
+	ListObservations(ctx context.Context, project string, limit, offset int) ([]*Observation, error)
 	ListAll(ctx context.Context, project string) ([]*Observation, error)
 	ListSessionObservations(ctx context.Context, sessionID string) ([]*Observation, error)
 	SavePassive(ctx context.Context, sessionID, project, content string) (*Observation, error)

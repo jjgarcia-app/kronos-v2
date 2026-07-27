@@ -43,7 +43,12 @@ func Ping(ctx context.Context, baseURL string) bool {
 //  2. nil if nothing is available (caller must handle)
 func AutoFunc(ctx context.Context) (EmbeddingFunc, string, error) {
 	if Ping(ctx, DefaultOllamaURL) {
-		fn := NewOllamaFunc(DefaultOllamaModel, DefaultOllamaURL)
+		// chromem-go's NewEmbeddingFuncOllama espera un baseURL que ya incluya
+		// "/api" (lo concatena directo con "/embeddings"). DefaultOllamaURL es
+		// el host pelado porque Ping() arma su propio "/api/tags" — sin este
+		// sufijo, cada llamada de embedding pega contra "/embeddings" (sin /api)
+		// y Ollama devuelve 404, silenciosamente tragado por el caller fire-and-forget.
+		fn := NewOllamaFunc(DefaultOllamaModel, DefaultOllamaURL+"/api")
 		return fn, fmt.Sprintf("ollama:%s", DefaultOllamaModel), nil
 	}
 	return nil, "none", fmt.Errorf("no embedding provider available (Ollama not running)")

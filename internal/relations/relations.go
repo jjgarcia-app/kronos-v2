@@ -68,6 +68,15 @@ func (d *Detector) Index(ctx context.Context, id int64, content string) error {
 	return d.vs.Index(ctx, id, content)
 }
 
+// Has reports whether an observation already has an embedding indexed.
+// Returns false when embeddings are disabled.
+func (d *Detector) Has(ctx context.Context, id int64) bool {
+	if d.vs == nil {
+		return false
+	}
+	return d.vs.Has(ctx, id)
+}
+
 // Remove deletes an observation's embedding from the vector store.
 // No-op when embeddings are disabled.
 func (d *Detector) Remove(ctx context.Context, id int64) error {

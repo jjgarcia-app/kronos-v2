@@ -27,6 +27,8 @@ func (s *Store) SaveObservation(ctx context.Context, p SaveParams) (*Observation
 	if p.Scope == "" {
 		p.Scope = ScopeProject
 	}
+	p.Title = stripNulBytes(p.Title)
+	p.Content = stripNulBytes(p.Content)
 
 	hash := normalizedHash(p.Title, p.Content)
 	ts := now()
@@ -122,10 +124,10 @@ func (s *Store) UpdateObservation(ctx context.Context, p UpdateParams) (*Observa
 	toolName := existing.ToolName
 
 	if p.Title != nil {
-		title = *p.Title
+		title = stripNulBytes(*p.Title)
 	}
 	if p.Content != nil {
-		content = *p.Content
+		content = stripNulBytes(*p.Content)
 	}
 	if p.Type != nil {
 		typ = string(*p.Type)
@@ -141,16 +143,19 @@ func (s *Store) DeleteObservation(ctx context.Context, id int64) error {
 	return err
 }
 
-func (s *Store) ListObservations(ctx context.Context, project string, limit int) ([]*Observation, error) {
+func (s *Store) ListObservations(ctx context.Context, project string, limit, offset int) ([]*Observation, error) {
 	if limit <= 0 {
 		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
 	}
 	rows, err := s.query(ctx,
 		`SELECT id, sync_id, session_id, type, title, content, tool_name, project, scope, topic_key,
 		        normalized_hash, revision_count, duplicate_count, created_at, updated_at, deleted_at
 		 FROM observations
 		 WHERE (project = ? OR scope = 'global') AND deleted_at IS NULL
-		 ORDER BY created_at DESC LIMIT ?`, project, limit)
+		 ORDER BY created_at DESC LIMIT ? OFFSET ?`, project, limit, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -420,6 +425,19 @@ func (s *Store) TouchLastSeen(ctx context.Context, ids []int64) error {
 		args...,
 	)
 	return err
+}
+
+// stripNulBytes quita el byte 0x00 de un string. Postgres rechaza ese byte en
+// columnas text/json sin importar que el resto sea UTF-8 válido (SQLSTATE
+// 22021) — puede llegar a nosotros como un escape de la forma \u0000 dentro de un JSON pegado
+// por un tool call. SQLite lo acepta, así que sin este strip una observación
+// se guarda bien en el buffer local pero atasca la cola de sync a Postgres
+// para siempre (el replay reintenta la misma entrada envenenada en cada tick).
+func stripNulBytes(s string) string {
+	if !strings.ContainsRune(s, 0) {
+		return s
+	}
+	return strings.ReplaceAll(s, "\x00", "")
 }
 
 // ListRecent retorna las N observaciones no borradas más recientemente actualizadas,

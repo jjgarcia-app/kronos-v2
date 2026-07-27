@@ -240,15 +240,15 @@ func (d *DualStore) GetObservation(ctx context.Context, id int64) (*Observation,
 	return d.buffer.GetObservation(ctx, id)
 }
 
-func (d *DualStore) ListObservations(ctx context.Context, project string, limit int) ([]*Observation, error) {
+func (d *DualStore) ListObservations(ctx context.Context, project string, limit, offset int) ([]*Observation, error) {
 	if !d.isPrimaryDown() {
-		obs, err := d.primary.ListObservations(ctx, project, limit)
+		obs, err := d.primary.ListObservations(ctx, project, limit, offset)
 		if err == nil {
 			return obs, nil
 		}
 		d.markDown()
 	}
-	return d.buffer.ListObservations(ctx, project, limit)
+	return d.buffer.ListObservations(ctx, project, limit, offset)
 }
 
 func (d *DualStore) ListAll(ctx context.Context, project string) ([]*Observation, error) {
@@ -403,72 +403,92 @@ func (d *DualStore) syncLoop(ctx context.Context) {
 	}
 }
 
+// flushBatchSize es cuántas entradas se leen de sync_queue por vuelta.
+// maxFlushBatches acota el trabajo total de una sola llamada a Flush* (~200k
+// entradas) — una cola real nunca debería acercarse a eso; es solo para que
+// un flush no corra indefinidamente si algo deja la cola creciendo sin freno.
+const (
+	flushBatchSize  = 200
+	maxFlushBatches = 1000
+)
+
 // FlushPendingVerbose is like FlushPending but returns the underlying error.
 func (d *DualStore) FlushPendingVerbose(ctx context.Context) (bool, error) {
-	d.mu.RLock()
-	primary := d.primary
-	isDown := d.down
-	d.mu.RUnlock()
-
-	if isDown || primary == nil {
-		conn, err := NewPostgres(d.primaryDSN)
-		if err != nil {
-			return false, fmt.Errorf("conectar a postgres: %w", err)
-		}
-		d.markUp(conn)
-		primary = conn
-	}
-
-	entries, err := d.queue.pending(200)
+	primary, err := d.ensurePrimary()
 	if err != nil {
-		return false, fmt.Errorf("leer sync_queue: %w", err)
-	}
-	if len(entries) == 0 {
-		return true, nil
+		return false, fmt.Errorf("conectar a postgres: %w", err)
 	}
 
-	for _, e := range entries {
-		if err := d.replayEntry(ctx, primary, e); err != nil {
-			d.markDown()
-			return false, fmt.Errorf("replay %s: %w", e.EntityType, err)
+	for i := 0; i < maxFlushBatches; i++ {
+		entries, err := d.queue.pending(flushBatchSize)
+		if err != nil {
+			return false, fmt.Errorf("leer sync_queue: %w", err)
 		}
-		_ = d.queue.delete(e.ID)
+		if len(entries) == 0 {
+			return true, nil
+		}
+		for _, e := range entries {
+			if err := d.replayEntry(ctx, primary, e); err != nil {
+				d.markDown()
+				return false, fmt.Errorf("replay %s: %w", e.EntityType, err)
+			}
+			_ = d.queue.delete(e.ID)
+		}
+		if ctx.Err() != nil {
+			return false, ctx.Err()
+		}
 	}
-	return true, nil
+	return false, fmt.Errorf("sync_queue no drenó tras %d lotes — posible crecimiento sin freno", maxFlushBatches)
 }
 
-// FlushPending tries to reconnect to the primary and replay all queued
-// operations in insertion order. Returns true when the queue is fully drained.
-// Exported so `kronos sync` can call it directly.
+// FlushPending tries to reconnect to the primary and replay ALL queued
+// operations in insertion order, en lotes de flushBatchSize hasta vaciar la
+// cola por completo (no solo el primer lote). Returns true when the queue is
+// fully drained. Exported so `kronos sync` can call it directly.
 func (d *DualStore) FlushPending(ctx context.Context) bool {
-	// ensure we have a live primary connection
+	primary, err := d.ensurePrimary()
+	if err != nil {
+		return false
+	}
+
+	for i := 0; i < maxFlushBatches; i++ {
+		entries, err := d.queue.pending(flushBatchSize)
+		if err != nil {
+			return false
+		}
+		if len(entries) == 0 {
+			return true
+		}
+		for _, e := range entries {
+			if err := d.replayEntry(ctx, primary, e); err != nil {
+				d.markDown()
+				return false
+			}
+			_ = d.queue.delete(e.ID)
+		}
+		if ctx.Err() != nil {
+			return false
+		}
+	}
+	return false
+}
+
+// ensurePrimary devuelve la conexión primary viva, reconectando si hace falta.
+func (d *DualStore) ensurePrimary() (*Store, error) {
 	d.mu.RLock()
 	primary := d.primary
 	isDown := d.down
 	d.mu.RUnlock()
 
-	if isDown || primary == nil {
-		conn, err := NewPostgres(d.primaryDSN)
-		if err != nil {
-			return false // still unreachable
-		}
-		d.markUp(conn)
-		primary = conn
+	if !isDown && primary != nil {
+		return primary, nil
 	}
-
-	entries, err := d.queue.pending(200)
-	if err != nil || len(entries) == 0 {
-		return true
+	conn, err := NewPostgres(d.primaryDSN)
+	if err != nil {
+		return nil, err
 	}
-
-	for _, e := range entries {
-		if err := d.replayEntry(ctx, primary, e); err != nil {
-			d.markDown()
-			return false
-		}
-		_ = d.queue.delete(e.ID)
-	}
-	return true
+	d.markUp(conn)
+	return conn, nil
 }
 
 // PendingCount returns the number of operations waiting to be synced.

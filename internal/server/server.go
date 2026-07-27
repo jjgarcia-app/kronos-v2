@@ -79,13 +79,22 @@ func New(st store.Storer, port int, token string) *Server {
 }
 
 // Start arranca el servidor HTTP en background (no bloqueante).
+//
+// El bind del puerto se hace de forma SÍNCRONA acá (net.Listen) — si el
+// puerto ya está tomado (otro proceso de kronos corriendo), Start devuelve
+// el error real en el acto en vez de tragárselo en una goroutine. Esto es
+// lo que permite que un daemon que pierde la carrera por el puerto se entere
+// y salga limpio, en vez de quedar corriendo "degradado" en silencio.
 func (srv *Server) Start() error {
+	ln, err := net.Listen("tcp", srv.Addr())
+	if err != nil {
+		return err
+	}
 	srv.httpSrv = &http.Server{
-		Addr:    srv.Addr(),
 		Handler: srv.authMiddleware(srv.mux),
 	}
 	go func() {
-		if err := srv.httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := srv.httpSrv.Serve(ln); err != nil && err != http.ErrServerClosed {
 			fmt.Fprintf(os.Stderr, "kronos http server error: %v\n", err)
 		}
 	}()
@@ -165,6 +174,13 @@ func (srv *Server) routes() {
 
 	// Project
 	srv.mux.HandleFunc("/project/current", srv.handleProjectCurrent)
+}
+
+// Handle monta un http.Handler adicional en el mux del server, protegido por
+// el mismo authMiddleware que el resto de las rutas. Pensado para montar el
+// StreamableHTTPServer de MCP (mark3labs/mcp-go) en /mcp sin duplicar auth.
+func (srv *Server) Handle(pattern string, handler http.Handler) {
+	srv.mux.Handle(pattern, handler)
 }
 
 // ---------- helpers ----------
@@ -390,7 +406,8 @@ func (srv *Server) handleObservations(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		proj := r.URL.Query().Get("project")
 		limit := queryInt(r, "limit", 50)
-		obss, err := srv.st.ListObservations(ctx, proj, limit)
+		offset := queryInt(r, "offset", 0)
+		obss, err := srv.st.ListObservations(ctx, proj, limit, offset)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -507,8 +524,9 @@ func (srv *Server) handleContext(w http.ResponseWriter, r *http.Request) {
 	ctx := context.Background()
 	proj := r.URL.Query().Get("project")
 	limit := queryInt(r, "limit", 20)
+	offset := queryInt(r, "offset", 0)
 
-	obss, err := srv.st.ListObservations(ctx, proj, limit)
+	obss, err := srv.st.ListObservations(ctx, proj, limit, offset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

@@ -44,14 +44,19 @@ func installMCPServer(configPath, agentName string) error {
 	}
 
 	servers := mcpServers(cfg)
-	if _, exists := servers["kronos"]; exists {
-		fmt.Printf("Kronos ya está registrado en %s — sin cambios.\n", agentName)
-		return nil
+	wantArgs := []string{"mcp"}
+	if existing, ok := servers["kronos"].(map[string]any); ok {
+		cmd, _ := existing["command"].(string)
+		if cmd == kronosBinary() && argsEqual(existing["args"], wantArgs) {
+			fmt.Printf("Kronos ya está registrado en %s — sin cambios.\n", agentName)
+			return nil
+		}
+		// entrada vieja (ej. args: ["serve"]) — se sobrescribe abajo
 	}
 
 	servers["kronos"] = map[string]any{
 		"command": kronosBinary(),
-		"args":    []string{"serve"},
+		"args":    wantArgs,
 	}
 	cfg["mcpServers"] = servers
 

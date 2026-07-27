@@ -103,7 +103,7 @@ func InstallClaudeCode() error {
 		fmt.Println("  hooks: SessionStart, UserPromptSubmit, SubagentStop, Stop")
 	}
 	if mcpChanged || userMCPChanged {
-		fmt.Println("  MCP server: kronos serve (stdio)")
+		fmt.Println("  MCP server: kronos mcp (proxy stdio → daemon compartido)")
 	}
 	if permsChanged {
 		fmt.Println("  permisos: tools mem_* auto-permitidos")
@@ -133,13 +133,16 @@ func mergeUserMCPFile() (bool, error) {
 
 	desired := map[string]any{
 		"command": kronosBin(),
-		"args":    []string{"serve"},
+		"args":    []string{"mcp"},
 		"type":    "stdio",
 	}
 
-	// Skip if already correct
+	// Skip if already correct — compara command Y args, no solo command.
+	// Instalaciones viejas con args: ["serve"] deben sobrescribirse para
+	// pasar al proxy liviano (kronos mcp) del daemon compartido.
 	if existing, ok := mcpServers["kronos"].(map[string]any); ok {
-		if cmd, _ := existing["command"].(string); cmd == kronosBin() {
+		cmd, _ := existing["command"].(string)
+		if cmd == kronosBin() && argsEqual(existing["args"], []string{"mcp"}) {
 			return false, nil
 		}
 	}
@@ -202,7 +205,7 @@ func mergeMCPServer(settings map[string]any) bool {
 	}
 	servers["kronos"] = map[string]any{
 		"command": kronosBin(),
-		"args":    []string{"serve"},
+		"args":    []string{"mcp"},
 		"type":    "stdio",
 	}
 	settings["mcpServers"] = servers
@@ -210,14 +213,47 @@ func mergeMCPServer(settings map[string]any) bool {
 }
 
 // isCurrentGoServer returns true only when the entry already uses the canonical
-// binary name (e.g. "kronos.exe" with no path prefix).
+// binary name (no path prefix) Y los args correctos ("mcp", el proxy hacia
+// el daemon compartido). Comparar solo command dejaba instalaciones viejas
+// con args: ["serve"] sin corregir para siempre al re-correr setup.
 func isCurrentGoServer(entry any) bool {
 	m, ok := entry.(map[string]any)
 	if !ok {
 		return false
 	}
 	cmd, _ := m["command"].(string)
-	return cmd == kronosBin()
+	if cmd != kronosBin() {
+		return false
+	}
+	return argsEqual(m["args"], []string{"mcp"})
+}
+
+// argsEqual compara el valor "args" de una entrada MCP existente (típicamente
+// []any tras json.Unmarshal, pero también acepta []string para el caso en
+// que el caller ya lo construyó en memoria) contra el slice deseado.
+func argsEqual(entry any, want []string) bool {
+	var raw []any
+	switch v := entry.(type) {
+	case []any:
+		raw = v
+	case []string:
+		raw = make([]any, len(v))
+		for i, s := range v {
+			raw[i] = s
+		}
+	default:
+		return false
+	}
+	if len(raw) != len(want) {
+		return false
+	}
+	for i, w := range want {
+		s, ok := raw[i].(string)
+		if !ok || s != w {
+			return false
+		}
+	}
+	return true
 }
 
 // kronosBin returns the full path of the currently running kronos binary.

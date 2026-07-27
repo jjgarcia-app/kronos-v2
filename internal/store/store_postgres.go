@@ -11,6 +11,13 @@ import (
 	"github.com/jjgarcia-app/kronos-v2/internal/config"
 )
 
+// connectTimeout acota cuánto puede tardar el intento inicial de conexión +
+// migración contra Postgres. Sin esto, si Postgres/Docker está caído, el
+// arranque del server MCP puede colgarse mucho más de lo que el cliente MCP
+// espera para el handshake — apareciendo como "disconnected" en vez de
+// degradar rápido al buffer SQLite local como está pensado.
+const connectTimeout = 3 * time.Second
+
 // NewPostgres opens a PostgreSQL database and runs migrations.
 func NewPostgres(dsn string) (*Store, error) {
 	db, err := sql.Open("pgx", dsn)
@@ -22,7 +29,9 @@ func NewPostgres(dsn string) (*Store, error) {
 	db.SetConnMaxLifetime(5 * time.Minute)
 
 	s := &Store{db: db, driver: "postgres"}
-	if err := s.migratePostgres(); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), connectTimeout)
+	defer cancel()
+	if err := s.migratePostgres(ctx); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate postgres: %w", err)
 	}
@@ -43,9 +52,7 @@ func NewFromConfig(cfg config.Config) (*Store, error) {
 	return nil, fmt.Errorf("no db path configured; use platform.DBPath()")
 }
 
-func (s *Store) migratePostgres() error {
-	ctx := context.Background()
-
+func (s *Store) migratePostgres(ctx context.Context) error {
 	var current int
 	row := s.db.QueryRowContext(ctx,
 		`SELECT COALESCE(MAX(version), 0) FROM schema_migrations`)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -18,20 +19,25 @@ import (
 	"github.com/jjgarcia-app/kronos-v2/internal/relations"
 	httpserver "github.com/jjgarcia-app/kronos-v2/internal/server"
 	"github.com/jjgarcia-app/kronos-v2/internal/store"
+	mcpgoserver "github.com/mark3labs/mcp-go/server"
 )
 
 func runServe(args ...string) error {
-	// parse --port=N and --tools=PROFILE flags
+	// parse --port=N, --tools=PROFILE y --daemon-mode (uso interno, ver mcp_proxy.go)
 	port := 4317
 	toolsFlag := ""
+	daemonMode := false
 	for _, a := range args {
-		if strings.HasPrefix(a, "--port=") {
+		switch {
+		case strings.HasPrefix(a, "--port="):
 			n, err := strconv.Atoi(strings.TrimPrefix(a, "--port="))
 			if err == nil && n > 0 {
 				port = n
 			}
-		} else if strings.HasPrefix(a, "--tools=") {
+		case strings.HasPrefix(a, "--tools="):
 			toolsFlag = strings.TrimPrefix(a, "--tools=")
+		case a == "--daemon-mode":
+			daemonMode = true
 		}
 	}
 
@@ -50,15 +56,47 @@ func runServe(args ...string) error {
 		return fmt.Errorf("create data dir: %w", err)
 	}
 
+	if daemonMode {
+		// el daemon no tiene consola propia (proceso detached) — todo warn/log
+		// va a un archivo en vez de perderse o colgar esperando un stdout que
+		// nadie lee.
+		if err := redirectLogsToFile(filepath.Join(dataDir, "daemon.log")); err != nil {
+			return fmt.Errorf("redirect daemon logs: %w", err)
+		}
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, os.Interrupt)
+		go func() {
+			<-sigCh
+			cancel()
+		}()
+	}
+
 	st, err := openStore(cfg, dbPath)
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
 	}
 	defer st.Close()
 
-	// arrancar HTTP server en background; detener con graceful shutdown al salir
+	// en modo daemon el filtro de tools se aplica del lado del proxy (kronos
+	// mcp), no acá — el daemon siempre expone el set completo.
+	effectiveToolsFlag := toolsFlag
+	if daemonMode {
+		effectiveToolsFlag = ""
+	}
+	mcpSrv, err := buildMCPServer(ctx, cfg, st, dataDir, effectiveToolsFlag)
+	if err != nil {
+		return fmt.Errorf("build mcp server: %w", err)
+	}
+
 	hs := httpserver.New(st, port, cfg.APIToken)
+	if daemonMode {
+		streamable := mcpgoserver.NewStreamableHTTPServer(mcpSrv.MCPServer())
+		hs.Handle("/mcp", streamable)
+	}
 	if err := hs.Start(); err != nil {
+		if daemonMode {
+			return fmt.Errorf("bind :%d: %w (¿ya hay un daemon de kronos corriendo?)", port, err)
+		}
 		fmt.Fprintf(os.Stderr, "warn: http server no pudo arrancar: %v\n", err)
 	}
 	defer func() {
@@ -67,45 +105,22 @@ func runServe(args ...string) error {
 		_ = hs.Stop(shutCtx)
 	}()
 
-	return runMCPCore(ctx, cfg, st, dataDir, toolsFlag)
+	if daemonMode {
+		fmt.Fprintf(os.Stderr, "kronos daemon listo — MCP en http://127.0.0.1:%d/mcp\n", port)
+		<-ctx.Done()
+		return nil
+	}
+
+	return mcpSrv.ServeStdio()
 }
 
-// runMCP arranca solo el servidor MCP stdio, sin HTTP REST.
-// Es el punto de entrada para sesiones de Claude Code: no hay puerto que
-// conflictúe, múltiples sesiones pueden correr en paralelo sin problemas.
-func runMCP(args ...string) error {
-	toolsFlag := ""
-	for _, a := range args {
-		if strings.HasPrefix(a, "--tools=") {
-			toolsFlag = strings.TrimPrefix(a, "--tools=")
-		}
-	}
+// runMCP vive en cmd/kronos/mcp_proxy.go — proxy stdio hacia el daemon
+// compartido (Fase 3 del plan de daemon único).
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	cfg, _ := config.Load()
-
-	dbPath, err := platform.DBPath()
-	if err != nil {
-		return fmt.Errorf("resolve db path: %w", err)
-	}
-
-	dataDir := filepath.Dir(dbPath)
-	if err := os.MkdirAll(dataDir, 0755); err != nil {
-		return fmt.Errorf("create data dir: %w", err)
-	}
-
-	st, err := openStore(cfg, dbPath)
-	if err != nil {
-		return fmt.Errorf("open store: %w", err)
-	}
-	defer st.Close()
-
-	return runMCPCore(ctx, cfg, st, dataDir, toolsFlag)
-}
-
-func runMCPCore(ctx context.Context, cfg config.Config, st store.Storer, dataDir, toolsFlag string) error {
+// buildMCPServer arma todo el estado del servidor MCP (embeddings, detector
+// de relaciones, reindex incremental, AutoJudge) sin servirlo — el caller
+// decide el transporte (stdio o StreamableHTTP).
+func buildMCPServer(ctx context.Context, cfg config.Config, st store.Storer, dataDir, toolsFlag string) (*mcp.Server, error) {
 	vs, _ := embeddings.New(ctx, filepath.Join(dataDir, "vectors"))
 	rel := relations.New(vs)
 
@@ -118,37 +133,73 @@ func runMCPCore(ctx context.Context, cfg config.Config, st store.Storer, dataDir
 
 	llmJudger := llm.NewFromConfig(ctx, cfg)
 
+	// reindexDone se cierra cuando reindexRecent termina. AutoJudge lo espera
+	// antes de arrancar su loop — evita que ambos peguen contra Ollama al
+	// mismo tiempo (reindexado en frío puede tardar minutos con cientos de
+	// observaciones sin indexar, mucho más que el delay fijo de AutoJudge).
+	var reindexDone chan struct{}
 	if rel.Enabled() {
-		go reindexRecent(ctx, local, rel)
+		reindexDone = make(chan struct{})
+		go func() {
+			defer close(reindexDone)
+			reindexRecent(ctx, local, rel)
+		}()
 	}
 
 	toolFilter := mcp.ResolveTools(toolsFlag)
 	srv := mcp.NewWithOptions(st, cfg.Nudge.ActionsThreshold, cfg.Nudge.FallbackMinutes, rel, toolFilter)
 	srv.SetDataDir(dataDir)
 	if ls := srv.LocalStoreForJudge(); ls != nil {
-		judge.AutoJudge(ctx, ls, rel, llmJudger)
+		judge.AutoJudge(ctx, ls, rel, llmJudger, reindexDone)
 	}
-	return srv.ServeStdio()
+	return srv, nil
 }
 
-// reindexRecent indexa en background las observaciones más recientes en el vector store.
-// Captura observaciones importadas via sync --import mientras el servidor estaba apagado.
+// redirectLogsToFile manda stdout/stderr del proceso a un archivo — usado en
+// modo daemon, donde no hay consola que lea nada. Rotación simple: si el
+// archivo ya pesa más de 10MB, se corre a .1 antes de abrir el nuevo.
+func redirectLogsToFile(path string) error {
+	const maxSize = 10 * 1024 * 1024
+	if info, err := os.Stat(path); err == nil && info.Size() > maxSize {
+		_ = os.Rename(path, path+".1")
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return err
+	}
+	os.Stdout = f
+	os.Stderr = f
+	return nil
+}
+
+// reindexRecent indexa en background las observaciones que todavía no tienen
+// embedding en el vector store — sin techo, cubre todo el historial, no solo
+// las últimas 200. Es incremental: rel.Has() salta en el acto lo que ya está
+// indexado (sin llamar a Ollama), así que en cada arranque normal esto es
+// barato — solo el primer arranque tras un hueco real de indexación (o una
+// importación de sync --import) hace trabajo pesado.
 // Usa timeout por item y pausa entre llamadas para no bloquear el read lock de chromem-go
 // mientras el MCP server atiende requests concurrentes.
 func reindexRecent(ctx context.Context, st *store.Store, rel *relations.Detector) {
 	if st == nil || rel == nil {
 		return
 	}
-	obs, err := st.ListRecent(ctx, 200)
+	obs, err := st.ListAll(ctx, "")
 	if err != nil {
 		return
 	}
+	indexed := 0
 	for _, o := range obs {
 		if ctx.Err() != nil {
 			return
 		}
+		if rel.Has(ctx, o.ID) {
+			continue
+		}
 		itemCtx, itemCancel := context.WithTimeout(ctx, 30*time.Second)
-		_ = rel.Index(itemCtx, o.ID, o.Title+" "+o.Content)
+		if err := rel.Index(itemCtx, o.ID, o.Title+" "+o.Content); err == nil {
+			indexed++
+		}
 		itemCancel()
 		// yield para no saturar el lock de chromem-go: permite que Query() pase entre items
 		select {
@@ -156,6 +207,9 @@ func reindexRecent(ctx context.Context, st *store.Store, rel *relations.Detector
 			return
 		case <-time.After(50 * time.Millisecond):
 		}
+	}
+	if indexed > 0 {
+		fmt.Fprintf(os.Stderr, "reindex: %d observaciones nuevas indexadas (de %d totales)\n", indexed, len(obs))
 	}
 }
 

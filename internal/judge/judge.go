@@ -16,22 +16,33 @@ const (
 	relatedThreshold     = float32(0.70) // similarity >= 0.70 → related (no LLM needed)
 	batchSize            = 20
 	interval             = 5 * time.Minute
+	maxReindexWait       = 10 * time.Minute // cota de seguridad si reindexDone nunca cierra
+	settleDelay          = 5 * time.Second  // colchón tras el reindex antes de pegarle a Ollama de nuevo
 )
 
 // AutoJudge starts a background goroutine that periodically resolves
 // pending memory_relations using cosine similarity from the configured embedding model.
 // For the ambiguous range (0.30–0.70), uses the Ollama LLM (llmClient may be nil).
 // No-op when rel is nil or embeddings are disabled.
-func AutoJudge(ctx context.Context, st *store.Store, rel *relations.Detector, llmClient llm.Judger) {
+//
+// reindexDone, si no es nil, se espera antes de arrancar el loop — evita
+// competir con reindexRecent por el mismo Ollama al mismo tiempo. Si nunca
+// se cierra (o es nil), maxReindexWait acota cuánto se espera como máximo.
+func AutoJudge(ctx context.Context, st *store.Store, rel *relations.Detector, llmClient llm.Judger, reindexDone <-chan struct{}) {
 	if rel == nil || !rel.Enabled() {
 		return
 	}
 	go func() {
-		// delay inicial para no interferir con el startup
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(30 * time.Second):
+		case <-reindexDone:
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(settleDelay):
+			}
+		case <-time.After(maxReindexWait):
 		}
 		for {
 			runBatch(ctx, st, rel, llmClient)

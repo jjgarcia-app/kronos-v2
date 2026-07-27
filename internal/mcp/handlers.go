@@ -18,11 +18,29 @@ import (
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 )
 
+// resolveProject devuelve el project explícito del request, o lo autodetecta
+// vía project.DetectFull usando el parámetro opcional "directory" si se omite
+// "project". Antes esto era una promesa vacía en el docstring de las tools —
+// el detector nunca se invocaba desde acá.
+func resolveProject(req mcpgo.CallToolRequest) (string, error) {
+	if p := str(req, "project"); p != "" {
+		return p, nil
+	}
+	dr := project.DetectFull(str(req, "directory"))
+	if dr.Error != nil || dr.Project == "" {
+		return "", fmt.Errorf(`project no especificado y no se pudo autodetectar — pasá "project" explícito o "directory" con el path del repo`)
+	}
+	return dr.Project, nil
+}
+
 func (s *Server) handleMemSave(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
 	title := str(req, "title")
 	content := secrets.Redact(str(req, "content"))
 	typ := store.ObservationType(strOr(req, "type", "discovery"))
-	project := str(req, "project")
+	proj, err := resolveProject(req)
+	if err != nil {
+		return fail(err), nil
+	}
 	sessionID := str(req, "session_id")
 	topicKey := str(req, "topic_key")
 	scope := store.Scope(strOr(req, "scope", "project"))
@@ -36,7 +54,7 @@ func (s *Server) handleMemSave(ctx context.Context, req mcpgo.CallToolRequest) (
 		Type:      typ,
 		Title:     title,
 		Content:   content,
-		Project:   project,
+		Project:   proj,
 		Scope:     scope,
 		TopicKey:  topicKey,
 	})
@@ -71,7 +89,7 @@ func (s *Server) handleMemSave(ctx context.Context, req mcpgo.CallToolRequest) (
 
 	// Conflict surfacing via FTS5 BM25 (best-effort, always local).
 	if ls := s.localStore(); ls != nil && obs.RevisionCount == 1 {
-		candidates, _ := ls.FindCandidates(ctx, obs, store.CandidateOptions{Project: project})
+		candidates, _ := ls.FindCandidates(ctx, obs, store.CandidateOptions{Project: proj})
 		if len(candidates) > 0 {
 			msg += "\n\n**Conflictos potenciales detectados** — usar mem_judge para resolverlos:"
 			for _, c := range candidates {
@@ -88,6 +106,11 @@ func (s *Server) handleMemSearch(ctx context.Context, req mcpgo.CallToolRequest)
 	project := str(req, "project")
 	sessionID := str(req, "session_id")
 	limit := intOr(req, "limit", 10)
+	offset := intOr(req, "offset", 0)
+	if offset < 0 {
+		offset = 0
+	}
+	fetchN := (limit + offset) * 2
 
 	if sessionID == "" {
 		if p, pErr := platform.CurrentSessionPath(); pErr == nil {
@@ -104,7 +127,7 @@ func (s *Server) handleMemSearch(ctx context.Context, req mcpgo.CallToolRequest)
 	bm25Results, err := s.store.Search(ctx, store.SearchParams{
 		Query:   query,
 		Project: project,
-		Limit:   limit * 2, // traer más para fusión RRF
+		Limit:   fetchN, // traer más para fusión RRF + offset
 	})
 	if err != nil {
 		return fail(err), nil
@@ -125,7 +148,7 @@ func (s *Server) handleMemSearch(ctx context.Context, req mcpgo.CallToolRequest)
 	// búsqueda vectorial complementaria — timeout corto para no bloquear si chromem está ocupado
 	if s.rel != nil && s.rel.Enabled() {
 		vecCtx, vecCancel := context.WithTimeout(ctx, 2*time.Second)
-		hits, _ := s.rel.Similar(vecCtx, query, limit*2, 0, 0.55)
+		hits, _ := s.rel.Similar(vecCtx, query, fetchN, 0, 0.55)
 		vecCancel()
 		if ls := s.localStore(); ls != nil {
 			for i, h := range hits {
@@ -154,7 +177,12 @@ func (s *Server) handleMemSearch(ctx context.Context, req mcpgo.CallToolRequest)
 		return entries[i].score > entries[j].score
 	})
 
-	// truncar al límite solicitado
+	// paginar: saltar offset, truncar al límite solicitado
+	if offset >= len(entries) {
+		entries = nil
+	} else {
+		entries = entries[offset:]
+	}
 	if len(entries) > limit {
 		entries = entries[:limit]
 	}
@@ -191,6 +219,7 @@ func (s *Server) handleMemContext(ctx context.Context, req mcpgo.CallToolRequest
 	project := str(req, "project")
 	sessionID := str(req, "session_id")
 	limit := intOr(req, "limit", 10)
+	offset := intOr(req, "offset", 0)
 
 	var observations []*store.Observation
 	var err error
@@ -198,7 +227,7 @@ func (s *Server) handleMemContext(ctx context.Context, req mcpgo.CallToolRequest
 	if sessionID != "" {
 		observations, err = s.store.ListSessionObservations(ctx, sessionID)
 	} else {
-		observations, err = s.store.ListObservations(ctx, project, limit)
+		observations, err = s.store.ListObservations(ctx, project, limit, offset)
 	}
 	if err != nil {
 		return fail(err), nil
@@ -365,11 +394,14 @@ func (s *Server) handleMemCheckpoint(ctx context.Context, req mcpgo.CallToolRequ
 		return fail(fmt.Errorf("dataDir no configurado en el servidor")), nil
 	}
 
-	project := str(req, "project")
+	proj, err := resolveProject(req)
+	if err != nil {
+		return fail(err), nil
+	}
 	status := strOr(req, "status", "active")
 
 	if status == "completed" {
-		if err := checkpoint.Clear(s.dataDir, project); err != nil {
+		if err := checkpoint.Clear(s.dataDir, proj); err != nil {
 			return fail(fmt.Errorf("limpiar checkpoint: %w", err)), nil
 		}
 		return ok("Checkpoint cerrado. La próxima sesión comenzará sin tarea en progreso."), nil
@@ -387,10 +419,10 @@ func (s *Server) handleMemCheckpoint(ctx context.Context, req mcpgo.CallToolRequ
 		NextStep: nextStep,
 		Files:    str(req, "files"),
 		Notes:    str(req, "notes"),
-		Project:  project,
+		Project:  proj,
 	}
 
-	if err := checkpoint.Save(s.dataDir, project, cp); err != nil {
+	if err := checkpoint.Save(s.dataDir, proj, cp); err != nil {
 		return fail(fmt.Errorf("guardar checkpoint: %w", err)), nil
 	}
 

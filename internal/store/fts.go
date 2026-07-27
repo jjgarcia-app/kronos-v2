@@ -151,6 +151,13 @@ func scanSearchResult(row interface{ Scan(dest ...any) error }) (*SearchResult, 
 }
 
 // sanitizeFTSQuery limpia el query para evitar errores de sintaxis FTS5.
+//
+// Si el caller ya usa sintaxis FTS5 explícita (comillas, operadores booleanos,
+// wildcards, agrupación), se respeta tal cual. En caso contrario, cada término
+// separado por espacios se encierra en comillas por separado y se unen con AND:
+// esto neutraliza caracteres que romperían el parser de FTS5 (p.ej. el "." en
+// "Modal.confirm") y busca "el documento contiene todos estos términos" en vez
+// de una frase exacta contigua, que casi nunca matchea contra prosa real.
 func sanitizeFTSQuery(q string) string {
 	q = strings.TrimSpace(q)
 	if q == "" {
@@ -159,8 +166,18 @@ func sanitizeFTSQuery(q string) string {
 	if strings.ContainsAny(q, `"*^()`) || strings.Contains(q, " OR ") || strings.Contains(q, " AND ") || strings.Contains(q, " NOT ") {
 		return q
 	}
-	if strings.Contains(q, " ") {
-		return fmt.Sprintf(`"%s"`, strings.ReplaceAll(q, `"`, ``))
+
+	terms := strings.Fields(q)
+	quoted := make([]string, 0, len(terms))
+	for _, t := range terms {
+		t = strings.ReplaceAll(t, `"`, "")
+		if t == "" {
+			continue
+		}
+		quoted = append(quoted, fmt.Sprintf(`"%s"`, t))
 	}
-	return q
+	if len(quoted) == 0 {
+		return q
+	}
+	return strings.Join(quoted, " AND ")
 }

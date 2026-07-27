@@ -3,6 +3,8 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/jjgarcia-app/kronos-v2/internal/relations"
 	"github.com/jjgarcia-app/kronos-v2/internal/store"
@@ -59,6 +61,12 @@ func (s *Server) SetDataDir(dir string) *Server {
 // ServeStdio arranca el servidor MCP sobre stdin/stdout (modo Claude Code).
 func (s *Server) ServeStdio() error {
 	return server.ServeStdio(s.mcp)
+}
+
+// MCPServer expone el *server.MCPServer subyacente para montarlo sobre otros
+// transportes (ej. server.NewStreamableHTTPServer en el daemon compartido).
+func (s *Server) MCPServer() *server.MCPServer {
+	return s.mcp
 }
 
 // localStorer is a private interface to access the underlying SQLite store
@@ -206,6 +214,11 @@ func intOr(req mcpgo.CallToolRequest, key string, def int) int {
 		return int(v)
 	case int:
 		return v
+	case string:
+		// defensivo: algunos callers mandan números como string pese al schema
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+			return n
+		}
 	}
 	return def
 }
