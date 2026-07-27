@@ -221,6 +221,46 @@ func TestInstallClaudeCode_AddsPostToolUse_PreservesExisting(t *testing.T) {
 	}
 }
 
+// TestInstallClaudeCode_PreservesMatcherField reproduce un bug real
+// encontrado en producción: hookMatcher no tenía campo Matcher, así que
+// cualquier entrada existente con "matcher": "Edit|Write|Bash" perdía ese
+// campo en el primer round-trip por mergeHooks/toMatcherSlice — cambiando
+// silenciosamente de "corre solo en estos tools" a "corre en todos".
+func TestInstallClaudeCode_PreservesMatcherField(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+
+	claudeDir := filepath.Join(tmpHome, ".claude")
+	if err := os.MkdirAll(claudeDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	existing := map[string]any{
+		"hooks": map[string]any{
+			"PostToolUse": []any{
+				map[string]any{
+					"matcher": "Edit|Write|Bash",
+					"hooks": []any{
+						map[string]any{"type": "command", "command": "code-review-graph update --skip-flows"},
+					},
+				},
+			},
+		},
+	}
+	data, _ := json.MarshalIndent(existing, "", "  ")
+	os.WriteFile(filepath.Join(claudeDir, "settings.json"), data, 0644)
+
+	if err := setup.InstallClaudeCode(); err != nil {
+		t.Fatalf("InstallClaudeCode: %v", err)
+	}
+
+	result, _ := os.ReadFile(filepath.Join(claudeDir, "settings.json"))
+	if !strings.Contains(string(result), `"matcher": "Edit|Write|Bash"`) {
+		t.Errorf("el campo matcher se perdió en el merge, settings.json:\n%s", result)
+	}
+}
+
 func TestUninstall_RemovesHooks(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)

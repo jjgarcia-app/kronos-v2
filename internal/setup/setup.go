@@ -20,7 +20,8 @@ type hookEntry struct {
 
 // hookMatcher is one element of the per-event array in settings.json.
 type hookMatcher struct {
-	Hooks []hookEntry `json:"hooks"`
+	Matcher string      `json:"matcher,omitempty"`
+	Hooks   []hookEntry `json:"hooks"`
 }
 
 // kronosToolPermissions are the MCP tool names that should be auto-allowed
@@ -368,7 +369,7 @@ func filterLegacyNode(raw any) []hookMatcher {
 			kept = append(kept, h)
 		}
 		if len(kept) > 0 {
-			out = append(out, hookMatcher{Hooks: kept})
+			out = append(out, hookMatcher{Matcher: m.Matcher, Hooks: kept})
 		}
 	}
 	return out
@@ -405,7 +406,7 @@ func filterBashGate(raw any) []hookMatcher {
 			kept = append(kept, h)
 		}
 		if len(kept) > 0 {
-			out = append(out, hookMatcher{Hooks: kept})
+			out = append(out, hookMatcher{Matcher: m.Matcher, Hooks: kept})
 		}
 	}
 	return out
@@ -440,7 +441,7 @@ func normalizeKronosHooks(hooks map[string]any) bool {
 				}
 			}
 			if len(kept) > 0 {
-				rebuilt = append(rebuilt, hookMatcher{Hooks: kept})
+				rebuilt = append(rebuilt, hookMatcher{Matcher: m.Matcher, Hooks: kept})
 			}
 		}
 		if changed {
@@ -495,7 +496,7 @@ func filterKronosCommand(raw any, cmd string) []hookMatcher {
 			}
 		}
 		if len(kept) > 0 {
-			out = append(out, hookMatcher{Hooks: kept})
+			out = append(out, hookMatcher{Matcher: m.Matcher, Hooks: kept})
 		}
 	}
 	return out
@@ -547,7 +548,7 @@ func toMatcherSlice(raw any) []hookMatcher {
 		if len(entries) == 0 {
 			continue
 		}
-		out = append(out, hookMatcher{Hooks: entries})
+		out = append(out, hookMatcher{Matcher: strVal(m, "matcher"), Hooks: entries})
 	}
 	return out
 }
