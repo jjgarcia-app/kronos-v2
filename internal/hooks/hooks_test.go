@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jjgarcia-app/kronos-v2/internal/checkpoint"
 	"github.com/jjgarcia-app/kronos-v2/internal/hooks"
 	"github.com/jjgarcia-app/kronos-v2/internal/platform"
 	"github.com/jjgarcia-app/kronos-v2/internal/project"
@@ -1002,6 +1003,33 @@ func TestRunPreToolUse_NonGatedTool_Pass(t *testing.T) {
 	}
 }
 
+// TestRunPreToolUse_UnknownProject_Pass reproduce el bypass que antes vivía
+// solo en el wrapper bash (kronos-gate.sh) — sin proyecto detectado, no tiene
+// sentido bloquear por "no buscaste en este proyecto todavía".
+func TestRunPreToolUse_UnknownProject_Pass(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	st.CreateSession(ctx, "sess-gate-unknown", "p", "/tmp")
+	// sin search — el gate debería saltar igual por proyecto no detectado.
+
+	t.Setenv("KRONOS_GATE_BLOCK", "1")
+	var exitCode *int
+	hooks.SetExitFn(func(code int) { exitCode = &code })
+	defer hooks.SetExitFn(nil)
+
+	in := hooks.Input{SessionID: "sess-gate-unknown", ToolName: "Edit", CWD: filepath.Join(t.TempDir(), "!!!")}
+	stderr := captureStderr(t, func() {
+		hooks.RunPreToolUse(ctx, in, st)
+	})
+
+	if strings.Contains(stderr, "[kronos]") {
+		t.Errorf("proyecto unknown no debería disparar el gate, got: %q", stderr)
+	}
+	if exitCode != nil {
+		t.Errorf("exitFn no debería llamarse con proyecto unknown, got code %d", *exitCode)
+	}
+}
+
 func TestRunPreToolUse_EmptySessionID_Pass(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
@@ -1088,5 +1116,75 @@ func TestRunPreToolUse_DBUnavailable_FailOpen(t *testing.T) {
 	}
 	if exitCode != nil {
 		t.Errorf("exitFn should not be called on DB error, got code %d", *exitCode)
+	}
+}
+
+// --- PreCompact ---
+
+func TestRunPreCompact_PrintsWarning(t *testing.T) {
+	setupTempDataDir(t)
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	out := captureStdout(t, func() {
+		if err := hooks.RunPreCompact(ctx, hooks.Input{CWD: t.TempDir()}, st); err != nil {
+			t.Fatalf("RunPreCompact: %v", err)
+		}
+	})
+
+	if !strings.Contains(out, "mem_session_summary") {
+		t.Errorf("esperaba un aviso mencionando mem_session_summary, got: %q", out)
+	}
+}
+
+func TestRunPreCompact_AutoSavesCheckpointWhenNoneExists(t *testing.T) {
+	dataDir := setupTempDataDir(t)
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	cwd := t.TempDir()
+	projName := project.Detect(cwd).Name
+
+	// confirmar que no había checkpoint antes
+	if cp, _ := checkpoint.Load(dataDir, projName); cp != nil {
+		t.Fatalf("no debería haber checkpoint todavía: %+v", cp)
+	}
+
+	captureStdout(t, func() {
+		hooks.RunPreCompact(ctx, hooks.Input{CWD: cwd}, st)
+	})
+
+	cp, err := checkpoint.Load(dataDir, projName)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cp == nil {
+		t.Fatal("RunPreCompact debería autoguardar un checkpoint de respaldo cuando no hay uno activo")
+	}
+}
+
+func TestRunPreCompact_DoesNotOverwriteExistingCheckpoint(t *testing.T) {
+	dataDir := setupTempDataDir(t)
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	cwd := t.TempDir()
+	projName := project.Detect(cwd).Name
+
+	real := checkpoint.State{Task: "tarea real en curso", NextStep: "seguir con X", Project: projName}
+	if err := checkpoint.Save(dataDir, projName, real); err != nil {
+		t.Fatal(err)
+	}
+
+	captureStdout(t, func() {
+		hooks.RunPreCompact(ctx, hooks.Input{CWD: cwd}, st)
+	})
+
+	cp, err := checkpoint.Load(dataDir, projName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cp == nil || cp.Task != "tarea real en curso" {
+		t.Errorf("checkpoint real no debería pisarse, got: %+v", cp)
 	}
 }

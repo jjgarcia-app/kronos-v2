@@ -62,6 +62,12 @@ var kronosHooks = map[string][]hookMatcher{
 	"Stop": {
 		{Hooks: []hookEntry{{Type: "command", Command: "kronos hook session-stop"}}},
 	},
+	"PreToolUse": {
+		{Hooks: []hookEntry{{Type: "command", Command: "kronos hook pre-tool-use"}}},
+	},
+	"PreCompact": {
+		{Hooks: []hookEntry{{Type: "command", Command: "kronos hook pre-compact"}}},
+	},
 }
 
 // InstallClaudeCode merges Kronos hooks and MCP server into ~/.claude/settings.json.
@@ -81,8 +87,9 @@ func InstallClaudeCode() error {
 
 	hooks := getOrInitHooks(settings)
 	legacyRemoved := removeLegacyNodeHooks(hooks)
+	bashGateRemoved := removeLegacyBashGate(hooks)
 	normalized := normalizeKronosHooks(hooks)
-	hooksChanged := mergeHooks(hooks) || legacyRemoved || normalized
+	hooksChanged := mergeHooks(hooks) || legacyRemoved || bashGateRemoved || normalized
 	settings["hooks"] = hooks
 
 	mcpChanged := mergeMCPServer(settings)
@@ -100,7 +107,7 @@ func InstallClaudeCode() error {
 
 	fmt.Printf("Kronos configurado en %s\n", settingsPath)
 	if hooksChanged {
-		fmt.Println("  hooks: SessionStart, UserPromptSubmit, SubagentStop, Stop")
+		fmt.Println("  hooks: SessionStart, UserPromptSubmit, SubagentStop, Stop, PreToolUse, PreCompact")
 	}
 	if mcpChanged || userMCPChanged {
 		fmt.Println("  MCP server: kronos mcp (proxy stdio → daemon compartido)")
@@ -366,6 +373,39 @@ func filterLegacyNode(raw any) []hookMatcher {
 
 func isLegacyNodeHook(cmd string) bool {
 	return strings.HasPrefix(cmd, "node ") && strings.Contains(cmd, "kronos") && strings.HasSuffix(cmd, ".js")
+}
+
+// removeLegacyBashGate quita la entrada vieja de PreToolUse que delegaba en
+// ~/.claude/scripts/kronos-gate.sh (wrapper bash+python que reimplementaba
+// el mismo chequeo "¿ya buscó esta sesión?" con SQL crudo y un path
+// hardcodeado a Windows). Esa lógica ahora vive entera en el binario Go
+// (RunPreToolUse) — mergeHooks agrega la entrada canónica por separado,
+// esto solo limpia la vieja para que no queden las dos corriendo juntas.
+// Returns true si se sacó algo.
+func removeLegacyBashGate(hooks map[string]any) bool {
+	filtered := filterBashGate(hooks["PreToolUse"])
+	if len(toMatcherSlice(filtered)) == len(toMatcherSlice(hooks["PreToolUse"])) {
+		return false
+	}
+	hooks["PreToolUse"] = filtered
+	return true
+}
+
+func filterBashGate(raw any) []hookMatcher {
+	var out []hookMatcher
+	for _, m := range toMatcherSlice(raw) {
+		var kept []hookEntry
+		for _, h := range m.Hooks {
+			if strings.Contains(h.Command, "kronos-gate.sh") {
+				continue
+			}
+			kept = append(kept, h)
+		}
+		if len(kept) > 0 {
+			out = append(out, hookMatcher{Hooks: kept})
+		}
+	}
+	return out
 }
 
 // normalizeKronosHooks replaces any existing hook entry that calls kronos via an

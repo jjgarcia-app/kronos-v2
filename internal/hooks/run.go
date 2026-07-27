@@ -41,6 +41,8 @@ func RunWithReason(ctx context.Context, hookName string, reason string, st store
 		return RunSessionStop(ctx, in, st)
 	case "pre-tool-use":
 		return RunPreToolUse(ctx, in, st)
+	case "pre-compact":
+		return RunPreCompact(ctx, in, st)
 	default:
 		return fmt.Errorf("hook desconocido: %s", hookName)
 	}

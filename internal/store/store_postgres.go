@@ -11,12 +11,17 @@ import (
 	"github.com/jjgarcia-app/kronos-v2/internal/config"
 )
 
-// connectTimeout acota cuánto puede tardar el intento inicial de conexión +
+// ConnectTimeout acota cuánto puede tardar el intento inicial de conexión +
 // migración contra Postgres. Sin esto, si Postgres/Docker está caído, el
 // arranque del server MCP puede colgarse mucho más de lo que el cliente MCP
 // espera para el handshake — apareciendo como "disconnected" en vez de
 // degradar rápido al buffer SQLite local como está pensado.
-const connectTimeout = 3 * time.Second
+//
+// Exportado (no const) para que callers con requisitos de latencia distintos
+// puedan pisarlo — ej. los hooks (cmd/kronos/hook.go) corren en cada prompt
+// del usuario y necesitan un presupuesto mucho más chico que el arranque del
+// daemon, donde 3s de una sola vez no se nota.
+var ConnectTimeout = 3 * time.Second
 
 // NewPostgres opens a PostgreSQL database and runs migrations.
 func NewPostgres(dsn string) (*Store, error) {
@@ -29,7 +34,7 @@ func NewPostgres(dsn string) (*Store, error) {
 	db.SetConnMaxLifetime(5 * time.Minute)
 
 	s := &Store{db: db, driver: "postgres"}
-	ctx, cancel := context.WithTimeout(context.Background(), connectTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), ConnectTimeout)
 	defer cancel()
 	if err := s.migratePostgres(ctx); err != nil {
 		db.Close()

@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/jjgarcia-app/kronos-v2/internal/project"
 	"github.com/jjgarcia-app/kronos-v2/internal/store"
 )
 
@@ -33,6 +34,14 @@ func ResetGatedTools() {
 }
 
 // RunPreToolUse implements the deterministic memory-search gate (spec S3).
+//
+// Antes esto vivía parcialmente en un wrapper bash+python
+// (~/.claude/scripts/kronos-gate.sh) que reimplementaba el mismo chequeo de
+// "¿ya buscó esta sesión?" con una consulta SQL cruda a un path hardcodeado
+// de Windows, además de un bypass por "proyecto desconocido" que el binario
+// Go no tenía. Todo eso vive acá ahora — un solo camino, un solo lenguaje,
+// pasando por el mismo Storer (DualStore-aware) que el resto del sistema.
+//
 // Env vars:
 //
 //	KRONOS_PRETOOL_GATE  — "off" disables entirely (default: on)
@@ -47,6 +56,12 @@ func RunPreToolUse(ctx context.Context, in Input, st store.Storer) error {
 	}
 	gated := resolveGatedTools()
 	if !gated[in.ToolName] {
+		return nil
+	}
+	// proyecto sin detectar → el gate no tiene contra qué medir "ya buscaste
+	// en este proyecto", así que no tiene sentido bloquear (mismo bypass que
+	// tenía el wrapper bash).
+	if project.Detect(in.CWD).Name == "unknown" {
 		return nil
 	}
 	sess, err := st.GetSession(ctx, in.SessionID)

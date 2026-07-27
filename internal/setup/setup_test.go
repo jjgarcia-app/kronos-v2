@@ -119,6 +119,64 @@ func TestInstallClaudeCode_MergesExistingSettings(t *testing.T) {
 	}
 }
 
+// TestInstallClaudeCode_RemovesLegacyBashGate reproduce la migración real:
+// una instalación vieja tenía PreToolUse apuntando al wrapper bash+python
+// (kronos-gate.sh) — correr setup debe sacarlo y dejar solo la entrada
+// canónica que llama al binario Go directo.
+func TestInstallClaudeCode_RemovesLegacyBashGate(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+
+	claudeDir := filepath.Join(tmpHome, ".claude")
+	if err := os.MkdirAll(claudeDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	existing := map[string]any{
+		"hooks": map[string]any{
+			"PreToolUse": []any{
+				map[string]any{
+					"hooks": []any{
+						map[string]any{"type": "command", "command": "bash $HOME/.claude/scripts/kronos-gate.sh"},
+					},
+				},
+			},
+		},
+	}
+	data, _ := json.MarshalIndent(existing, "", "  ")
+	os.WriteFile(filepath.Join(claudeDir, "settings.json"), data, 0644)
+
+	if err := setup.InstallClaudeCode(); err != nil {
+		t.Fatalf("InstallClaudeCode: %v", err)
+	}
+
+	result, _ := os.ReadFile(filepath.Join(claudeDir, "settings.json"))
+	resultStr := string(result)
+
+	if strings.Contains(resultStr, "kronos-gate.sh") {
+		t.Error("el wrapper bash viejo debería haberse sacado de PreToolUse")
+	}
+	if !strings.Contains(resultStr, "kronos hook pre-tool-use") {
+		t.Error("PreToolUse debería apuntar al binario Go directo")
+	}
+}
+
+func TestInstallClaudeCode_AddsPreCompact(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+
+	if err := setup.InstallClaudeCode(); err != nil {
+		t.Fatalf("InstallClaudeCode: %v", err)
+	}
+
+	result, _ := os.ReadFile(filepath.Join(tmpHome, ".claude", "settings.json"))
+	if !strings.Contains(string(result), "kronos hook pre-compact") {
+		t.Error("PreCompact no se registró")
+	}
+}
+
 func TestUninstall_RemovesHooks(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
