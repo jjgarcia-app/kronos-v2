@@ -47,6 +47,10 @@ type SecretsConfig struct {
 
 type ExportConfig struct {
 	DefaultOutput string `json:"default_output"`
+	// Enabled activa el mirror en vivo: cada mem_save/update/delete se
+	// refleja en DefaultOutput como vault de Obsidian, además del dump
+	// manual vía `kronos export`. Default false — opt-in.
+	Enabled bool `json:"enabled"`
 }
 
 type LLMConfig struct {

@@ -19,7 +19,7 @@ import (
 //	<outDir>/
 //	  _index.md                        ← master index
 //	  <project>/<type>/<id>-<slug>.md  ← one file per observation
-func Export(ctx context.Context, st *store.Store, outDir, project string) error {
+func Export(ctx context.Context, st store.Storer, outDir, project string) error {
 	observations, err := st.ListAll(ctx, project)
 	if err != nil {
 		return fmt.Errorf("list observations: %w", err)
@@ -43,15 +43,18 @@ func Export(ctx context.Context, st *store.Store, outDir, project string) error 
 	return nil
 }
 
+// obsPath returns <outDir>/<project>/<type>/<id>-<slug>.md for o.
+func obsPath(outDir string, o *store.Observation) string {
+	dir := filepath.Join(outDir, safeName(o.Project), safeName(string(o.Type)))
+	return filepath.Join(dir, obsName(o.ID, o.Title)+".md")
+}
+
 // writeObservation creates <outDir>/<project>/<type>/<id>-<slug>.md
 func writeObservation(outDir string, o *store.Observation) error {
-	dir := filepath.Join(outDir, safeName(o.Project), safeName(string(o.Type)))
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	path := obsPath(outDir, o)
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
 	}
-
-	name := obsName(o.ID, o.Title) + ".md"
-	path := filepath.Join(dir, name)
 
 	var sb strings.Builder
 	writeObsFrontmatter(&sb, o)

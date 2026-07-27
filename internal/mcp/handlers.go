@@ -589,7 +589,7 @@ func (s *Server) handleMemStats(ctx context.Context, req mcpgo.CallToolRequest) 
 		}
 	}
 
-	if d, ok := s.store.(*store.DualStore); ok {
+	if d, ok := s.store.(pendingCounter); ok {
 		if pending := d.PendingCount(); pending > 0 {
 			fmt.Fprintf(&sb, "\n**Sync pendiente**: %d operaciones sin replicar\n", pending)
 		}
@@ -683,7 +683,7 @@ func (s *Server) handleMemDoctor(ctx context.Context, _ mcpgo.CallToolRequest) (
 		fmt.Fprintf(&sb, "**Store**: no disponible\n")
 	}
 
-	if d, ok := s.store.(*store.DualStore); ok {
+	if d, ok := s.store.(pendingCounter); ok {
 		if pending := d.PendingCount(); pending > 0 {
 			fmt.Fprintf(&sb, "**Sync pendiente**: %d operaciones sin replicar a PostgreSQL\n", pending)
 		} else {

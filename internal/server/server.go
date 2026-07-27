@@ -221,7 +221,9 @@ func (srv *Server) sqliteStore() *store.Store {
 	if s, ok := srv.st.(*store.Store); ok {
 		return s
 	}
-	if d, ok := srv.st.(*store.DualStore); ok {
+	// duck-typed en vez de *store.DualStore concreto: un store envuelto
+	// (ej. obsidian.MirrorStore) reenvía LocalStore() sin ser el tipo exacto.
+	if d, ok := srv.st.(interface{ LocalStore() *store.Store }); ok {
 		return d.LocalStore()
 	}
 	return nil

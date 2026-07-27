@@ -75,6 +75,14 @@ type localStorer interface {
 	LocalStore() *store.Store
 }
 
+// pendingCounter expone el conteo de sync_queue — implementado por
+// *store.DualStore y reenviado por obsidian.MirrorStore cuando envuelve uno.
+// Duck-typed en vez de un type assertion concreto para que envolver el store
+// (ej. el mirror de Obsidian) no rompa la detección de backend/sync.
+type pendingCounter interface {
+	PendingCount() int
+}
+
 // localStore returns the underlying *store.Store for local-only operations.
 // Works for both *store.Store and *store.DualStore.
 func (s *Server) localStore() *store.Store {

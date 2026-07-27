@@ -15,6 +15,7 @@ import (
 	"github.com/jjgarcia-app/kronos-v2/internal/judge"
 	"github.com/jjgarcia-app/kronos-v2/internal/llm"
 	"github.com/jjgarcia-app/kronos-v2/internal/mcp"
+	"github.com/jjgarcia-app/kronos-v2/internal/obsidian"
 	"github.com/jjgarcia-app/kronos-v2/internal/platform"
 	"github.com/jjgarcia-app/kronos-v2/internal/relations"
 	httpserver "github.com/jjgarcia-app/kronos-v2/internal/server"
@@ -226,14 +227,25 @@ func openStore(cfg config.Config, localDBPath string) (store.Storer, error) {
 	}
 
 	if cfg.DB.Backend != "postgres" || cfg.DB.PostgresDSN == "" {
-		return local, nil
+		return wrapExportMirror(local, cfg), nil
 	}
 
 	dual, err := store.NewDualFromDSN(local, cfg.DB.PostgresDSN)
 	if err != nil {
 		// sync_queue table couldn't be created — extremely unlikely
 		fmt.Fprintf(os.Stderr, "warn: dual store init failed (%v) — usando solo sqlite\n", err)
-		return local, nil
+		return wrapExportMirror(local, cfg), nil
 	}
-	return dual, nil
+	return wrapExportMirror(dual, cfg), nil
+}
+
+// wrapExportMirror envuelve st en un obsidian.MirrorStore cuando el usuario
+// activó export.enabled — cada save/update/delete se refleja en vivo en el
+// vault de Obsidian (export.default_output), en vez de depender del dump
+// manual `kronos export` que queda desactualizado apenas se corre una vez.
+func wrapExportMirror(st store.Storer, cfg config.Config) store.Storer {
+	if !cfg.Export.Enabled {
+		return st
+	}
+	return obsidian.NewMirrorStore(st, obsidian.ExpandPath(cfg.Export.DefaultOutput))
 }

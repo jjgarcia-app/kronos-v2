@@ -7,13 +7,14 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/jjgarcia-app/kronos-v2/internal/config"
 	"github.com/jjgarcia-app/kronos-v2/internal/obsidian"
 	"github.com/jjgarcia-app/kronos-v2/internal/platform"
-	"github.com/jjgarcia-app/kronos-v2/internal/store"
 )
 
 func runExport(args []string) error {
-	outDir := "kronos-export"
+	cfg, _ := config.Load()
+	outDir := obsidian.ExpandPath(cfg.Export.DefaultOutput)
 	project := ""
 
 	for i := 0; i < len(args); i++ {
@@ -37,6 +38,8 @@ func runExport(args []string) error {
 		}
 	}
 
+	outDir = obsidian.ExpandPath(outDir)
+
 	dbPath, err := platform.DBPath()
 	if err != nil {
 		return fmt.Errorf("resolve db path: %w", err)
@@ -46,7 +49,7 @@ func runExport(args []string) error {
 		return fmt.Errorf("create data dir: %w", err)
 	}
 
-	st, err := store.New(dbPath)
+	st, err := openStore(cfg, dbPath)
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
 	}
