@@ -41,6 +41,8 @@ func RunWithReason(ctx context.Context, hookName string, reason string, st store
 		return RunSessionStop(ctx, in, st)
 	case "pre-tool-use":
 		return RunPreToolUse(ctx, in, st)
+	case "post-tool-use":
+		return RunPostToolUse(ctx, in, st)
 	case "pre-compact":
 		return RunPreCompact(ctx, in, st)
 	default:

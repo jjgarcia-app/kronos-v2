@@ -68,6 +68,9 @@ var kronosHooks = map[string][]hookMatcher{
 	"PreCompact": {
 		{Hooks: []hookEntry{{Type: "command", Command: "kronos hook pre-compact"}}},
 	},
+	"PostToolUse": {
+		{Hooks: []hookEntry{{Type: "command", Command: "kronos hook post-tool-use"}}},
+	},
 }
 
 // InstallClaudeCode merges Kronos hooks and MCP server into ~/.claude/settings.json.
@@ -107,7 +110,7 @@ func InstallClaudeCode() error {
 
 	fmt.Printf("Kronos configurado en %s\n", settingsPath)
 	if hooksChanged {
-		fmt.Println("  hooks: SessionStart, UserPromptSubmit, SubagentStop, Stop, PreToolUse, PreCompact")
+		fmt.Println("  hooks: SessionStart, UserPromptSubmit, SubagentStop, Stop, PreToolUse, PreCompact, PostToolUse")
 	}
 	if mcpChanged || userMCPChanged {
 		fmt.Println("  MCP server: kronos mcp (proxy stdio → daemon compartido)")

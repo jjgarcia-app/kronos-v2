@@ -131,3 +131,28 @@ func TestDualStore_CountSessionMethods(t *testing.T) {
 		t.Errorf("CountSessionObservations = %d, want 1", n)
 	}
 }
+
+// TestDualStore_RecordToolUse_FallsBackAndEnqueues sigue el mismo patrón de
+// escritura que el resto de DualStore: si primary falla, va a buffer y
+// queda encolada para replay.
+func TestDualStore_RecordToolUse_FallsBackAndEnqueues(t *testing.T) {
+	ds := newTestDualStore(t)
+	ds.primary.Close() // simular primary caído
+	ds.down = false    // isPrimaryDown() lo detecta recién al fallar la llamada
+
+	ctx := context.Background()
+	if err := ds.RecordToolUse(ctx, "s1", "kronos-v2", "Edit"); err != nil {
+		t.Fatalf("RecordToolUse: %v", err)
+	}
+
+	stats, err := ds.buffer.ToolUsageStats(ctx, "kronos-v2", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stats) != 1 || stats[0].ToolName != "Edit" {
+		t.Errorf("buffer no tiene el registro esperado: %+v", stats)
+	}
+	if ds.PendingCount() != 1 {
+		t.Errorf("PendingCount = %d, want 1 (debería haber quedado encolado para replay)", ds.PendingCount())
+	}
+}

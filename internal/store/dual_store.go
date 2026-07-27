@@ -211,6 +211,21 @@ func (d *DualStore) EndSession(ctx context.Context, id, summary string) error {
 	return nil
 }
 
+func (d *DualStore) RecordToolUse(ctx context.Context, sessionID, project, toolName string) error {
+	if !d.isPrimaryDown() {
+		if err := d.primary.RecordToolUse(ctx, sessionID, project, toolName); err == nil {
+			return nil
+		}
+		d.markDown()
+	}
+	if err := d.buffer.RecordToolUse(ctx, sessionID, project, toolName); err != nil {
+		return err
+	}
+	type toolUsePayload struct{ SessionID, Project, ToolName string }
+	_ = d.queue.enqueue("record_tool_use", toolUsePayload{sessionID, project, toolName})
+	return nil
+}
+
 func (d *DualStore) SavePrompt(ctx context.Context, sessionID, project, content string) error {
 	if !d.isPrimaryDown() {
 		if err := d.primary.SavePrompt(ctx, sessionID, project, content); err == nil {
@@ -596,6 +611,13 @@ func (d *DualStore) replayEntry(ctx context.Context, primary *Store, e syncEntry
 			return nil // session missing from primary — discard orphaned prompt
 		}
 		return err
+
+	case "record_tool_use":
+		var p struct{ SessionID, Project, ToolName string }
+		if err := json.Unmarshal([]byte(e.Payload), &p); err != nil {
+			return nil
+		}
+		return primary.RecordToolUse(ctx, p.SessionID, p.Project, p.ToolName)
 	}
 	return nil
 }

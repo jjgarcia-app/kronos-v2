@@ -167,4 +167,15 @@ var migrations = []string{
 
 	// v42: pre-tool-use gate — track mem_search calls per session
 	`ALTER TABLE sessions ADD COLUMN search_count INTEGER NOT NULL DEFAULT 0`,
+
+	// v43: tool_usage — log de uso de tools por sesión (Edit/Write/Bash/MCP).
+	`CREATE TABLE IF NOT EXISTS tool_usage (
+		id         INTEGER PRIMARY KEY AUTOINCREMENT,
+		session_id TEXT NOT NULL,
+		project    TEXT NOT NULL,
+		tool_name  TEXT NOT NULL,
+		created_at TEXT NOT NULL
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_tool_usage_session ON tool_usage(session_id)`,
+	`CREATE INDEX IF NOT EXISTS idx_tool_usage_project_tool ON tool_usage(project, tool_name)`,
 }

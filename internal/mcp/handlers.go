@@ -589,6 +589,17 @@ func (s *Server) handleMemStats(ctx context.Context, req mcpgo.CallToolRequest) 
 		}
 	}
 
+	if tools, err := ls.ToolUsageStats(ctx, proj, 5); err == nil && len(tools) > 0 {
+		fmt.Fprintf(&sb, "\n**Tools más usados**")
+		if proj != "" {
+			fmt.Fprintf(&sb, " [%s]", proj)
+		}
+		fmt.Fprintf(&sb, ":\n")
+		for _, t := range tools {
+			fmt.Fprintf(&sb, "- %s: %d\n", t.ToolName, t.Count)
+		}
+	}
+
 	if d, ok := s.store.(pendingCounter); ok {
 		if pending := d.PendingCount(); pending > 0 {
 			fmt.Fprintf(&sb, "\n**Sync pendiente**: %d operaciones sin replicar\n", pending)

@@ -177,6 +177,50 @@ func TestInstallClaudeCode_AddsPreCompact(t *testing.T) {
 	}
 }
 
+// TestInstallClaudeCode_AddsPostToolUse_PreservesExisting reproduce el caso
+// real de Jerry: PostToolUse ya tenía una entrada de code-review-graph antes
+// de instalar kronos — el merge debe agregar la entrada de kronos al lado,
+// no pisar la existente.
+func TestInstallClaudeCode_AddsPostToolUse_PreservesExisting(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+
+	claudeDir := filepath.Join(tmpHome, ".claude")
+	if err := os.MkdirAll(claudeDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	existing := map[string]any{
+		"hooks": map[string]any{
+			"PostToolUse": []any{
+				map[string]any{
+					"matcher": "Edit|Write|Bash",
+					"hooks": []any{
+						map[string]any{"type": "command", "command": "code-review-graph update --skip-flows"},
+					},
+				},
+			},
+		},
+	}
+	data, _ := json.MarshalIndent(existing, "", "  ")
+	os.WriteFile(filepath.Join(claudeDir, "settings.json"), data, 0644)
+
+	if err := setup.InstallClaudeCode(); err != nil {
+		t.Fatalf("InstallClaudeCode: %v", err)
+	}
+
+	result, _ := os.ReadFile(filepath.Join(claudeDir, "settings.json"))
+	resultStr := string(result)
+
+	if !strings.Contains(resultStr, "code-review-graph") {
+		t.Error("la entrada existente de code-review-graph se perdió en el merge")
+	}
+	if !strings.Contains(resultStr, "kronos hook post-tool-use") {
+		t.Error("PostToolUse no se registró para kronos")
+	}
+}
+
 func TestUninstall_RemovesHooks(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)

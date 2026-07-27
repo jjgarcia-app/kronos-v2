@@ -34,5 +34,9 @@ type Storer interface {
 	SavePrompt(ctx context.Context, sessionID, project, content string) error
 	Search(ctx context.Context, p SearchParams) ([]*SearchResult, error)
 
+	// RecordToolUse registra una llamada a tool (PostToolUse) en el log de
+	// uso — base para stats/analytics, ver mem_stats.
+	RecordToolUse(ctx context.Context, sessionID, project, toolName string) error
+
 	Close() error
 }

@@ -109,4 +109,25 @@ var postgresMigrations = []string{
 	// v25–v26: soft-delete para user_prompts
 	`ALTER TABLE user_prompts ADD COLUMN IF NOT EXISTS deleted_at TEXT`,
 	`CREATE INDEX IF NOT EXISTS idx_prompts_deleted ON user_prompts(deleted_at)`,
+
+	// v27–v28: injected_observation_ids + search_count en sessions — existían
+	// en schema.go (SQLite) desde las migraciones v41/v42 pero nunca se
+	// portaron acá. Efecto real: GetSession/GetActiveSession/ListSessions
+	// fallaban contra Postgres con "column does not exist" en cada llamada,
+	// lo que hacía que DualStore marcara el primario como caído y degradara
+	// a SQLite de más — el gate de búsqueda (search_count) nunca pudo
+	// leerse/escribirse de verdad contra el backend real.
+	`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS injected_observation_ids TEXT NULL`,
+	`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS search_count INTEGER NOT NULL DEFAULT 0`,
+
+	// v29: tool_usage — log de uso de tools por sesión (Edit/Write/Bash/MCP).
+	`CREATE TABLE IF NOT EXISTS tool_usage (
+		id         BIGSERIAL PRIMARY KEY,
+		session_id TEXT NOT NULL,
+		project    TEXT NOT NULL,
+		tool_name  TEXT NOT NULL,
+		created_at TEXT NOT NULL
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_tool_usage_session ON tool_usage(session_id)`,
+	`CREATE INDEX IF NOT EXISTS idx_tool_usage_project_tool ON tool_usage(project, tool_name)`,
 }

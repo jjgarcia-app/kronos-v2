@@ -1188,3 +1188,45 @@ func TestRunPreCompact_DoesNotOverwriteExistingCheckpoint(t *testing.T) {
 		t.Errorf("checkpoint real no debería pisarse, got: %+v", cp)
 	}
 }
+
+// TestRunPostToolUse_RecordsCall reproduce el gap real: Activity.RecordSignificantAction
+// (internal/mcp/activity.go) existía pero nunca se llamaba porque PostToolUse
+// solo estaba cableado a code-review-graph, nunca a kronos — cero seguimiento
+// persistente de qué tools se usaban.
+func TestRunPostToolUse_RecordsCall(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	cwd := t.TempDir()
+	projName := project.Detect(cwd).Name
+
+	in := hooks.Input{SessionID: "s1", ToolName: "Edit", CWD: cwd}
+	if err := hooks.RunPostToolUse(ctx, in, st); err != nil {
+		t.Fatalf("RunPostToolUse: %v", err)
+	}
+
+	stats, err := st.ToolUsageStats(ctx, projName, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stats) != 1 || stats[0].ToolName != "Edit" || stats[0].Count != 1 {
+		t.Errorf("esperaba 1 registro de Edit, obtuve: %+v", stats)
+	}
+}
+
+func TestRunPostToolUse_EmptyToolName_NoOp(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	in := hooks.Input{SessionID: "s1", ToolName: "", CWD: t.TempDir()}
+	if err := hooks.RunPostToolUse(ctx, in, st); err != nil {
+		t.Fatalf("RunPostToolUse: %v", err)
+	}
+
+	stats, err := st.ToolUsageStats(ctx, "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stats) != 0 {
+		t.Errorf("esperaba 0 registros con ToolName vacío, obtuve: %+v", stats)
+	}
+}

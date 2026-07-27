@@ -40,12 +40,12 @@ const hookConnectTimeout = 800 * time.Millisecond
 //	kronos hook <name> <reason>
 //
 // Supported hooks: session-start, prompt-submit, subagent-stop, session-stop,
-// pre-tool-use, pre-compact.
+// pre-tool-use, pre-compact, post-tool-use.
 // For session-start, reason="compact" triggers post-compaction recovery.
 // Reason "startup", "clear", or empty all trigger the normal session start.
 func runHook(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("uso: kronos hook <session-start|prompt-submit|subagent-stop|session-stop|pre-tool-use|pre-compact> [--reason compact]")
+		return fmt.Errorf("uso: kronos hook <session-start|prompt-submit|subagent-stop|session-stop|pre-tool-use|pre-compact|post-tool-use> [--reason compact]")
 	}
 
 	hookName := args[0]
