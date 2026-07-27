@@ -139,6 +139,70 @@ func TestJudgeOne_LowSimilarity_MarksNotConflict(t *testing.T) {
 	assertJudgedAs(t, st, "p", store.RelationNotConflict)
 }
 
+// TestJudgeOne_MissingObservation_ResolvesInsteadOfStayingPendingForever
+// reproduce un bug real encontrado en producción: relaciones pending cuyo
+// source_id o target_id ya no resuelve a ninguna observación (borrada, o
+// drift de sync_id entre SQLite y Postgres) quedaban "pending" para
+// siempre — cada ciclo de AutoJudge las reintentaba, fallaba del mismo modo
+// (GetObservationBySyncID devuelve nil, nil) y nunca progresaban. 267
+// relaciones de producción quedaron acumuladas desde mayo por esto.
+func TestJudgeOne_MissingObservation_ResolvesInsteadOfStayingPendingForever(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	obsA, err := st.SaveObservation(ctx, store.SaveParams{
+		Type: store.TypeDiscovery, Title: "obs real", Content: "contenido", Project: "p",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// relación pending con target_id que nunca existió como observación —
+	// simula el drift/borrado encontrado en producción.
+	const bogusSyncID = "sync-id-que-nunca-existio"
+	now := "2026-01-01T00:00:00Z"
+	_, err = st.DB().ExecContext(ctx, `
+		INSERT INTO memory_relations
+			(sync_id, source_id, target_id, relation, judgment_status, created_at, updated_at)
+		VALUES (?, ?, ?, 'pending', 'pending', ?, ?)`,
+		"rel-sync-test-orphan", obsA.SyncID, bogusSyncID, now, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rels, err := st.ListRelations(ctx, "p", store.JudgmentPending, 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rels) != 1 {
+		t.Fatalf("esperaba 1 relación pending, hay %d", len(rels))
+	}
+
+	vs, err := embeddings.NewInMemory(fixedVectorEmbedFn(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel := relations.New(vs)
+
+	judgeOne(ctx, st, rel, nil, rels[0])
+
+	pending, err := st.ListRelations(ctx, "p", store.JudgmentPending, 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 0 {
+		t.Errorf("la relación con target inexistente debería resolverse, no quedar pending — quedaron %d", len(pending))
+	}
+
+	judged, err := st.ListRelations(ctx, "p", "judged", 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(judged) != 1 || judged[0].Relation != store.RelationNotConflict {
+		t.Errorf("esperaba 1 relación judged=not_conflict, got %+v", judged)
+	}
+}
+
 // assertJudgedAs busca la única relación 'judged' del proyecto y verifica
 // que su veredicto (campo Relation) sea el esperado.
 func assertJudgedAs(t *testing.T, st *store.Store, project, wantRelation string) {

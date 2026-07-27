@@ -70,11 +70,22 @@ func runBatch(ctx context.Context, st *store.Store, rel *relations.Detector, llm
 
 func judgeOne(ctx context.Context, st *store.Store, rel *relations.Detector, llmClient llm.Judger, r store.Relation) {
 	src, err := st.GetObservationBySyncID(ctx, r.SourceID)
-	if err != nil || src == nil {
-		return
+	if err != nil {
+		return // error real de DB — reintentar en el próximo ciclo
 	}
 	tgt, err := st.GetObservationBySyncID(ctx, r.TargetID)
-	if err != nil || tgt == nil {
+	if err != nil {
+		return
+	}
+	if src == nil || tgt == nil {
+		// source o target ya no existe (borrada, o drift de sync_id entre
+		// SQLite y Postgres) — antes esto quedaba "pending" para siempre:
+		// cada ciclo de AutoJudge la volvía a intentar, fallaba del mismo
+		// modo, y nunca se resolvía. No hay nada que comparar si un lado no
+		// existe, así que se resuelve como not_conflict en vez de reintentar
+		// indefinidamente un caso que nunca puede progresar.
+		reason := "source u target ya no existe (observación borrada) — nada que comparar"
+		_, _ = st.JudgeBySemantic(ctx, r.SourceID, r.TargetID, store.RelationNotConflict, 0.90, reason, embeddings.DefaultOllamaModel)
 		return
 	}
 
