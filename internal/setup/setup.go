@@ -49,29 +49,44 @@ var kronosToolPermissions = []string{
 	"mcp__kronos__mem_doctor",
 }
 
-// kronosHooks are the hooks we inject into Claude Code settings.json.
-var kronosHooks = map[string][]hookMatcher{
-	"SessionStart": {
-		{Hooks: []hookEntry{{Type: "command", Command: "kronos hook session-start"}}},
-	},
-	"UserPromptSubmit": {
-		{Hooks: []hookEntry{{Type: "command", Command: "kronos hook prompt-submit"}}},
-	},
-	"SubagentStop": {
-		{Hooks: []hookEntry{{Type: "command", Command: "kronos hook subagent-stop"}}},
-	},
-	"Stop": {
-		{Hooks: []hookEntry{{Type: "command", Command: "kronos hook session-stop"}}},
-	},
-	"PreToolUse": {
-		{Hooks: []hookEntry{{Type: "command", Command: "kronos hook pre-tool-use"}}},
-	},
-	"PreCompact": {
-		{Hooks: []hookEntry{{Type: "command", Command: "kronos hook pre-compact"}}},
-	},
-	"PostToolUse": {
-		{Hooks: []hookEntry{{Type: "command", Command: "kronos hook post-tool-use"}}},
-	},
+// kronosHooksMap returns the hooks we inject into Claude Code settings.json,
+// built fresh each call from kronosBin() — la ruta absoluta del binario que
+// está corriendo `kronos setup` ahora mismo.
+//
+// Antes esto era un comando pelado ("kronos hook session-start"), resuelto
+// por PATH. Bug real encontrado en producción: con más de un kronos.exe en
+// PATH (ej. C:\Users\Jerry\bin\ y C:\Users\Jerry\go\bin\, ambos con kronos
+// instalado), el comando pelado resolvía siempre al primero en PATH — que
+// terminó siendo un binario viejo, nunca actualizado, mientras el MCP server
+// (que sí usa kronosBin() vía os.Executable()) corría el binario nuevo. Los
+// hooks (PreToolUse, PostToolUse, etc.) quedaron ejecutando código de hace
+// varias sesiones sin que nada lo avisara.
+func kronosHooksMap() map[string][]hookMatcher {
+	bin := kronosBin()
+	cmd := func(sub string) string { return bin + " hook " + sub }
+	return map[string][]hookMatcher{
+		"SessionStart": {
+			{Hooks: []hookEntry{{Type: "command", Command: cmd("session-start")}}},
+		},
+		"UserPromptSubmit": {
+			{Hooks: []hookEntry{{Type: "command", Command: cmd("prompt-submit")}}},
+		},
+		"SubagentStop": {
+			{Hooks: []hookEntry{{Type: "command", Command: cmd("subagent-stop")}}},
+		},
+		"Stop": {
+			{Hooks: []hookEntry{{Type: "command", Command: cmd("session-stop")}}},
+		},
+		"PreToolUse": {
+			{Hooks: []hookEntry{{Type: "command", Command: cmd("pre-tool-use")}}},
+		},
+		"PreCompact": {
+			{Hooks: []hookEntry{{Type: "command", Command: cmd("pre-compact")}}},
+		},
+		"PostToolUse": {
+			{Hooks: []hookEntry{{Type: "command", Command: cmd("post-tool-use")}}},
+		},
+	}
 }
 
 // InstallClaudeCode merges Kronos hooks and MCP server into ~/.claude/settings.json.
@@ -412,12 +427,14 @@ func filterBashGate(raw any) []hookMatcher {
 	return out
 }
 
-// normalizeKronosHooks replaces any existing hook entry that calls kronos via an
-// absolute path (e.g. /usr/local/bin/kronos hook ...) with the canonical short
-// command (e.g. "kronos hook session-start"). Returns true if anything changed.
+// normalizeKronosHooks replaces any existing hook entry that calls kronos via
+// a stale command — un comando pelado ("kronos hook X", ambiguo por PATH si
+// hay más de un kronos.exe instalado) o una ruta absoluta vieja apuntando a
+// otro binario — con el comando canónico actual (kronosBin() + " hook X").
+// Returns true if anything changed.
 func normalizeKronosHooks(hooks map[string]any) bool {
 	changed := false
-	for event, matchers := range kronosHooks {
+	for event, matchers := range kronosHooksMap() {
 		canonicalCmd := matchers[0].Hooks[0].Command
 		// suffix is everything after the binary name, e.g. "hook session-start"
 		suffix := ""
@@ -432,8 +449,9 @@ func normalizeKronosHooks(hooks map[string]any) bool {
 		for _, m := range existing {
 			var kept []hookEntry
 			for _, h := range m.Hooks {
-				// absolute-path variant: ends with " <suffix>" and has a path separator
-				if strings.HasSuffix(h.Command, " "+suffix) && strings.ContainsAny(h.Command, "/\\") {
+				// cualquier variante (pelada o con ruta vieja) que apunte al
+				// mismo subcomando pero no sea ya exactamente la canónica.
+				if strings.HasSuffix(h.Command, " "+suffix) && h.Command != canonicalCmd {
 					kept = append(kept, hookEntry{Type: "command", Command: canonicalCmd})
 					changed = true
 				} else {
@@ -455,7 +473,7 @@ func normalizeKronosHooks(hooks map[string]any) bool {
 // Returns true if any change was made.
 func mergeHooks(hooks map[string]any) bool {
 	changed := false
-	for event, matchers := range kronosHooks {
+	for event, matchers := range kronosHooksMap() {
 		cmd := matchers[0].Hooks[0].Command
 		if !hasKronosCommand(hooks[event], cmd) {
 			existing := toMatcherSlice(hooks[event])
@@ -468,7 +486,7 @@ func mergeHooks(hooks map[string]any) bool {
 }
 
 func removeKronosHooks(hooks map[string]any) {
-	for event, matchers := range kronosHooks {
+	for event, matchers := range kronosHooksMap() {
 		cmd := matchers[0].Hooks[0].Command
 		hooks[event] = filterKronosCommand(hooks[event], cmd)
 	}

@@ -72,7 +72,9 @@ func TestInstallClaudeCode_Idempotent(t *testing.T) {
 	data, _ := os.ReadFile(settingsPath)
 
 	// Count occurrences of the kronos command — should be exactly 1 per event.
-	count := strings.Count(string(data), "kronos hook session-start")
+	// El comando ahora es una ruta absoluta (kronosBin()), no "kronos" pelado
+	// — chequeamos el sufijo del subcomando, no el binario exacto.
+	count := strings.Count(string(data), "hook session-start")
 	if count != 1 {
 		t.Errorf("expected 1 occurrence of session-start command, got %d", count)
 	}
@@ -114,8 +116,55 @@ func TestInstallClaudeCode_MergesExistingSettings(t *testing.T) {
 	if !strings.Contains(string(result), "my-other-hook") {
 		t.Error("existing hook was removed")
 	}
-	if !strings.Contains(string(result), "kronos hook session-start") {
+	if !strings.Contains(string(result), "hook session-start") {
 		t.Error("kronos hook not added")
+	}
+}
+
+// TestInstallClaudeCode_NormalizesBareCommandToAbsolutePath reproduce el bug
+// de raiz encontrado en produccion: un comando pelado ("kronos hook X")
+// resuelve por PATH -- con mas de un kronos.exe instalado (comun: uno en
+// go/bin de un `go install`, otro copiado a mano a otro dir del PATH), el
+// pelado puede resolver a un binario viejo mientras el MCP server (que si
+// usa ruta absoluta) corre el nuevo. Los hooks quedan ejecutando codigo
+// desactualizado sin ningun aviso. Correr setup debe normalizar cualquier
+// comando pelado preexistente a la ruta absoluta del binario actual.
+func TestInstallClaudeCode_NormalizesBareCommandToAbsolutePath(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+
+	claudeDir := filepath.Join(tmpHome, ".claude")
+	if err := os.MkdirAll(claudeDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	existing := map[string]any{
+		"hooks": map[string]any{
+			"SessionStart": []any{
+				map[string]any{
+					"hooks": []any{
+						map[string]any{"type": "command", "command": "kronos hook session-start"},
+					},
+				},
+			},
+		},
+	}
+	data, _ := json.MarshalIndent(existing, "", "  ")
+	os.WriteFile(filepath.Join(claudeDir, "settings.json"), data, 0644)
+
+	if err := setup.InstallClaudeCode(); err != nil {
+		t.Fatalf("InstallClaudeCode: %v", err)
+	}
+
+	result, _ := os.ReadFile(filepath.Join(claudeDir, "settings.json"))
+	resultStr := string(result)
+
+	if strings.Contains(resultStr, `"command": "kronos hook session-start"`) {
+		t.Error("el comando pelado debería haberse normalizado a ruta absoluta, no quedar tal cual")
+	}
+	if !strings.Contains(resultStr, "hook session-start") {
+		t.Error("SessionStart debería seguir apuntando a algún binario")
 	}
 }
 
@@ -157,7 +206,7 @@ func TestInstallClaudeCode_RemovesLegacyBashGate(t *testing.T) {
 	if strings.Contains(resultStr, "kronos-gate.sh") {
 		t.Error("el wrapper bash viejo debería haberse sacado de PreToolUse")
 	}
-	if !strings.Contains(resultStr, "kronos hook pre-tool-use") {
+	if !strings.Contains(resultStr, "hook pre-tool-use") {
 		t.Error("PreToolUse debería apuntar al binario Go directo")
 	}
 }
@@ -172,7 +221,7 @@ func TestInstallClaudeCode_AddsPreCompact(t *testing.T) {
 	}
 
 	result, _ := os.ReadFile(filepath.Join(tmpHome, ".claude", "settings.json"))
-	if !strings.Contains(string(result), "kronos hook pre-compact") {
+	if !strings.Contains(string(result), "hook pre-compact") {
 		t.Error("PreCompact no se registró")
 	}
 }
@@ -216,7 +265,7 @@ func TestInstallClaudeCode_AddsPostToolUse_PreservesExisting(t *testing.T) {
 	if !strings.Contains(resultStr, "code-review-graph") {
 		t.Error("la entrada existente de code-review-graph se perdió en el merge")
 	}
-	if !strings.Contains(resultStr, "kronos hook post-tool-use") {
+	if !strings.Contains(resultStr, "hook post-tool-use") {
 		t.Error("PostToolUse no se registró para kronos")
 	}
 }
