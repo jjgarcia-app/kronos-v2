@@ -96,3 +96,38 @@ func TestDualStore_GetSession_FallsBackWhenPrimaryLacksID(t *testing.T) {
 		t.Fatal("GetSession devolvió nil — no cayó al buffer pese a que primary no tenía la sesión")
 	}
 }
+
+// TestDualStore_CountSessionMethods reproduce el bug real del nudge de
+// guardado (hooks/prompt_submit.go): *store.Store siempre tuvo
+// CountSessionPrompts/CountSessionObservations, pero DualStore nunca las
+// implementó. El nudge las busca vía un type assertion duck-typed
+// (st.(promptCounter)) — con Postgres como backend (DualStore, el caso real
+// de producción) esa aserción fallaba en silencio y el nudge jamás disparaba,
+// sin ningún error visible.
+func TestDualStore_CountSessionMethods(t *testing.T) {
+	ds := newTestDualStore(t)
+	ctx := context.Background()
+
+	sess, err := ds.CreateSession(ctx, "s1", "p", "/tmp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ds.SavePrompt(ctx, sess.ID, "p", "prompt uno"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ds.SavePrompt(ctx, sess.ID, "p", "prompt dos"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ds.SaveObservation(ctx, SaveParams{
+		SessionID: sess.ID, Type: TypeDiscovery, Title: "obs", Content: "c", Project: "p",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if n := ds.CountSessionPrompts(ctx, sess.ID); n != 2 {
+		t.Errorf("CountSessionPrompts = %d, want 2", n)
+	}
+	if n := ds.CountSessionObservations(ctx, sess.ID); n != 1 {
+		t.Errorf("CountSessionObservations = %d, want 1", n)
+	}
+}

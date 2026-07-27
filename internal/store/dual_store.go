@@ -360,6 +360,26 @@ func (d *DualStore) CountObservations(ctx context.Context, project string) (int,
 	return d.buffer.CountObservations(ctx, project)
 }
 
+// CountSessionPrompts y CountSessionObservations respaldan el nudge de
+// guardado (ver hooks/prompt_submit.go): cada N prompts sin ninguna
+// observación guardada en la sesión, se recuerda al agente que use mem_save.
+// *store.Store ya las tenía; DualStore nunca las implementó — con Postgres
+// como backend (el caso real de producción) el type assertion duck-typed
+// contra estos dos métodos fallaba en silencio y el nudge jamás disparaba.
+func (d *DualStore) CountSessionPrompts(ctx context.Context, sessionID string) int {
+	if !d.isPrimaryDown() {
+		return d.primary.CountSessionPrompts(ctx, sessionID)
+	}
+	return d.buffer.CountSessionPrompts(ctx, sessionID)
+}
+
+func (d *DualStore) CountSessionObservations(ctx context.Context, sessionID string) int {
+	if !d.isPrimaryDown() {
+		return d.primary.CountSessionObservations(ctx, sessionID)
+	}
+	return d.buffer.CountSessionObservations(ctx, sessionID)
+}
+
 func (d *DualStore) IncrementSearchCount(ctx context.Context, sessionID string) error {
 	if !d.isPrimaryDown() {
 		if err := d.primary.IncrementSearchCount(ctx, sessionID); err == nil {

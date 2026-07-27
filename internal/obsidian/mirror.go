@@ -74,6 +74,27 @@ func (m *MirrorStore) PendingCount() int {
 	return 0
 }
 
+// CountSessionPrompts y CountSessionObservations reenvían al store envuelto
+// — el nudge de guardado (hooks/prompt_submit.go) los necesita para saber si
+// la sesión lleva N prompts sin ningún mem_save.
+func (m *MirrorStore) CountSessionPrompts(ctx context.Context, sessionID string) int {
+	if c, ok := m.Storer.(interface {
+		CountSessionPrompts(ctx context.Context, sessionID string) int
+	}); ok {
+		return c.CountSessionPrompts(ctx, sessionID)
+	}
+	return 0
+}
+
+func (m *MirrorStore) CountSessionObservations(ctx context.Context, sessionID string) int {
+	if c, ok := m.Storer.(interface {
+		CountSessionObservations(ctx context.Context, sessionID string) int
+	}); ok {
+		return c.CountSessionObservations(ctx, sessionID)
+	}
+	return 0
+}
+
 func (m *MirrorStore) DeleteObservation(ctx context.Context, id int64) error {
 	before, _ := m.Storer.GetObservation(ctx, id)
 	err := m.Storer.DeleteObservation(ctx, id)

@@ -34,6 +34,20 @@ func TestMirrorStore_ForwardsLocalStoreAndPendingCount(t *testing.T) {
 	if got := m.PendingCount(); got != 3 {
 		t.Errorf("PendingCount() = %d, want 3", got)
 	}
+
+	sess, err := m.CreateSession(context.Background(), "s1", "kronos-v2", "/tmp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SavePrompt(context.Background(), sess.ID, "kronos-v2", "hola"); err != nil {
+		t.Fatal(err)
+	}
+	if n := m.CountSessionPrompts(context.Background(), sess.ID); n != 1 {
+		t.Errorf("CountSessionPrompts() = %d, want 1 (nudge de guardado roto)", n)
+	}
+	if n := m.CountSessionObservations(context.Background(), sess.ID); n != 0 {
+		t.Errorf("CountSessionObservations() = %d, want 0", n)
+	}
 }
 
 func TestMirrorStore_SaveObservation_WritesFileImmediately(t *testing.T) {
