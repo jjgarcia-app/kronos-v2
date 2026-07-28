@@ -2,8 +2,6 @@
 
 import (
 	"context"
-	"os"
-	"strings"
 
 	"github.com/jjgarcia-app/kronos-v2/internal/checkpoint"
 	"github.com/jjgarcia-app/kronos-v2/internal/platform"
@@ -12,39 +10,36 @@ import (
 )
 
 // RunSessionStop handles the Stop hook.
-// Closes the active memory session. Runs async so failures are non-critical.
+//
+// Bug real encontrado en producción: Stop NO dispara una sola vez al final
+// real de una sesión — dispara cada vez que el agente principal termina de
+// responder y devuelve el control (una vez por turno, muchas veces en una
+// conversación larga). Antes esto llamaba EndSession(ended_at=now) y
+// borraba el archivo current_session_<proyecto>.txt en CADA turno — así
+// que apenas terminaba el primer turno, cualquier lookup posterior
+// (mem_search buscando la sesión activa, GetActiveSession, etc.) ya veía
+// la sesión como "terminada" y el archivo ya no existía, pese a que la
+// conversación seguía activa. Confirmado en vivo dos veces: una sesión
+// propia marcada ended_at pese a seguir en uso, y una sesión de Jerry en
+// otro proyecto marcada como cerrada 5 minutos después de arrancar.
+//
+// Por eso ahora Stop NO toca ended_at ni borra el archivo — solo deja la
+// red de seguridad del checkpoint. "La sesión terminó de verdad" queda a
+// cargo exclusivo de una señal explícita (mem_session_summary /
+// mem_session_end), no de un hook que dispara todo el tiempo.
 func RunSessionStop(ctx context.Context, in Input, st store.Storer) error {
 	if in.SessionID == "" {
 		return nil
 	}
 	proj := project.Detect(in.CWD)
-	if p, err := platform.CurrentSessionPath(proj.Name); err == nil {
-		if data, readErr := os.ReadFile(p); readErr == nil && string(data) == in.SessionID {
-			_ = os.Remove(p)
-		}
-	}
 
-	// Red de seguridad, mismo patrón que PreCompact: la sesión terminó sin
-	// pasar por compactación (Stop dispara en un cierre normal), y el hook
-	// no puede escribir un resumen real — no vio la conversación, solo el
-	// agente (Claude) la vio. Si el agente se olvidó de llamar
-	// mem_session_summary, esto deja al menos una miga de pan en vez de
-	// nada; no reemplaza un resumen real.
+	// Red de seguridad, mismo patrón que PreCompact: si todavía no hay
+	// resumen ni checkpoint para esta sesión, deja al menos una miga de pan.
+	// Idempotente (checkpoint.Load) — dispararse en cada turno no genera
+	// ruido ni pisa nada una vez que existe.
 	saveFallbackCheckpointIfMissing(ctx, st, in.SessionID, proj.Name)
 
-	err := st.EndSession(ctx, in.SessionID, "")
-	if err != nil && strings.Contains(err.Error(), "session not found") {
-		// SessionStart ya trata el fallo de CreateSession como no-fatal
-		// (session_start.go: "_ = err") — si la sesión nunca llegó a
-		// crearse (ej. el daemon compartido estaba reiniciándose justo en
-		// ese momento, por trabajo en otro proyecto), no hay nada que
-		// cerrar acá. El mismo criterio ya existe en el replay de sync
-		// (dual_store.go, case "end_session"); esto lo alinea también para
-		// la llamada directa del hook, que antes burbujeaba como un error
-		// de Stop visible en la UI pese a ser inofensivo.
-		return nil
-	}
-	return err
+	return nil
 }
 
 func saveFallbackCheckpointIfMissing(ctx context.Context, st store.Storer, sessionID, project string) {

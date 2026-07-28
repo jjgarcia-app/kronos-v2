@@ -798,7 +798,14 @@ func TestRunSessionStart_SessionIDPersistedInDB(t *testing.T) {
 
 // TestRunSessionStop_DeletesFile_WhenOwner verifies that session-stop deletes
 // current_session.txt when its content matches the stopping session ID.
-func TestRunSessionStop_DeletesFile_WhenOwner(t *testing.T) {
+// TestRunSessionStop_DoesNotDeleteFile reproduce el bug real de fondo: Stop
+// dispara una vez POR TURNO (no solo al final real de la sesión). Antes
+// borraba current_session_<proyecto>.txt en cada disparo — así que apenas
+// terminaba el primer turno de una conversación larga, el archivo
+// desaparecía y cualquier lookup posterior (mem_search buscando la sesión
+// activa) dejaba de encontrarlo, pese a que la conversación seguía activa.
+// Ahora Stop no toca el archivo en absoluto.
+func TestRunSessionStop_DoesNotDeleteFile(t *testing.T) {
 	setupTempDataDir(t)
 	st := newTestStore(t)
 	ctx := context.Background()
@@ -821,43 +828,12 @@ func TestRunSessionStop_DeletesFile_WhenOwner(t *testing.T) {
 		t.Fatalf("RunSessionStop: %v", err)
 	}
 
-	if _, err := os.ReadFile(filePath); err == nil {
-		t.Error("current_session file should be deleted when session owns the file")
-	}
-}
-
-// TestRunSessionStop_PreservesFile_WhenNotOwner verifies the race condition fix:
-// if a newer session already wrote its ID to current_session.txt, the old
-// session's Stop hook must NOT delete it.
-func TestRunSessionStop_PreservesFile_WhenNotOwner(t *testing.T) {
-	setupTempDataDir(t)
-	st := newTestStore(t)
-	ctx := context.Background()
-
-	cwd := t.TempDir()
-	filePath, err := platform.CurrentSessionPath(project.Detect(cwd).Name)
-	if err != nil {
-		t.Fatalf("CurrentSessionPath: %v", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	// Simulate: new session already wrote its ID.
-	if err := os.WriteFile(filePath, []byte("sess-new"), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-
-	st.CreateSession(ctx, "sess-old", "p", "/tmp")
-	if err := hooks.RunSessionStop(ctx, hooks.Input{SessionID: "sess-old", CWD: cwd}, st); err != nil {
-		t.Fatalf("RunSessionStop: %v", err)
-	}
-
 	data, err := os.ReadFile(filePath)
 	if err != nil {
-		t.Fatalf("current_session file must not be deleted by a different session: %v", err)
+		t.Fatalf("current_session file no debería borrarse — Stop dispara por turno, no solo al final: %v", err)
 	}
-	if got := string(data); got != "sess-new" {
-		t.Errorf("current_session file = %q, want %q", got, "sess-new")
+	if string(data) != sid {
+		t.Errorf("current_session file = %q, want %q", data, sid)
 	}
 }
 
@@ -874,11 +850,18 @@ func TestRunSessionStop_FileAbsent_Noop(t *testing.T) {
 	}
 }
 
-func TestRunSessionStop_EndsSession(t *testing.T) {
+// TestRunSessionStop_DoesNotEndSession reproduce el bug real de fondo: Stop
+// dispara una vez por turno, no solo al final real de la conversación. Antes
+// llamaba EndSession(ended_at=now) en cada disparo — confirmado en vivo dos
+// veces: una sesión propia marcada como terminada pese a seguir en uso
+// activo, y una sesión de Jerry marcada como cerrada 5 minutos después de
+// arrancar. "La sesión terminó" ahora es responsabilidad exclusiva de
+// mem_session_summary/mem_session_end — una señal explícita, no un hook que
+// dispara todo el tiempo.
+func TestRunSessionStop_DoesNotEndSession(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
 
-	// Create session first.
 	if _, err := st.CreateSession(ctx, "sess-stop", "p", "/tmp"); err != nil {
 		t.Fatal(err)
 	}
@@ -887,15 +870,19 @@ func TestRunSessionStop_EndsSession(t *testing.T) {
 	if err := hooks.RunSessionStop(ctx, in, st); err != nil {
 		t.Fatalf("RunSessionStop: %v", err)
 	}
+
+	sess, err := st.GetSession(ctx, "sess-stop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess == nil || sess.EndedAt != nil {
+		t.Errorf("Stop no debería setear ended_at — got sess=%+v", sess)
+	}
 }
 
-// TestRunSessionStop_SessionNeverCreated_NoError reproduce un bug real
-// visto en producción: si SessionStart nunca logró crear la sesión (ej. el
-// daemon compartido estaba reiniciándose por trabajo en OTRO proyecto —
-// kronos es global, no por-proyecto), Stop tirando "session not found"
-// aparecía como un error de hook visible en la UI de Claude Code pese a ser
-// inofensivo — SessionStart ya trata ese mismo fallo como no-fatal y en
-// silencio, Stop debe hacer lo mismo.
+// TestRunSessionStop_SessionNeverCreated_NoError — RunSessionStop no debe
+// fallar ni paniquear si SessionStart nunca logró crear la sesión (ej. el
+// daemon compartido reiniciándose por trabajo en OTRO proyecto).
 func TestRunSessionStop_SessionNeverCreated_NoError(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
@@ -903,7 +890,7 @@ func TestRunSessionStop_SessionNeverCreated_NoError(t *testing.T) {
 	// nunca se llama CreateSession — simula que SessionStart falló en silencio.
 	in := hooks.Input{SessionID: "sess-nunca-creada", CWD: "/tmp"}
 	if err := hooks.RunSessionStop(ctx, in, st); err != nil {
-		t.Errorf("RunSessionStop no debería propagar 'session not found' como error visible: %v", err)
+		t.Errorf("RunSessionStop no debería fallar aunque la sesión nunca se haya creado: %v", err)
 	}
 }
 
