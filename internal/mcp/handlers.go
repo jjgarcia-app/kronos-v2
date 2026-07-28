@@ -1,4 +1,4 @@
-﻿package mcp
+package mcp
 
 import (
 	"context"
@@ -141,6 +141,18 @@ func (s *Server) handleMemSearch(ctx context.Context, req mcpgo.CallToolRequest)
 		if p, pErr := platform.CurrentSessionPath(sessionProject); pErr == nil {
 			if data, rErr := os.ReadFile(p); rErr == nil {
 				sessionID = strings.TrimSpace(string(data))
+			}
+		}
+		// El archivo puede faltar por completo (SessionStart falló en
+		// silencio en algún momento — ej. el daemon compartido estaba
+		// reiniciándose por trabajo en OTRO proyecto) sin que la sesión deje
+		// de existir en la DB: GetActiveSession(project) ya existe y hace
+		// exactamente esta consulta (ended_at IS NULL), pero hasta ahora no
+		// se usaba en ningún lado del código — el archivo era la única
+		// fuente, y si fallaba, no había red de respaldo.
+		if sessionID == "" && sessionProject != "" {
+			if sess, err := s.store.GetActiveSession(ctx, sessionProject); err == nil && sess != nil {
+				sessionID = sess.ID
 			}
 		}
 	}

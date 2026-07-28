@@ -470,6 +470,44 @@ func TestMemSearch_DetectsSessionViaDirectory_NotProjectFilter(t *testing.T) {
 	}
 }
 
+// TestMemSearch_FallsBackToGetActiveSession_WhenFileMissing reproduce el
+// caso real encontrado en vivo: SessionStart falló en silencio en algún
+// momento (ej. el daemon compartido reiniciándose por trabajo en OTRO
+// proyecto) y el archivo current_session_<proyecto>.txt nunca se escribió
+// — pero la sesión SÍ existe en la DB (CreateSession se replayó vía
+// sync_queue más tarde). GetActiveSession(project) ya existía en el código
+// para exactamente este caso, pero nadie lo llamaba: sin el archivo,
+// mem_search no tenía ninguna red de respaldo y el gate quedaba
+// bloqueado sin salida pese a que la sesión activa era encontrable en la DB.
+func TestMemSearch_FallsBackToGetActiveSession_WhenFileMissing(t *testing.T) {
+	setupTempDataDir(t)
+	srv, st := newTestServerWithStore(t)
+	ctx := context.Background()
+
+	dir := t.TempDir()
+	proj := filepath.Base(dir)
+
+	// La sesión existe en la DB (started_at seteado, ended_at NULL) pero
+	// NUNCA se escribió el archivo current_session — simula el fallo
+	// silencioso de SessionStart.
+	if _, err := st.CreateSession(ctx, "sess-solo-en-db", proj, dir); err != nil {
+		t.Fatal(err)
+	}
+
+	call(t, srv, "mem_search", map[string]any{
+		"query":     "anything",
+		"directory": dir,
+	})
+
+	sess, err := st.GetSession(ctx, "sess-solo-en-db")
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if sess == nil || sess.SearchCount != 1 {
+		t.Errorf("SearchCount = %+v, want 1 — debería haber caído a GetActiveSession al no encontrar el archivo", sess)
+	}
+}
+
 func TestMemSearch_IncrementsSearchCount(t *testing.T) {
 	srv, st := newTestServerWithStore(t)
 	ctx := context.Background()
