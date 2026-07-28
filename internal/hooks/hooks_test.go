@@ -889,6 +889,24 @@ func TestRunSessionStop_EndsSession(t *testing.T) {
 	}
 }
 
+// TestRunSessionStop_SessionNeverCreated_NoError reproduce un bug real
+// visto en producción: si SessionStart nunca logró crear la sesión (ej. el
+// daemon compartido estaba reiniciándose por trabajo en OTRO proyecto —
+// kronos es global, no por-proyecto), Stop tirando "session not found"
+// aparecía como un error de hook visible en la UI de Claude Code pese a ser
+// inofensivo — SessionStart ya trata ese mismo fallo como no-fatal y en
+// silencio, Stop debe hacer lo mismo.
+func TestRunSessionStop_SessionNeverCreated_NoError(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	// nunca se llama CreateSession — simula que SessionStart falló en silencio.
+	in := hooks.Input{SessionID: "sess-nunca-creada", CWD: "/tmp"}
+	if err := hooks.RunSessionStop(ctx, in, st); err != nil {
+		t.Errorf("RunSessionStop no debería propagar 'session not found' como error visible: %v", err)
+	}
+}
+
 func TestRunSessionStop_EmptySessionID_Noop(t *testing.T) {
 	st := newTestStore(t)
 	in := hooks.Input{CWD: "/tmp"}

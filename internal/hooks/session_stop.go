@@ -3,6 +3,7 @@
 import (
 	"context"
 	"os"
+	"strings"
 
 	"github.com/jjgarcia-app/kronos-v2/internal/checkpoint"
 	"github.com/jjgarcia-app/kronos-v2/internal/platform"
@@ -31,7 +32,19 @@ func RunSessionStop(ctx context.Context, in Input, st store.Storer) error {
 	// nada; no reemplaza un resumen real.
 	saveFallbackCheckpointIfMissing(ctx, st, in.SessionID, proj.Name)
 
-	return st.EndSession(ctx, in.SessionID, "")
+	err := st.EndSession(ctx, in.SessionID, "")
+	if err != nil && strings.Contains(err.Error(), "session not found") {
+		// SessionStart ya trata el fallo de CreateSession como no-fatal
+		// (session_start.go: "_ = err") — si la sesión nunca llegó a
+		// crearse (ej. el daemon compartido estaba reiniciándose justo en
+		// ese momento, por trabajo en otro proyecto), no hay nada que
+		// cerrar acá. El mismo criterio ya existe en el replay de sync
+		// (dual_store.go, case "end_session"); esto lo alinea también para
+		// la llamada directa del hook, que antes burbujeaba como un error
+		// de Stop visible en la UI pese a ser inofensivo.
+		return nil
+	}
+	return err
 }
 
 func saveFallbackCheckpointIfMissing(ctx context.Context, st store.Storer, sessionID, project string) {
