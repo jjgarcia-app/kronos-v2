@@ -112,7 +112,7 @@ func (s *Server) handleMemSave(ctx context.Context, req mcpgo.CallToolRequest) (
 
 func (s *Server) handleMemSearch(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
 	query := str(req, "query")
-	project := str(req, "project")
+	projectFilter := str(req, "project")
 	sessionID := str(req, "session_id")
 	limit := intOr(req, "limit", 10)
 	offset := intOr(req, "offset", 0)
@@ -122,7 +122,23 @@ func (s *Server) handleMemSearch(ctx context.Context, req mcpgo.CallToolRequest)
 	fetchN := (limit + offset) * 2
 
 	if sessionID == "" {
-		if p, pErr := platform.CurrentSessionPath(project); pErr == nil {
+		// Bug real encontrado en producción: acá se usaba "projectFilter" (el
+		// filtro de búsqueda, comúnmente vacío a propósito — "si se omite,
+		// busca en todos los proyectos") para ubicar el archivo
+		// current_session_<proyecto>.txt que SessionStart escribió. Con
+		// projectFilter vacío o distinto al proyecto real, el archivo nunca
+		// matcheaba, session_id quedaba vacío, IncrementSearchCount nunca se
+		// llamaba, y el gate de pre-tool-use quedaba bloqueado sin salida —
+		// ni siquiera llamando mem_search de verdad lo destrababa. Ahora se
+		// detecta el proyecto real vía "directory" (mismo patrón que
+		// mem_save/resolveProject), independiente del filtro de búsqueda.
+		sessionProject := projectFilter
+		if dir := str(req, "directory"); dir != "" {
+			if dr := project.DetectFull(dir); dr.Project != "" {
+				sessionProject = dr.Project
+			}
+		}
+		if p, pErr := platform.CurrentSessionPath(sessionProject); pErr == nil {
 			if data, rErr := os.ReadFile(p); rErr == nil {
 				sessionID = strings.TrimSpace(string(data))
 			}
@@ -135,7 +151,7 @@ func (s *Server) handleMemSearch(ctx context.Context, req mcpgo.CallToolRequest)
 	// BM25 — recuperación léxica
 	bm25Results, err := s.store.Search(ctx, store.SearchParams{
 		Query:   query,
-		Project: project,
+		Project: projectFilter,
 		Limit:   fetchN, // traer más para fusión RRF + offset
 	})
 	if err != nil {

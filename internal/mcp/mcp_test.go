@@ -3,12 +3,33 @@ package mcp_test
 import (
 	"context"
 	"os"
+	"path/filepath"
+	"runtime"
 	"testing"
+
+	"github.com/jjgarcia-app/kronos-v2/internal/platform"
 
 	kronosmcp "github.com/jjgarcia-app/kronos-v2/internal/mcp"
 	"github.com/jjgarcia-app/kronos-v2/internal/store"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 )
+
+// setupTempDataDir aísla platform.DataDir() a un directorio temporal —
+// necesario para tests que ejercitan el archivo current_session_<proyecto>.txt
+// (mismo patrón que internal/hooks/hooks_test.go).
+func setupTempDataDir(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "darwin" {
+		t.Skip("macOS DataDir usa ~/Library/Application Support — no overrideable via env")
+	}
+	base := t.TempDir()
+	switch runtime.GOOS {
+	case "windows":
+		t.Setenv("LOCALAPPDATA", base)
+	default:
+		t.Setenv("XDG_DATA_HOME", base)
+	}
+}
 
 // newTestServer crea un Server con DB en memoria para tests.
 func newTestServer(t *testing.T) *kronosmcp.Server {
@@ -399,6 +420,55 @@ func newTestServerWithStore(t *testing.T) (*kronosmcp.Server, *store.Store) {
 }
 
 // --- mem_search search_count instrumentation ---
+
+// TestMemSearch_DetectsSessionViaDirectory_NotProjectFilter reproduce un
+// candado real encontrado en producción: sin session_id explícito,
+// handleMemSearch ubicaba el archivo current_session_<proyecto>.txt usando
+// el filtro "project" de la búsqueda — que su propia documentación anima a
+// dejar vacío ("si se omite, busca en todos los proyectos"). Con project
+// vacío, el archivo nunca matcheaba, IncrementSearchCount nunca se llamaba,
+// y el gate de pre-tool-use quedaba bloqueado sin salida: llamar mem_search
+// de verdad no alcanzaba para destrabarlo. Ahora se detecta el proyecto real
+// vía "directory", independiente de qué se haya pasado como filtro.
+func TestMemSearch_DetectsSessionViaDirectory_NotProjectFilter(t *testing.T) {
+	setupTempDataDir(t)
+	srv, st := newTestServerWithStore(t)
+	ctx := context.Background()
+
+	dir := t.TempDir()
+	proj := filepath.Base(dir)
+
+	if _, err := st.CreateSession(ctx, "sess-via-dir", proj, dir); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simula lo que SessionStart escribe al arrancar la sesión real.
+	p, err := platform.CurrentSessionPath(proj)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte("sess-via-dir"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// mem_search sin session_id y SIN project (el caso común, documentado
+	// como válido) — antes esto nunca destrababa el gate.
+	call(t, srv, "mem_search", map[string]any{
+		"query":     "anything",
+		"directory": dir,
+	})
+
+	sess, err := st.GetSession(ctx, "sess-via-dir")
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if sess == nil || sess.SearchCount != 1 {
+		t.Errorf("SearchCount = %+v, want 1 — mem_search con 'directory' debería destrabar el gate igual", sess)
+	}
+}
 
 func TestMemSearch_IncrementsSearchCount(t *testing.T) {
 	srv, st := newTestServerWithStore(t)

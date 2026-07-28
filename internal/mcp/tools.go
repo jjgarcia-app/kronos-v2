@@ -56,7 +56,8 @@ TIPS:
   • Si no encuentras resultados, prueba términos más cortos o sinónimos`),
 		mcpgo.WithString("query", mcpgo.Required(), mcpgo.Description("Términos de búsqueda. Ej: 'postgres driver error', 'jwt auth decision', 'migrations FK constraint'")),
 		mcpgo.WithString("project", mcpgo.Description("Filtrar por proyecto. Si se omite, busca en todos los proyectos")),
-		mcpgo.WithString("session_id", mcpgo.Description("ID de la sesión activa. Proveerlo para registrar la búsqueda en el gate de pre-tool-use")),
+		mcpgo.WithString("directory", mcpgo.Description("Directorio de trabajo actual. Recomendado pasarlo siempre — es lo que destraba el gate de pre-tool-use de verdad (busca el session_id activo por directorio, no por 'project'). Sin esto, si no sabés tu session_id exacto, el gate puede quedar bloqueado sin salida")),
+		mcpgo.WithString("session_id", mcpgo.Description("ID de la sesión activa, si lo sabés. Si no, pasá 'directory' — se autodetecta desde ahí")),
 		mcpgo.WithNumber("limit", mcpgo.Description("Máximo de resultados (default: 10)")),
 		mcpgo.WithNumber("offset", mcpgo.Description("Cuántos resultados saltar antes de devolver 'limit' (default: 0). Usar para paginar más allá de los primeros resultados")),
 	)
