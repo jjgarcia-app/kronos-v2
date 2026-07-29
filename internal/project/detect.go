@@ -313,6 +313,7 @@ func pickMostLikely(paths []string) int {
 func gitCmd(cwd string, args ...string) string {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = cwd
+	hideWindow(cmd)
 
 	done := make(chan []byte, 1)
 	go func() {
