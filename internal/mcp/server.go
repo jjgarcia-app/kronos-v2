@@ -12,6 +12,15 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
+// Version es la versión real de build reportada como serverInfo.version en
+// el handshake MCP — seteada por cmd/kronos desde main.version (ldflags) al
+// arrancar. Antes esto estaba hardcodeado en "2.0.0", desconectado de la
+// versión real desplegada: cualquier intento de detectar drift de schema
+// entre el proxy y el daemon comparando versiones era inútil, porque el
+// valor reportado nunca cambiaba sin importar qué binario corriera de
+// verdad.
+var Version = "dev"
+
 // Server es el MCP server de Kronos. Expone los tools de memoria a Claude Code.
 type Server struct {
 	store      store.Storer
@@ -42,7 +51,7 @@ func NewWithOptions(st store.Storer, nudgeActions, nudgeFallbackMins int, rel *r
 		toolFilter: toolFilter,
 	}
 
-	s.mcp = server.NewMCPServer("kronos", "2.0.0",
+	s.mcp = server.NewMCPServer("kronos", Version,
 		server.WithToolCapabilities(true),
 	)
 

@@ -8,7 +8,12 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -55,6 +60,15 @@ func runMCP(args ...string) error {
 	if err != nil {
 		return fmt.Errorf("listar tools del daemon: %w", err)
 	}
+	// Cachea el schema inicial — bug real encontrado en producción: Claude
+	// Code fetchea la lista de tools de ESTE proxy una sola vez, al conectar.
+	// Si el daemon se reinicia después con un schema distinto (ej. un
+	// parámetro nuevo agregado a un tool), este proxy sigue exponiendo el
+	// schema viejo indefinidamente hasta que alguien corre /mcp a mano —
+	// sin ningún aviso de que eso hace falta. bridge.toolsHash guarda una
+	// huella del schema actual para poder detectar ese drift en cada
+	// reconexión (ver checkToolDrift).
+	bridge.toolsHash = hashTools(listRes.Tools)
 
 	// toolFilter nil = todos los tools (perfil "all" o sin --tools=).
 	toolFilter := mcp.ResolveTools(toolsFlag)
@@ -75,8 +89,10 @@ type daemonBridge struct {
 	url  string
 	port int
 
-	mu     sync.Mutex
-	client *mcpgoclient.Client
+	mu        sync.Mutex
+	client    *mcpgoclient.Client
+	toolsHash string // schema cacheado al conectar — ver checkToolDrift
+	warned    bool   // avisar drift una sola vez, no en cada reconexión posterior
 }
 
 // ensureConnected devuelve un cliente conectado, reusando el existente si
@@ -98,6 +114,7 @@ func (b *daemonBridge) ensureConnected(ctx context.Context) (*mcpgoclient.Client
 
 	if c, err := tryConnect(ctx, b.url); err == nil {
 		b.client = c
+		b.checkToolDrift(ctx, c)
 		return c, nil
 	}
 
@@ -110,12 +127,50 @@ func (b *daemonBridge) ensureConnected(ctx context.Context) (*mcpgoclient.Client
 		time.Sleep(d)
 		if c, err := tryConnect(ctx, b.url); err == nil {
 			b.client = c
+			b.checkToolDrift(ctx, c)
 			return c, nil
 		} else {
 			lastErr = err
 		}
 	}
 	return nil, fmt.Errorf("el daemon no respondió tras arrancarlo: %w", lastErr)
+}
+
+// checkToolDrift compara el schema de tools del daemon recién (re)conectado
+// contra el que este proxy cacheó al arrancar y expuso a Claude Code. Si
+// difieren, Claude Code sigue viendo el schema viejo hasta que la sesión
+// reconecte — avisamos por stderr en vez de fallar en silencio. Llamar con
+// b.mu ya tomado (invocado solo desde ensureConnected).
+func (b *daemonBridge) checkToolDrift(ctx context.Context, c *mcpgoclient.Client) {
+	if b.toolsHash == "" || b.warned {
+		return // sin baseline todavía (primera conexión de runMCP) o ya avisado
+	}
+	listCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	listRes, err := c.ListTools(listCtx, mcptypes.ListToolsRequest{})
+	if err != nil {
+		return // best-effort — no bloquear la reconexión por esto
+	}
+	if newHash := hashTools(listRes.Tools); newHash != b.toolsHash {
+		fmt.Fprintln(os.Stderr, "[kronos] el daemon compartido se reinició con un schema de tools distinto al que esta sesión tiene cargado — algún parámetro nuevo puede no estar disponible. Corré /mcp en esta sesión para refrescar.")
+		b.warned = true
+	}
+}
+
+// hashTools arma una huella determinística del schema completo (nombre +
+// descripción + parámetros de cada tool) — cualquier cambio real en algún
+// tool (ej. agregar el parámetro "directory" a mem_search) cambia el hash,
+// sin depender de que alguien se acuerde de bumpear un número de versión.
+func hashTools(tools []mcptypes.Tool) string {
+	sorted := make([]mcptypes.Tool, len(tools))
+	copy(sorted, tools)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
+	data, err := json.Marshal(sorted)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
 
 // callTool reenvía una llamada al daemon, con un reintento automático si la

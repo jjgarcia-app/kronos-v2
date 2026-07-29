@@ -125,6 +125,7 @@ func runServe(args ...string) error {
 // de relaciones, reindex incremental, AutoJudge) sin servirlo — el caller
 // decide el transporte (stdio o StreamableHTTP).
 func buildMCPServer(ctx context.Context, cfg config.Config, st store.Storer, dataDir, toolsFlag string) (*mcp.Server, *embeddings.VectorStore, error) {
+	mcp.Version = version
 	vs, _ := embeddings.New(ctx, filepath.Join(dataDir, "vectors"))
 	rel := relations.New(vs)
 
