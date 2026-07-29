@@ -21,6 +21,15 @@ builds:
       - arm64
     ldflags:
       - -s -w -X main.version={{.Tag}}
+      # -H windowsgui: en Windows, evita que el binario se compile como
+      # subsistema de consola — Git Bash lanza binarios nativos de consola
+      # y Windows les crea una consola nueva y visible (parpadeo de
+      # ventana) en cada invocación, incluso con stdout redirigido a un
+      # pipe (el caso de TODOS los hooks y de `kronos mcp`). Sin efecto en
+      # linux/darwin — el flag -H solo aplica al linker de Windows.
+      # attachConsoleIfInteractive (cmd/kronos/console_windows.go) pide
+      # prestada la consola del padre cuando hace falta uso interactivo.
+      - '{{if eq .Os "windows"}}-H=windowsgui{{end}}'
 
 archives:
   - formats:
