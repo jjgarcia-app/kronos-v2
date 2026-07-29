@@ -398,7 +398,7 @@ func TestRunPromptSubmit_SavesPrompt(t *testing.T) {
 		Prompt:    "¿Cómo implementamos el store de memoria?",
 	}
 
-	if err := hooks.RunPromptSubmit(ctx, in, st, nil); err != nil {
+	if err := hooks.RunPromptSubmit(ctx, in, st, nil, os.Stdout); err != nil {
 		t.Fatalf("RunPromptSubmit: %v", err)
 	}
 }
@@ -406,7 +406,7 @@ func TestRunPromptSubmit_SavesPrompt(t *testing.T) {
 func TestRunPromptSubmit_EmptyPrompt_Noop(t *testing.T) {
 	st := newTestStore(t)
 	in := hooks.Input{SessionID: "s", CWD: "/tmp"}
-	if err := hooks.RunPromptSubmit(context.Background(), in, st, nil); err != nil {
+	if err := hooks.RunPromptSubmit(context.Background(), in, st, nil, os.Stdout); err != nil {
 		t.Fatalf("empty prompt should be a no-op: %v", err)
 	}
 }
@@ -425,7 +425,7 @@ func TestRunPromptSubmit_RedactsSecrets(t *testing.T) {
 		Prompt:    "usa AKIAIOSFODNN7EXAMPLE para el request",
 	}
 
-	if err := hooks.RunPromptSubmit(ctx, in, st, nil); err != nil {
+	if err := hooks.RunPromptSubmit(ctx, in, st, nil, os.Stdout); err != nil {
 		t.Fatalf("RunPromptSubmit with secret: %v", err)
 	}
 }
@@ -459,7 +459,7 @@ func TestRunPromptSubmit_FTSResults_Emitted(t *testing.T) {
 	}
 
 	out := captureStdout(t, func() {
-		if err := hooks.RunPromptSubmit(ctx, in, st, nil); err != nil {
+		if err := hooks.RunPromptSubmit(ctx, in, st, nil, os.Stdout); err != nil {
 			t.Fatalf("RunPromptSubmit: %v", err)
 		}
 	})
@@ -494,7 +494,7 @@ func TestRunPromptSubmit_Dedup_FiltersAlreadyInjected(t *testing.T) {
 	}
 
 	out := captureStdout(t, func() {
-		hooks.RunPromptSubmit(ctx, in, st, nil)
+		hooks.RunPromptSubmit(ctx, in, st, nil, os.Stdout)
 	})
 
 	if strings.Contains(out, "dedup target") {
@@ -516,7 +516,7 @@ func TestRunPromptSubmit_NoResults_NoOutput(t *testing.T) {
 	}
 
 	out := captureStdout(t, func() {
-		if err := hooks.RunPromptSubmit(ctx, in, st, nil); err != nil {
+		if err := hooks.RunPromptSubmit(ctx, in, st, nil, os.Stdout); err != nil {
 			t.Fatalf("RunPromptSubmit: %v", err)
 		}
 	})
@@ -546,7 +546,7 @@ func TestRunPromptSubmit_Timeout_ExitsClean(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- hooks.RunPromptSubmit(ctx, in, st, nil)
+		done <- hooks.RunPromptSubmit(ctx, in, st, nil, os.Stdout)
 	}()
 
 	select {
@@ -573,7 +573,7 @@ func TestRunPromptSubmit_SearchError_ExitsClean(t *testing.T) {
 		Prompt:    "search error test",
 	}
 
-	if err := hooks.RunPromptSubmit(ctx, in, st, nil); err != nil {
+	if err := hooks.RunPromptSubmit(ctx, in, st, nil, os.Stdout); err != nil {
 		t.Errorf("RunPromptSubmit should not return error: %v", err)
 	}
 }
@@ -601,7 +601,7 @@ func TestRunPromptSubmit_VectorStoreNil_FallsBackToFTS(t *testing.T) {
 
 	// Pass nil explicitly — should fall through to FTS.
 	out := captureStdout(t, func() {
-		if err := hooks.RunPromptSubmit(ctx, in, st, nil); err != nil {
+		if err := hooks.RunPromptSubmit(ctx, in, st, nil, os.Stdout); err != nil {
 			t.Fatalf("RunPromptSubmit with nil vs: %v", err)
 		}
 	})

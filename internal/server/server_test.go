@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -197,5 +198,65 @@ func TestMethodNotAllowed(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusMethodNotAllowed {
 		t.Errorf("status = %d, want 405 para DELETE /search", resp.StatusCode)
+	}
+}
+
+// --- /hooks/prompt-submit (punto 3 de mejoras: prompt-submit vía daemon) ---
+
+func TestHandlePromptSubmit_SavesPromptAndReturns200(t *testing.T) {
+	srv, ts := newTestServer(t, "")
+
+	cwd := t.TempDir()
+	st, ok := srv.st.(*store.Store)
+	if !ok {
+		t.Fatal("srv.st no es *store.Store")
+	}
+	// user_prompts.session_id tiene FK a sessions(id) — hay que crear la
+	// sesión primero, si no SavePrompt falla en silencio (error descartado
+	// a propósito en RunPromptSubmit, es fire-and-forget).
+	if _, err := st.CreateSession(context.Background(), "sess-daemon-ps", "p", cwd); err != nil {
+		t.Fatal(err)
+	}
+
+	body, _ := json.Marshal(map[string]string{
+		"session_id": "sess-daemon-ps",
+		"cwd":        cwd,
+		"prompt":     "test prompt via daemon",
+	})
+	resp, err := http.Post(ts.URL+"/hooks/prompt-submit", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+
+	if n := st.CountSessionPrompts(context.Background(), "sess-daemon-ps"); n != 1 {
+		t.Errorf("CountSessionPrompts = %d, want 1 — el endpoint debería haber guardado el prompt", n)
+	}
+}
+
+func TestHandlePromptSubmit_MethodNotAllowed(t *testing.T) {
+	_, ts := newTestServer(t, "")
+	resp, err := http.Get(ts.URL + "/hooks/prompt-submit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("status = %d, want 405 para GET /hooks/prompt-submit", resp.StatusCode)
+	}
+}
+
+func TestHandlePromptSubmit_InvalidBody(t *testing.T) {
+	_, ts := newTestServer(t, "")
+	resp, err := http.Post(ts.URL+"/hooks/prompt-submit", "application/json", bytes.NewReader([]byte("not json")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 con body inválido", resp.StatusCode)
 	}
 }

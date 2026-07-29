@@ -41,9 +41,17 @@ func ReadInput() (Input, error) {
 	if err != nil {
 		return Input{}, err
 	}
+	return ParseInput(data), nil
+}
+
+// ParseInput parses hook input already read from stdin — usado por
+// cmd/kronos/hook.go cuando necesita leer stdin una sola vez para
+// reenviarlo tal cual al daemon compartido antes de decidir si cae al
+// camino local (stdin no se puede leer dos veces).
+func ParseInput(data []byte) Input {
 	var in Input
 	if len(data) > 0 {
 		_ = json.Unmarshal(data, &in) // best-effort
 	}
-	return in, nil
+	return in
 }

@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jjgarcia-app/kronos-v2/internal/embeddings"
 	"github.com/jjgarcia-app/kronos-v2/internal/project"
 	"github.com/jjgarcia-app/kronos-v2/internal/store"
 )
@@ -55,11 +56,20 @@ func (rl *rateLimiter) allow() bool {
 // Server expone la memoria de Kronos via HTTP REST local.
 type Server struct {
 	st      store.Storer
+	vs      *embeddings.VectorStore
 	port    int
 	token   string
 	mux     *http.ServeMux
 	limiter *rateLimiter
 	httpSrv *http.Server
+}
+
+// SetVectorStore conecta el vector store del daemon al endpoint
+// /hooks/prompt-submit — opcional, seteado solo en modo daemon (ver
+// cmd/kronos/serve.go). Sin esto, ese endpoint cae a búsqueda FTS-only,
+// igual que el hook de fallback cuando Ollama no está disponible.
+func (srv *Server) SetVectorStore(vs *embeddings.VectorStore) {
+	srv.vs = vs
 }
 
 // New crea un Server listo para arrancar.
@@ -174,6 +184,10 @@ func (srv *Server) routes() {
 
 	// Project
 	srv.mux.HandleFunc("/project/current", srv.handleProjectCurrent)
+
+	// Hooks (daemon-mode only en la práctica, pero el endpoint existe
+	// siempre — ver internal/server/prompt_submit.go)
+	srv.mux.HandleFunc("/hooks/prompt-submit", srv.handlePromptSubmit)
 }
 
 // Handle monta un http.Handler adicional en el mux del server, protegido por

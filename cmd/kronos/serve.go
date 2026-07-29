@@ -84,7 +84,7 @@ func runServe(args ...string) error {
 	if daemonMode {
 		effectiveToolsFlag = ""
 	}
-	mcpSrv, err := buildMCPServer(ctx, cfg, st, dataDir, effectiveToolsFlag)
+	mcpSrv, vs, err := buildMCPServer(ctx, cfg, st, dataDir, effectiveToolsFlag)
 	if err != nil {
 		return fmt.Errorf("build mcp server: %w", err)
 	}
@@ -93,6 +93,9 @@ func runServe(args ...string) error {
 	if daemonMode {
 		streamable := mcpgoserver.NewStreamableHTTPServer(mcpSrv.MCPServer())
 		hs.Handle("/mcp", streamable)
+		// /hooks/prompt-submit reusa el mismo vector store del daemon — evita
+		// que kronos hook prompt-submit abra el suyo propio en cada prompt.
+		hs.SetVectorStore(vs)
 	}
 	if err := hs.Start(); err != nil {
 		if daemonMode {
@@ -121,7 +124,7 @@ func runServe(args ...string) error {
 // buildMCPServer arma todo el estado del servidor MCP (embeddings, detector
 // de relaciones, reindex incremental, AutoJudge) sin servirlo — el caller
 // decide el transporte (stdio o StreamableHTTP).
-func buildMCPServer(ctx context.Context, cfg config.Config, st store.Storer, dataDir, toolsFlag string) (*mcp.Server, error) {
+func buildMCPServer(ctx context.Context, cfg config.Config, st store.Storer, dataDir, toolsFlag string) (*mcp.Server, *embeddings.VectorStore, error) {
 	vs, _ := embeddings.New(ctx, filepath.Join(dataDir, "vectors"))
 	rel := relations.New(vs)
 
@@ -153,7 +156,7 @@ func buildMCPServer(ctx context.Context, cfg config.Config, st store.Storer, dat
 	if ls := srv.LocalStoreForJudge(); ls != nil {
 		judge.AutoJudge(ctx, ls, rel, llmJudger, reindexDone)
 	}
-	return srv, nil
+	return srv, vs, nil
 }
 
 // redirectLogsToFile manda stdout/stderr del proceso a un archivo — usado en

@@ -3,6 +3,7 @@ package hooks
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -25,8 +26,12 @@ const defaultMinSim = float32(0.65)
 
 // RunPromptSubmit handles the UserPromptSubmit hook.
 // Saves the prompt, then performs dual-strategy vector+FTS search and emits
-// the top relevant (non-duplicate) results to stdout.
-func RunPromptSubmit(ctx context.Context, in Input, st store.Storer, vs *embeddings.VectorStore) error {
+// the top relevant (non-duplicate) results to w. w is a parameter (not
+// os.Stdout directamente) para que el endpoint HTTP del daemon (ver
+// internal/server/prompt_submit.go) pueda capturar la misma salida en un
+// buffer y devolverla como respuesta — la lógica es idéntica sea invocada
+// como proceso corto (fallback) o vía el daemon compartido.
+func RunPromptSubmit(ctx context.Context, in Input, st store.Storer, vs *embeddings.VectorStore, w io.Writer) error {
 	if strings.TrimSpace(in.Prompt) == "" {
 		return nil
 	}
@@ -118,7 +123,7 @@ func RunPromptSubmit(ctx context.Context, in Input, st store.Storer, vs *embeddi
 		}
 
 		for _, r := range results {
-			fmt.Printf("[kronos] %s (%s): %s\n", r.title, r.typ, preview80(r.content))
+			fmt.Fprintf(w, "[kronos] %s (%s): %s\n", r.title, r.typ, preview80(r.content))
 		}
 	}()
 
@@ -138,7 +143,7 @@ func RunPromptSubmit(ctx context.Context, in Input, st store.Storer, vs *embeddi
 				if promptCount > 0 && promptCount%nudgeEveryN == 0 {
 					obsCount := counter.CountSessionObservations(ctx2, in.SessionID)
 					if obsCount == 0 {
-						fmt.Print(memoryNudge(promptCount))
+						fmt.Fprint(w, memoryNudge(promptCount))
 					}
 				}
 			}

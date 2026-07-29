@@ -3,6 +3,7 @@ package hooks
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"github.com/jjgarcia-app/kronos-v2/internal/embeddings"
 	"github.com/jjgarcia-app/kronos-v2/internal/store"
@@ -34,7 +35,7 @@ func RunWithReason(ctx context.Context, hookName string, reason string, st store
 	case "session-start":
 		return RunSessionStart(ctx, in, st)
 	case "prompt-submit":
-		return RunPromptSubmit(ctx, in, st, vs)
+		return RunPromptSubmit(ctx, in, st, vs, os.Stdout)
 	case "subagent-stop":
 		return RunSubagentStop(ctx, in, st)
 	case "session-stop":
