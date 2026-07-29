@@ -394,10 +394,13 @@ func (s *Store) GetRelationStats(ctx context.Context, project string) (*Relation
 func (s *Store) insertRelationPending(ctx context.Context, sourceID, targetID string) (int64, error) {
 	syncID := newSyncID()
 	ts := now()
+	// NewID() en vez de AUTOINCREMENT/BIGSERIAL — memory_relations.id es el
+	// judgment_id que ve el usuario en mem_judge, mismo riesgo de
+	// divergencia entre backends que observations.id (ver idgen.go).
 	return s.insertReturning(ctx, `
-		INSERT INTO memory_relations (sync_id, source_id, target_id, relation, judgment_status, created_at, updated_at)
-		VALUES (?, ?, ?, 'pending', 'pending', ?, ?)`,
-		syncID, sourceID, targetID, ts, ts,
+		INSERT INTO memory_relations (id, sync_id, source_id, target_id, relation, judgment_status, created_at, updated_at)
+		VALUES (?, ?, ?, ?, 'pending', 'pending', ?, ?)`,
+		NewID(), syncID, sourceID, targetID, ts, ts,
 	)
 }
 

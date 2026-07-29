@@ -58,6 +58,10 @@ func (s *Store) SaveObservation(ctx context.Context, p SaveParams) (*Observation
 	if syncID == "" {
 		syncID = newSyncID()
 	}
+	// NewID() en vez de dejar que AUTOINCREMENT/BIGSERIAL lo generen — ver
+	// idgen.go. Ninguno de los dos backends rechaza un PK explícito, así que
+	// esto no cambia el resto de la lógica de inserción.
+	newID := NewID()
 
 	if s.driver == "postgres" {
 		var id int64
@@ -66,12 +70,12 @@ func (s *Store) SaveObservation(ctx context.Context, p SaveParams) (*Observation
 		// conflict target must carry the same WHERE clause.
 		err = s.db.QueryRowContext(ctx,
 			s.rebind(`INSERT INTO observations
-				(sync_id, session_id, type, title, content, tool_name, project, scope, topic_key,
+				(id, sync_id, session_id, type, title, content, tool_name, project, scope, topic_key,
 				 normalized_hash, revision_count, duplicate_count, last_seen_at, created_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, ?)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, ?)
 			 ON CONFLICT (sync_id) WHERE sync_id != '' DO UPDATE SET updated_at = observations.updated_at
 			 RETURNING id`),
-			syncID, nullStr(p.SessionID), string(p.Type), p.Title, p.Content,
+			newID, syncID, nullStr(p.SessionID), string(p.Type), p.Title, p.Content,
 			p.ToolName, p.Project, string(p.Scope), p.TopicKey, hash, ts, ts, ts,
 		).Scan(&id)
 		if err != nil {
@@ -82,10 +86,10 @@ func (s *Store) SaveObservation(ctx context.Context, p SaveParams) (*Observation
 
 	res, err := s.db.ExecContext(ctx,
 		`INSERT OR IGNORE INTO observations
-			(sync_id, session_id, type, title, content, tool_name, project, scope, topic_key,
+			(id, sync_id, session_id, type, title, content, tool_name, project, scope, topic_key,
 			 normalized_hash, revision_count, duplicate_count, last_seen_at, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, ?)`,
-		syncID, nullStr(p.SessionID), string(p.Type), p.Title, p.Content,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, ?)`,
+		newID, syncID, nullStr(p.SessionID), string(p.Type), p.Title, p.Content,
 		p.ToolName, p.Project, string(p.Scope), p.TopicKey, hash, ts, ts, ts,
 	)
 	if err != nil {

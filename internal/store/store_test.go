@@ -133,6 +133,32 @@ func TestSaveObservation_Insert(t *testing.T) {
 	}
 }
 
+// TestSaveObservation_UsesAppGeneratedID confirma que observations.id ya no
+// depende de AUTOINCREMENT — Store.NewID() genera un ID estilo Snowflake
+// (timestamp de 2025+ desplazado, ver idgen.go) ANTES del insert. Un
+// autoincrement legacy nunca llegaría ni cerca de este rango (kronos tiene
+// unos ~800 registros históricos hoy), así que un ID grande acá confirma
+// que el wiring real está tomando efecto, no solo que compila.
+func TestSaveObservation_UsesAppGeneratedID(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	obs, err := s.SaveObservation(ctx, store.SaveParams{
+		Type:    store.TypeDecision,
+		Title:   "confirmar ID generado por la app",
+		Content: "no debería ser un autoincrement chico y secuencial",
+		Project: "kronos-v2",
+	})
+	if err != nil {
+		t.Fatalf("SaveObservation: %v", err)
+	}
+
+	const maxRealisticLegacyID = 100_000
+	if obs.ID <= maxRealisticLegacyID {
+		t.Errorf("ID = %d — esperaba un ID estilo Snowflake, muy por encima de cualquier autoincrement legacy (%d)", obs.ID, maxRealisticLegacyID)
+	}
+}
+
 func TestSaveObservation_UpsertByTopicKey(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
