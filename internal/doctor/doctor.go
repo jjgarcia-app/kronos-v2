@@ -312,7 +312,12 @@ func checkClaudeHooks() Check {
 		}
 	}
 
-	if !containsBytes(data, []byte("kronos hook")) {
+	// Antes buscaba el literal "kronos hook" — dejó de matchear cuando los
+	// hooks pasaron a usar ruta absoluta ("kronos.exe hook ...", con .exe
+	// en el medio), reportando un falso "no instalado" con hooks realmente
+	// bien instalados. "hook " a secas matchea ambas formas (pelada y con
+	// ruta absoluta, cualquier SO).
+	if !containsBytes(data, []byte("hook ")) {
 		return Check{
 			Name:         "Hooks Claude Code",
 			Detail:       "hooks de Kronos no encontrados en settings.json",
@@ -329,27 +334,81 @@ func checkClaudeHooks() Check {
 	}
 }
 
+// checkBinaryInPath detecta no solo si kronos está en PATH, sino si hay MÁS
+// DE UNA copia — el bug real que causó una sesión entera de debugging
+// confuso: dos kronos.exe en PATH (uno usado por los hooks vía PATH lookup,
+// otro por el MCP server vía ruta absoluta) que se desincronizaron sin
+// ningún aviso. Ahora los hooks también usan ruta absoluta (kronosBin()),
+// así que ya no puede romper silenciosamente — pero dos copias siguen
+// siendo una fuente de confusión (¿cuál se actualiza con `go install`?
+// ¿cuál corre `kronos setup`?) que vale la pena señalar.
 func checkBinaryInPath() Check {
-	for _, name := range []string{"kronos", "kronos.exe"} {
-		if p, err := exec.LookPath(name); err == nil {
-			return Check{Name: "Binario en PATH", Detail: p, Status: StatusOK}
+	found := findKronosBinariesInPath()
+
+	if len(found) == 0 {
+		// Fallback: nuestro propio ejecutable puede no llamarse "kronos" en
+		// el PATH exacto (ej. corrido directo con ./kronos.exe) — si su
+		// directorio igual está en PATH, cuenta como encontrado.
+		exe, _ := os.Executable()
+		exeDir := filepath.Clean(filepath.Dir(exe))
+		for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+			if strings.EqualFold(filepath.Clean(dir), exeDir) {
+				return Check{Name: "Binario en PATH", Detail: exe, Status: StatusOK}
+			}
+		}
+		return Check{
+			Name:         "Binario en PATH",
+			Detail:       "kronos no encontrado en PATH",
+			Status:       StatusWarn,
+			FixAvailable: false,
+			FixLabel:     "Añadir kronos al PATH manualmente",
 		}
 	}
-	// Fallback: check if our own executable's directory is listed in PATH.
-	exe, _ := os.Executable()
-	exeDir := filepath.Clean(filepath.Dir(exe))
+
+	if len(found) > 1 {
+		return Check{
+			Name: "Binario en PATH",
+			Detail: fmt.Sprintf("%d copias de kronos en PATH — pueden desincronizarse sin aviso: %s",
+				len(found), strings.Join(found, ", ")),
+			Status:       StatusWarn,
+			FixAvailable: false,
+			FixLabel:     "Dejar una sola copia de kronos en PATH y borrar las demás",
+		}
+	}
+
+	return Check{Name: "Binario en PATH", Detail: found[0], Status: StatusOK}
+}
+
+// findKronosBinariesInPath escanea CADA directorio de PATH (no solo el
+// primero que resuelva exec.LookPath) buscando un binario kronos,
+// deduplicando por ruta real resuelta (symlinks).
+func findKronosBinariesInPath() []string {
+	names := []string{"kronos", "kronos.exe"}
+	seen := map[string]bool{}
+	var found []string
 	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
-		if strings.EqualFold(filepath.Clean(dir), exeDir) {
-			return Check{Name: "Binario en PATH", Detail: exe, Status: StatusOK}
+		if dir == "" {
+			continue
+		}
+		for _, name := range names {
+			p := filepath.Join(dir, name)
+			info, err := os.Stat(p)
+			if err != nil || info.IsDir() {
+				continue
+			}
+			resolved := p
+			if real, err := filepath.EvalSymlinks(p); err == nil {
+				resolved = real
+			}
+			key := strings.ToLower(resolved)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			found = append(found, p)
 		}
 	}
-	return Check{
-		Name:         "Binario en PATH",
-		Detail:       "kronos no encontrado en PATH",
-		Status:       StatusWarn,
-		FixAvailable: false,
-		FixLabel:     "Añadir kronos al PATH manualmente",
-	}
+	return found
 }
 
 func checkSyncQueue(ctx context.Context) Check {
