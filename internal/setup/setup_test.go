@@ -292,6 +292,89 @@ func TestInstallClaudeCode_AddsPostToolUse_PreservesExisting(t *testing.T) {
 	}
 }
 
+// TestInstallClaudeCode_AddsMatcherToExistingKronosPostToolUse reproduce el
+// bug real encontrado en producción: PostToolUse/PreToolUse de kronos se
+// instalaron en algún momento SIN matcher — Claude Code disparaba
+// kronos.exe en CADA tool call (incluidas las propias llamadas MCP de
+// kronos: mem_search, mem_doctor, etc.), generando muchos más procesos de
+// los necesarios (Jerry lo notó como parpadeos de ventana en pantalla).
+// mergeHooks solo, por comando ya existente, nunca hubiera aplicado el
+// matcher nuevo — hace falta que normalizeKronosHooks lo reconcilie.
+func TestInstallClaudeCode_AddsMatcherToExistingKronosPostToolUse(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+
+	claudeDir := filepath.Join(tmpHome, ".claude")
+	if err := os.MkdirAll(claudeDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	existing := map[string]any{
+		"hooks": map[string]any{
+			"PostToolUse": []any{
+				map[string]any{
+					"matcher": "Edit|Write|Bash",
+					"hooks": []any{
+						map[string]any{"type": "command", "command": "code-review-graph update --skip-flows"},
+					},
+				},
+				map[string]any{
+					// sin matcher — el estado real de una instalación vieja.
+					"hooks": []any{
+						map[string]any{"type": "command", "command": "kronos hook post-tool-use"},
+					},
+				},
+			},
+		},
+	}
+	data, _ := json.MarshalIndent(existing, "", "  ")
+	os.WriteFile(filepath.Join(claudeDir, "settings.json"), data, 0644)
+
+	if err := setup.InstallClaudeCode(); err != nil {
+		t.Fatalf("InstallClaudeCode: %v", err)
+	}
+
+	result, _ := os.ReadFile(filepath.Join(claudeDir, "settings.json"))
+	var parsed struct {
+		Hooks struct {
+			PostToolUse []struct {
+				Matcher string `json:"matcher"`
+				Hooks   []struct {
+					Command string `json:"command"`
+				} `json:"hooks"`
+			} `json:"PostToolUse"`
+		} `json:"hooks"`
+	}
+	if err := json.Unmarshal(result, &parsed); err != nil {
+		t.Fatalf("settings.json inválido: %v", err)
+	}
+
+	var foundKronos, foundCRG bool
+	for _, block := range parsed.Hooks.PostToolUse {
+		for _, h := range block.Hooks {
+			if strings.Contains(h.Command, "hook post-tool-use") {
+				foundKronos = true
+				if block.Matcher != "Edit|Write|Bash" {
+					t.Errorf("bloque de kronos debería tener matcher \"Edit|Write|Bash\", got %q", block.Matcher)
+				}
+			}
+			if strings.Contains(h.Command, "code-review-graph") {
+				foundCRG = true
+				if block.Matcher != "Edit|Write|Bash" {
+					t.Errorf("bloque de code-review-graph no debería tocarse, matcher = %q", block.Matcher)
+				}
+			}
+		}
+	}
+	if !foundKronos {
+		t.Error("no se encontró el bloque de kronos en PostToolUse")
+	}
+	if !foundCRG {
+		t.Error("el bloque de code-review-graph se perdió")
+	}
+}
+
 // TestInstallClaudeCode_PreservesMatcherField reproduce un bug real
 // encontrado en producción: hookMatcher no tenía campo Matcher, así que
 // cualquier entrada existente con "matcher": "Edit|Write|Bash" perdía ese

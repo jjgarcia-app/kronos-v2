@@ -77,14 +77,25 @@ func kronosHooksMap() map[string][]hookMatcher {
 		"Stop": {
 			{Hooks: []hookEntry{{Type: "command", Command: cmd("session-stop")}}},
 		},
+		// PreToolUse y PostToolUse llevan matcher "Edit|Write|Bash" — sin esto,
+		// Claude Code dispara un kronos.exe nuevo en CADA tool call (incluidas
+		// las propias llamadas MCP de kronos: mem_search, mem_doctor, etc.),
+		// generando muchos más procesos de los necesarios. Bug real detectado
+		// en vivo: Jerry vio parpadeos de ventana en pantalla por el volumen
+		// de procesos que esto generaba. RunPreToolUse ya filtraba internamente
+		// por gatedTools (default Edit/Write/Bash) — este matcher hace lo
+		// mismo un nivel más arriba, evitando el spawn+no-op innecesario en
+		// vez de solo evitar su efecto. Para PostToolUse esto además alinea
+		// el scope real con la intención original ("acciones significativas"
+		// — Activity.RecordSignificantAction, nunca sobre lecturas/búsquedas).
 		"PreToolUse": {
-			{Hooks: []hookEntry{{Type: "command", Command: cmd("pre-tool-use")}}},
+			{Matcher: "Edit|Write|Bash", Hooks: []hookEntry{{Type: "command", Command: cmd("pre-tool-use")}}},
 		},
 		"PreCompact": {
 			{Hooks: []hookEntry{{Type: "command", Command: cmd("pre-compact")}}},
 		},
 		"PostToolUse": {
-			{Hooks: []hookEntry{{Type: "command", Command: cmd("post-tool-use")}}},
+			{Matcher: "Edit|Write|Bash", Hooks: []hookEntry{{Type: "command", Command: cmd("post-tool-use")}}},
 		},
 	}
 }
@@ -442,6 +453,7 @@ func normalizeKronosHooks(hooks map[string]any) bool {
 	changed := false
 	for event, matchers := range kronosHooksMap() {
 		canonicalCmd := matchers[0].Hooks[0].Command
+		canonicalMatcher := matchers[0].Matcher
 		// suffix is everything after the binary name, e.g. "hook session-start"
 		suffix := ""
 		if parts := strings.SplitN(canonicalCmd, " ", 2); len(parts) == 2 {
@@ -454,18 +466,34 @@ func normalizeKronosHooks(hooks map[string]any) bool {
 		var rebuilt []hookMatcher
 		for _, m := range existing {
 			var kept []hookEntry
+			isKronosBlock := false
 			for _, h := range m.Hooks {
 				// cualquier variante (pelada o con ruta vieja) que apunte al
 				// mismo subcomando pero no sea ya exactamente la canónica.
 				if strings.HasSuffix(h.Command, " "+suffix) && h.Command != canonicalCmd {
 					kept = append(kept, hookEntry{Type: "command", Command: canonicalCmd})
 					changed = true
+					isKronosBlock = true
 				} else {
 					kept = append(kept, h)
+					if h.Command == canonicalCmd {
+						isKronosBlock = true
+					}
 				}
 			}
+			blockMatcher := m.Matcher
+			// instalaciones viejas de PreToolUse/PostToolUse no tenían
+			// matcher — sin esto, Claude Code dispara kronos.exe en CADA
+			// tool call (incluidas las propias llamadas MCP de kronos), no
+			// solo Edit/Write/Bash. Reconciliar el matcher del bloque de
+			// kronos con el canónico, sin tocar bloques de OTROS comandos
+			// (ej. code-review-graph, que puede convivir en el mismo evento).
+			if isKronosBlock && blockMatcher != canonicalMatcher {
+				blockMatcher = canonicalMatcher
+				changed = true
+			}
 			if len(kept) > 0 {
-				rebuilt = append(rebuilt, hookMatcher{Matcher: m.Matcher, Hooks: kept})
+				rebuilt = append(rebuilt, hookMatcher{Matcher: blockMatcher, Hooks: kept})
 			}
 		}
 		if changed {
