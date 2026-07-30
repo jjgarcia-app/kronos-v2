@@ -395,6 +395,13 @@ func (d *DualStore) CountSessionObservations(ctx context.Context, sessionID stri
 	return d.buffer.CountSessionObservations(ctx, sessionID)
 }
 
+func (d *DualStore) CountSessionPromptsSinceLastSave(ctx context.Context, sessionID string) int {
+	if !d.isPrimaryDown() {
+		return d.primary.CountSessionPromptsSinceLastSave(ctx, sessionID)
+	}
+	return d.buffer.CountSessionPromptsSinceLastSave(ctx, sessionID)
+}
+
 // IncrementSearchCount — antes, si primary estaba sano pero no tenía esta
 // fila de sesión (ver GetSession: divergencia de IDs entre SQLite y
 // Postgres, o una sesión creada en buffer mientras primary estaba caído),

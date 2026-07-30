@@ -97,13 +97,14 @@ func TestDualStore_GetSession_FallsBackWhenPrimaryLacksID(t *testing.T) {
 	}
 }
 
-// TestDualStore_CountSessionMethods reproduce el bug real del nudge de
-// guardado (hooks/prompt_submit.go): *store.Store siempre tuvo
-// CountSessionPrompts/CountSessionObservations, pero DualStore nunca las
-// implementó. El nudge las busca vía un type assertion duck-typed
-// (st.(promptCounter)) — con Postgres como backend (DualStore, el caso real
-// de producción) esa aserción fallaba en silencio y el nudge jamás disparaba,
-// sin ningún error visible.
+// TestDualStore_CountSessionMethods cubre la delegación de DualStore hacia
+// primary/buffer para CountSessionPrompts/CountSessionObservations/
+// CountSessionPromptsSinceLastSave. NOTA: newTestDualStore usa store.New
+// (SQLite) para primary Y buffer — este test NO ejercita el dialecto SQL de
+// Postgres. El bug real de producción (placeholders "?" sin rebind,
+// rechazados por Postgres con syntax error y silenciados por
+// "_ = row.Scan(&n)") solo lo atrapa TestCountSessionMethods_RealPostgres
+// (store_postgres_test.go), que corre contra Postgres de verdad.
 func TestDualStore_CountSessionMethods(t *testing.T) {
 	ds := newTestDualStore(t)
 	ctx := context.Background()
@@ -129,6 +130,9 @@ func TestDualStore_CountSessionMethods(t *testing.T) {
 	}
 	if n := ds.CountSessionObservations(ctx, sess.ID); n != 1 {
 		t.Errorf("CountSessionObservations = %d, want 1", n)
+	}
+	if n := ds.CountSessionPromptsSinceLastSave(ctx, sess.ID); n != 0 {
+		t.Errorf("CountSessionPromptsSinceLastSave = %d, want 0 (ambos prompts son anteriores al save)", n)
 	}
 }
 

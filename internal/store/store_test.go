@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/jjgarcia-app/kronos-v2/internal/store"
 )
@@ -465,5 +466,67 @@ func TestExtractLearnings(t *testing.T) {
 				t.Errorf("ExtractLearnings = %d items, want %d\nitems: %v", len(got), tc.want, got)
 			}
 		})
+	}
+}
+
+// TestCountSessionPromptsSinceLastSave_NeverSaved reproduce el caso base: sin
+// ningún mem_save en la sesión, el conteo es simplemente el total de prompts.
+func TestCountSessionPromptsSinceLastSave_NeverSaved(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	sess, err := s.CreateSession(ctx, "s1", "p", "/tmp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if err := s.SavePrompt(ctx, sess.ID, "p", "prompt"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if n := s.CountSessionPromptsSinceLastSave(ctx, sess.ID); n != 3 {
+		t.Errorf("CountSessionPromptsSinceLastSave = %d, want 3", n)
+	}
+}
+
+// TestCountSessionPromptsSinceLastSave_ResetsAfterSave es la regresión real:
+// CountSessionObservations == 0 (el gate viejo del nudge) queda en silencio
+// para siempre apenas hay UN mem_save, sin importar cuánto trabajo sin
+// guardar venga después. CountSessionPromptsSinceLastSave debe resetear el
+// conteo a los prompts posteriores al último save, no acumular desde el
+// inicio de la sesión.
+func TestCountSessionPromptsSinceLastSave_ResetsAfterSave(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	sess, err := s.CreateSession(ctx, "s1", "p", "/tmp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := s.SavePrompt(ctx, sess.ID, "p", "prompt antes del save"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// created_at tiene precisión de segundo (ver now() en store.go) — cruzar
+	// el límite de segundo a propósito para que la comparación created_at >
+	// last_save_created_at sea determinística, no dependiente de qué tan
+	// rápido corre el test.
+	time.Sleep(1100 * time.Millisecond)
+	if _, err := s.SaveObservation(ctx, store.SaveParams{
+		SessionID: sess.ID, Type: store.TypeDiscovery, Title: "obs", Content: "c", Project: "p",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(1100 * time.Millisecond)
+	for i := 0; i < 5; i++ {
+		if err := s.SavePrompt(ctx, sess.ID, "p", "prompt después del save"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if n := s.CountSessionPromptsSinceLastSave(ctx, sess.ID); n != 5 {
+		t.Errorf("CountSessionPromptsSinceLastSave = %d, want 5 (solo los prompts posteriores al save)", n)
 	}
 }

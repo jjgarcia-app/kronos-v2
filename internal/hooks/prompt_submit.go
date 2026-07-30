@@ -127,24 +127,24 @@ func RunPromptSubmit(ctx context.Context, in Input, st store.Storer, vs *embeddi
 		}
 	}()
 
-	// Nudge: every nudgeEveryN prompts with no deliberate saves this session,
-	// remind the agent to save using the standard format.
+	// Nudge: every nudgeEveryN prompts since the last real save this
+	// session, remind the agent to save using the standard format. Counts
+	// from the last save, not from session start — a session that saves
+	// early and then does a long unsaved stretch afterward still gets
+	// nudged (CountSessionObservations == 0 would go silent forever after
+	// the first save; see internal/store/store.go).
 	// Uses a separate recover to ensure fail-open.
 	func() {
 		defer func() { recover() }()
 		if in.SessionID != "" {
 			// Use the concrete *store.Store method if available; otherwise skip nudge.
 			type promptCounter interface {
-				CountSessionPrompts(ctx context.Context, sessionID string) int
-				CountSessionObservations(ctx context.Context, sessionID string) int
+				CountSessionPromptsSinceLastSave(ctx context.Context, sessionID string) int
 			}
 			if counter, ok := st.(promptCounter); ok {
-				promptCount := counter.CountSessionPrompts(ctx2, in.SessionID)
-				if promptCount > 0 && promptCount%nudgeEveryN == 0 {
-					obsCount := counter.CountSessionObservations(ctx2, in.SessionID)
-					if obsCount == 0 {
-						fmt.Fprint(w, memoryNudge(promptCount))
-					}
+				n := counter.CountSessionPromptsSinceLastSave(ctx2, in.SessionID)
+				if n > 0 && n%nudgeEveryN == 0 {
+					fmt.Fprint(w, memoryNudge(n))
 				}
 			}
 		}

@@ -141,7 +141,7 @@ func (s *Store) rebind(query string) string {
 
 // CountSessionPrompts returns how many prompts have been saved for a session.
 func (s *Store) CountSessionPrompts(ctx context.Context, sessionID string) int {
-	row := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_prompts WHERE session_id = ? AND deleted_at IS NULL`, sessionID)
+	row := s.queryRow(ctx, `SELECT COUNT(*) FROM user_prompts WHERE session_id = ? AND deleted_at IS NULL`, sessionID)
 	var n int
 	_ = row.Scan(&n)
 	return n
@@ -149,10 +149,32 @@ func (s *Store) CountSessionPrompts(ctx context.Context, sessionID string) int {
 
 // CountSessionObservations returns non-passive, non-session observations saved this session.
 func (s *Store) CountSessionObservations(ctx context.Context, sessionID string) int {
-	row := s.db.QueryRowContext(ctx,
+	row := s.queryRow(ctx,
 		`SELECT COUNT(*) FROM observations
 		 WHERE session_id = ? AND type NOT IN ('passive','session') AND deleted_at IS NULL`,
 		sessionID)
+	var n int
+	_ = row.Scan(&n)
+	return n
+}
+
+// CountSessionPromptsSinceLastSave returns how many prompts have been
+// submitted since the most recent non-passive/non-session observation was
+// saved in this session (or since the session's first prompt, if nothing
+// was ever saved). Unlike CountSessionObservations == 0, this doesn't go
+// permanently silent the moment the agent saves anything once — a session
+// that saves early and then does a long stretch of unsaved work afterward
+// still gets nudged.
+func (s *Store) CountSessionPromptsSinceLastSave(ctx context.Context, sessionID string) int {
+	row := s.queryRow(ctx,
+		`SELECT COUNT(*) FROM user_prompts
+		 WHERE session_id = ? AND deleted_at IS NULL
+		 AND created_at > COALESCE(
+		   (SELECT MAX(created_at) FROM observations
+		    WHERE session_id = ? AND type NOT IN ('passive','session') AND deleted_at IS NULL),
+		   ''
+		 )`,
+		sessionID, sessionID)
 	var n int
 	_ = row.Scan(&n)
 	return n
