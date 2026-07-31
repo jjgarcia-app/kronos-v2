@@ -43,6 +43,17 @@ func RunSessionStart(ctx context.Context, in Input, st store.Storer) error {
 	n, _ := st.CountObservations(ctx, proj.Name)
 	fmt.Printf("[kronos] %d observations available for %s\n", n, proj.Name)
 	fmt.Println("[kronos] call mem_search with keywords from your task before editing OR before answering questions about past work — don't answer 'I don't know/have no record' from memory alone")
+	// Claude Code no le pasa el session_id a los MCP servers por protocolo
+	// (issue conocido: github.com/anthropics/claude-code/issues/41836) —
+	// sin esto, mem_search/mem_context/etc. tienen que ADIVINAR la sesión
+	// activa (archivo current_session_<proyecto>.txt o "más reciente en
+	// DB"), y con varias sesiones concurrentes del mismo proyecto adivinan
+	// mal: la búsqueda queda acreditada a otra sesión y el gate de
+	// pre-tool-use sigue bloqueado aunque sí se buscó. Imprimirlo acá,
+	// literal, es la única forma confiable de que el agente lo tenga a mano.
+	if in.SessionID != "" {
+		fmt.Printf("[kronos] your session_id is %q — pass it explicitly as session_id in every mem_* tool call this session (mem_search, mem_context, mem_checkpoint, mem_save...). Without it, kronos has to guess which of possibly several concurrent sessions is yours, and often guesses wrong.\n", in.SessionID)
+	}
 	printBacklogWarnings(ctx, st, proj.Name)
 
 	// Persist empty set as dedup baseline for RunPromptSubmit.

@@ -148,6 +148,27 @@ func TestRunSessionStart_NormalStart_EmitsSignal(t *testing.T) {
 	if !strings.Contains(out, "call mem_search") {
 		t.Errorf("output missing call-to-action line: %q", out)
 	}
+	if !strings.Contains(out, `your session_id is "sess-signal"`) {
+		t.Errorf("output missing explicit session_id echo — Claude Code doesn't pass session_id to MCP servers (anthropics/claude-code#41836), so this line is the only reliable source; got: %q", out)
+	}
+}
+
+// TestRunSessionStart_EmptySessionID_NoSessionIDLine confirma que sin
+// session_id no se imprime una línea vacía/rota ('your session_id is ""').
+func TestRunSessionStart_EmptySessionID_NoSessionIDLine(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	in := hooks.Input{SessionID: "", CWD: "C:\\Users\\Jerry\\kronos-v2"}
+	out := captureStdout(t, func() {
+		if err := hooks.RunSessionStart(ctx, in, st); err != nil {
+			t.Fatalf("RunSessionStart: %v", err)
+		}
+	})
+
+	if strings.Contains(out, "your session_id is") {
+		t.Errorf("no debería imprimir la línea de session_id sin un session_id real: %q", out)
+	}
 }
 
 func TestRunSessionStart_NormalStart_NoObsContent(t *testing.T) {
@@ -1051,6 +1072,14 @@ func TestRunPreToolUse_NoSearchYet_WarnMode(t *testing.T) {
 	}
 	if exitCode != nil {
 		t.Errorf("exitFn should NOT be called in warn mode, got code %d", *exitCode)
+	}
+	// El session_id va embebido literal en el mensaje: mem_search no recibe
+	// el session_id real de Claude Code (issue anthropics/claude-code#41836)
+	// y con sesiones concurrentes del mismo proyecto puede acreditar la
+	// búsqueda a la sesión equivocada. Dárselo acá, en el momento exacto
+	// del bloqueo, elimina la adivinanza.
+	if !strings.Contains(stderr, `session_id="sess-gate-warn"`) {
+		t.Errorf("expected the real session_id embedded in the gate message, got: %q", stderr)
 	}
 }
 

@@ -71,7 +71,15 @@ func RunPreToolUse(ctx context.Context, in Input, st store.Storer) error {
 	if sess.SearchCount > 0 {
 		return nil // gate satisfied
 	}
-	fmt.Fprintln(os.Stderr, "[kronos] consult kronos before editing. run mem_search with keywords from your task.")
+	// El session_id se incluye literal en el mensaje — mem_search no recibe
+	// el session_id real de Claude Code por protocolo MCP y tiene que
+	// inferirlo (archivo current_session_<proyecto>.txt o "sesión activa
+	// más reciente" en DB); con múltiples sesiones concurrentes del mismo
+	// proyecto esa inferencia adivina mal y la búsqueda queda acreditada a
+	// la sesión equivocada — el gate sigue bloqueado aunque el agente sí
+	// buscó. Pasando session_id explícito acá, en el momento exacto del
+	// bloqueo, se elimina la adivinanza.
+	fmt.Fprintf(os.Stderr, "[kronos] consult kronos before editing. run mem_search with session_id=%q and keywords from your task.\n", in.SessionID)
 	if isBlockMode() {
 		exitFn(2)
 	}

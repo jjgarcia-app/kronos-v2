@@ -33,7 +33,7 @@ CAMPO scope — usa "global" solo para patrones reutilizables entre proyectos. D
 		mcpgo.WithString("type", mcpgo.Required(), mcpgo.Description("Tipo: bugfix | decision | architecture | discovery | pattern | config | preference | passive")),
 		mcpgo.WithString("project", mcpgo.Description("Nombre del proyecto. Si se omite, se detecta automáticamente a partir de 'directory' (o del cwd del server si tampoco se pasa 'directory')")),
 		mcpgo.WithString("directory", mcpgo.Description("Directorio de trabajo actual, usado para autodetectar 'project' si se omite. Recomendado pasarlo siempre que se conozca — el servidor MCP es un proceso persistente y su propio cwd puede no coincidir con el del repo actual")),
-		mcpgo.WithString("session_id", mcpgo.Description("ID de la sesión activa. Proveerlo si está disponible")),
+		mcpgo.WithString("session_id", mcpgo.Description("ID de la sesión activa — el que kronos imprimió al arrancar esta sesión ('[kronos] your session_id is ...'). Pasalo siempre que lo tengas: Claude Code no le da el session_id a los MCP servers, así que sin esto kronos no puede asociar el save a tu sesión real")),
 		mcpgo.WithString("topic_key", mcpgo.Description("Recomendado para types decision/architecture/pattern/config — si se omite para esos types, se autosugiere del título. Clave estable tipo path. Ej: 'db/connection-pool'. Permite upsert — actualiza sin duplicar")),
 		mcpgo.WithString("scope", mcpgo.Description("'project' (default) para observaciones del proyecto actual. 'global' solo si el patrón aplica a cualquier proyecto")),
 	)
@@ -56,8 +56,8 @@ TIPS:
   • Si no encuentras resultados, prueba términos más cortos o sinónimos`),
 		mcpgo.WithString("query", mcpgo.Required(), mcpgo.Description("Términos de búsqueda. Ej: 'postgres driver error', 'jwt auth decision', 'migrations FK constraint'")),
 		mcpgo.WithString("project", mcpgo.Description("Filtrar por proyecto. Si se omite, busca en todos los proyectos")),
-		mcpgo.WithString("directory", mcpgo.Description("Directorio de trabajo actual. Recomendado pasarlo siempre — es lo que destraba el gate de pre-tool-use de verdad (busca el session_id activo por directorio, no por 'project'). Sin esto, si no sabés tu session_id exacto, el gate puede quedar bloqueado sin salida")),
-		mcpgo.WithString("session_id", mcpgo.Description("ID de la sesión activa, si lo sabés. Si no, pasá 'directory' — se autodetecta desde ahí")),
+		mcpgo.WithString("directory", mcpgo.Description("Directorio de trabajo actual. Solo se usa como respaldo si no se pasa session_id — con varias sesiones concurrentes en el mismo directorio/proyecto, la autodetección por directorio puede acertar la sesión equivocada")),
+		mcpgo.WithString("session_id", mcpgo.Description("ID de la sesión activa — el que kronos imprimió al arrancar esta sesión ('[kronos] your session_id is ...'), o el que aparece en el aviso de pre-tool-use si el gate te bloqueó. PASALO SIEMPRE QUE LO TENGAS: es lo único que destraba el gate de pre-tool-use de forma confiable. Sin él, kronos adivina cuál de las sesiones activas del proyecto sos vos, y con varias sesiones abiertas puede adivinar mal")),
 		mcpgo.WithNumber("limit", mcpgo.Description("Máximo de resultados (default: 10)")),
 		mcpgo.WithNumber("offset", mcpgo.Description("Cuántos resultados saltar antes de devolver 'limit' (default: 0). Usar para paginar más allá de los primeros resultados")),
 	)
@@ -75,7 +75,7 @@ CUÁNDO LLAMAR:
 
 Retorna observaciones ordenadas por fecha descendente.`),
 		mcpgo.WithString("project", mcpgo.Required(), mcpgo.Description("Nombre del proyecto")),
-		mcpgo.WithString("session_id", mcpgo.Description("Si se provee, retorna solo observaciones de esa sesión")),
+		mcpgo.WithString("session_id", mcpgo.Description("Si se provee, retorna solo observaciones de esa sesión. Usa el que kronos imprimió al arrancar ('[kronos] your session_id is ...') — sin él, el nudge de guardado que este tool puede incluir en la respuesta no sabe medir contra tu sesión real")),
 		mcpgo.WithNumber("limit", mcpgo.Description("Máximo de observaciones (default: 10)")),
 		mcpgo.WithNumber("offset", mcpgo.Description("Cuántas observaciones saltar antes de devolver 'limit' (default: 0). Usar para paginar más allá de las primeras")),
 	)
