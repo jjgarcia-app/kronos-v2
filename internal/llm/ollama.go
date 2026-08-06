@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -135,6 +136,101 @@ func (c *Client) JudgeRelation(ctx context.Context, aTitle, aContent, bTitle, bC
 	}
 
 	return &jr, nil
+}
+
+// Finding is the structured result of ExtractFinding — either "nothing here"
+// (Found: false) or a save-worthy item ready to hand to SaveObservation.
+type Finding struct {
+	Found   bool   `json:"found"`
+	Title   string `json:"title"`
+	Content string `json:"content"`
+}
+
+// ExtractFinding asks the local LLM whether a transcript excerpt documents
+// something worth persisting to memory (a bug fixed with its root cause, an
+// architecture/design decision, a non-obvious discovery, a config change) —
+// and if so, extracts a title + structured content. Returns (nil, nil) when
+// the model finds nothing, same fail-open contract as JudgeRelation: callers
+// treat both "Ollama unavailable" and "nothing found" as "skip, don't save".
+func (c *Client) ExtractFinding(ctx context.Context, excerpt string) (*Finding, error) {
+	prompt := buildExtractPrompt(excerpt)
+
+	payload, err := json.Marshal(map[string]any{
+		"model":  c.model,
+		"prompt": prompt,
+		"stream": false,
+		"format": "json",
+		"options": map[string]any{
+			"temperature": 0.1,
+			"num_predict": 400,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+"/api/generate", bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("ollama unavailable: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("ollama returned status %d", resp.StatusCode)
+	}
+
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read ollama response: %w", err)
+	}
+
+	var outer struct {
+		Response string `json:"response"`
+	}
+	if err := json.Unmarshal(raw, &outer); err != nil {
+		return nil, fmt.Errorf("parse ollama wrapper: %w", err)
+	}
+
+	var f Finding
+	if err := json.Unmarshal([]byte(outer.Response), &f); err != nil {
+		return nil, fmt.Errorf("parse llm finding: %w", err)
+	}
+	if !f.Found {
+		return &Finding{Found: false}, nil
+	}
+	if strings.TrimSpace(f.Title) == "" || strings.TrimSpace(f.Content) == "" {
+		return &Finding{Found: false}, nil // el modelo dijo found:true pero no dio contenido real — tratarlo como nada
+	}
+	return &f, nil
+}
+
+func buildExtractPrompt(excerpt string) string {
+	return fmt.Sprintf(`You are screening a coding-session transcript excerpt for a persistent memory system, right before the conversation context gets compacted (destroyed).
+
+Decide if this excerpt documents something worth remembering permanently:
+- a bug that got fixed, together with its root cause
+- an architecture, design, or implementation decision that was made
+- a non-obvious discovery: a gotcha, an unexpected behavior, a hard-won workaround
+- a configuration change and the reason for it
+
+Do NOT flag: small talk, routine unremarkable edits, restating what the code already makes obvious, work that's still in progress with no conclusion yet.
+
+Transcript excerpt (most recent turns, oldest first):
+---
+%s
+---
+
+Respond ONLY with valid JSON (no markdown, no explanation outside JSON).
+If nothing qualifies: {"found": false}
+If something qualifies: {"found": true, "title": "<short searchable phrase, verb + what>", "content": "<Qué: ...\nPor qué: ...\nCómo aplicar: ...>"}`,
+		truncate(excerpt, 6000),
+	)
 }
 
 func buildJudgePrompt(aTitle, aContent, bTitle, bContent string, similarity float32) string {

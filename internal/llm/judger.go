@@ -23,24 +23,8 @@ func NewFromConfig(ctx context.Context, cfg config.Config) Judger {
 
 	switch provider {
 	case "ollama":
-		baseURL := cfg.LLM.BaseURL
-		if baseURL == "" {
-			baseURL = cfg.Embeddings.OllamaURL
-		}
-		if baseURL == "" {
-			baseURL = DefaultBase
-		}
-		model := cfg.LLM.Model
-		if model == "" {
-			model = cfg.Embeddings.OllamaLLMModel
-		}
-		if model == "" {
-			model = DefaultModel
-		}
-		c := NewClient(baseURL, model)
-		pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		defer cancel()
-		if err := c.Ping(pingCtx); err != nil {
+		c := NewOllamaFromConfig(ctx, cfg)
+		if c == nil {
 			return nil // Ollama no disponible — sin LLM judgment
 		}
 		return c
@@ -74,4 +58,36 @@ func NewFromConfig(ctx context.Context, cfg config.Config) Judger {
 	}
 
 	return nil
+}
+
+// NewOllamaFromConfig builds a *Client for the local Ollama server using the
+// same base-URL/model resolution as NewFromConfig's "ollama" branch, but
+// ALWAYS Ollama — independent of cfg.LLM.Provider. Pulled out as its own
+// function for features that must stay local no matter what the configurable
+// judge provider is set to (ver internal/hooks/pre_compact_capture.go: manda
+// texto de la conversación a un LLM, nunca a un provider externo sin que el
+// usuario lo pida explícitamente para esa feature puntual).
+// Returns nil if Ollama doesn't respond to a ping within 2s.
+func NewOllamaFromConfig(ctx context.Context, cfg config.Config) *Client {
+	baseURL := cfg.LLM.BaseURL
+	if baseURL == "" {
+		baseURL = cfg.Embeddings.OllamaURL
+	}
+	if baseURL == "" {
+		baseURL = DefaultBase
+	}
+	model := cfg.LLM.Model
+	if model == "" {
+		model = cfg.Embeddings.OllamaLLMModel
+	}
+	if model == "" {
+		model = DefaultModel
+	}
+	c := NewClient(baseURL, model)
+	pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if err := c.Ping(pingCtx); err != nil {
+		return nil
+	}
+	return c
 }

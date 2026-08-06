@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -56,6 +57,9 @@ func runHook(args []string) error {
 
 	if hookName == "prompt-submit" {
 		return runPromptSubmitHook(reason)
+	}
+	if hookName == "pre-compact" {
+		return runPreCompactHook(reason)
 	}
 
 	dbPath, err := platform.DBPath()
@@ -172,6 +176,87 @@ func tryDaemonPromptSubmit(url string, data []byte, out io.Writer) bool {
 	}
 	_, _ = io.Copy(out, resp.Body)
 	return true
+}
+
+// preCompactCaptureDaemonURL — mismo puerto/convención que promptSubmitDaemonURL.
+const preCompactCaptureDaemonURL = "http://127.0.0.1:4317/hooks/pre-compact-capture"
+
+// preCompactCaptureDispatchTimeout acota cuánto puede tardar ESTE proceso
+// avisándole al daemon — no el trabajo real (leer transcript + juzgar con el
+// LLM local), que corre en el daemon después de que este hook ya terminó.
+// Solo tiene que alcanzar para que el daemon acepte la request (responde 202
+// antes de lanzar la goroutine, ver internal/server/pre_compact_capture.go).
+const preCompactCaptureDispatchTimeout = 500 * time.Millisecond
+
+// runPreCompactHook corre el aviso local de siempre (RunPreCompact, rápido,
+// nunca debe demorar la compactación de Claude Code) y AL LADO — sin
+// bloquear ni depender de su resultado — le avisa al daemon compartido para
+// que intente una captura pasiva del hallazgo vía LLM local. Si el daemon no
+// responde en preCompactCaptureDispatchTimeout (caído, ocupado), el aviso se
+// descarta en silencio: es una mejora best-effort, no una dependencia dura,
+// mismo contrato que runPromptSubmitHook.
+func runPreCompactHook(reason string) error {
+	data, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		return fmt.Errorf("read hook input: %w", err)
+	}
+	in := hooks.ParseInput(data)
+	if reason != "" {
+		in.Reason = reason
+	}
+
+	dbPath, err := platform.DBPath()
+	if err != nil {
+		return fmt.Errorf("resolve db path: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
+		return fmt.Errorf("create data dir: %w", err)
+	}
+
+	cfg, _ := config.Load()
+	prevTimeout := store.ConnectTimeout
+	store.ConnectTimeout = hookConnectTimeout
+	st, err := openStore(cfg, dbPath)
+	store.ConnectTimeout = prevTimeout
+	if err != nil {
+		return fmt.Errorf("open store: %w", err)
+	}
+	defer st.Close()
+
+	runErr := hooks.RunPreCompact(context.Background(), in, st)
+	notifyPreCompactCapture(preCompactCaptureDaemonURL, in)
+	return runErr
+}
+
+// notifyPreCompactCapture dispara el aviso fire-and-forget — nunca devuelve
+// error al caller, un daemon caído/lento no debe ensuciar la salida de
+// PreCompact ni bloquear un solo milisegundo de más.
+func notifyPreCompactCapture(url string, in hooks.Input) {
+	if in.SessionID == "" || in.TranscriptPath == "" {
+		return
+	}
+	payload, err := json.Marshal(map[string]string{
+		"session_id":      in.SessionID,
+		"transcript_path": in.TranscriptPath,
+		"cwd":             in.CWD,
+	})
+	if err != nil {
+		return
+	}
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if cfg, _ := config.Load(); cfg.APIToken != "" {
+		req.Header.Set("Authorization", "Bearer "+cfg.APIToken)
+	}
+	client := &http.Client{Timeout: preCompactCaptureDispatchTimeout}
+	resp, err := client.Do(req)
+	if err != nil {
+		return
+	}
+	resp.Body.Close()
 }
 
 // parseReason extracts the reason value from remaining args.
