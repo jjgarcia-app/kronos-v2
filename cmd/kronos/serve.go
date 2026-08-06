@@ -1,4 +1,4 @@
-﻿package main
+package main
 
 import (
 	"context"
@@ -96,6 +96,11 @@ func runServe(args ...string) error {
 		// /hooks/prompt-submit reusa el mismo vector store del daemon — evita
 		// que kronos hook prompt-submit abra el suyo propio en cada prompt.
 		hs.SetVectorStore(vs)
+		// /hooks/pre-compact-capture: SIEMPRE Ollama local, sin importar qué
+		// provider tenga configurado el judge de relaciones — la captura
+		// pasiva manda texto de la conversación a un LLM y eso debe quedarse
+		// local por default (ver internal/llm.NewOllamaFromConfig).
+		hs.SetCaptureLLM(llm.NewOllamaFromConfig(ctx, cfg))
 	}
 	if err := hs.Start(); err != nil {
 		if daemonMode {

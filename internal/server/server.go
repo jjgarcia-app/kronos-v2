@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jjgarcia-app/kronos-v2/internal/embeddings"
+	"github.com/jjgarcia-app/kronos-v2/internal/llm"
 	"github.com/jjgarcia-app/kronos-v2/internal/project"
 	"github.com/jjgarcia-app/kronos-v2/internal/store"
 )
@@ -55,13 +56,14 @@ func (rl *rateLimiter) allow() bool {
 
 // Server expone la memoria de Kronos via HTTP REST local.
 type Server struct {
-	st      store.Storer
-	vs      *embeddings.VectorStore
-	port    int
-	token   string
-	mux     *http.ServeMux
-	limiter *rateLimiter
-	httpSrv *http.Server
+	st         store.Storer
+	vs         *embeddings.VectorStore
+	captureLLM *llm.Client
+	port       int
+	token      string
+	mux        *http.ServeMux
+	limiter    *rateLimiter
+	httpSrv    *http.Server
 }
 
 // SetVectorStore conecta el vector store del daemon al endpoint
@@ -70,6 +72,16 @@ type Server struct {
 // igual que el hook de fallback cuando Ollama no está disponible.
 func (srv *Server) SetVectorStore(vs *embeddings.VectorStore) {
 	srv.vs = vs
+}
+
+// SetCaptureLLM conecta el cliente Ollama local al endpoint
+// /hooks/pre-compact-capture (ver internal/server/pre_compact_capture.go) —
+// opcional, seteado solo en modo daemon si Ollama respondió al ping. Sin
+// esto, el endpoint acepta la request pero no hace nada (RunPreCompactCapture
+// es no-op con llmClient nil) — misma degradación silenciosa que el resto
+// de las features que dependen de Ollama.
+func (srv *Server) SetCaptureLLM(c *llm.Client) {
+	srv.captureLLM = c
 }
 
 // New crea un Server listo para arrancar.
@@ -188,6 +200,7 @@ func (srv *Server) routes() {
 	// Hooks (daemon-mode only en la práctica, pero el endpoint existe
 	// siempre — ver internal/server/prompt_submit.go)
 	srv.mux.HandleFunc("/hooks/prompt-submit", srv.handlePromptSubmit)
+	srv.mux.HandleFunc("/hooks/pre-compact-capture", srv.handlePreCompactCapture)
 }
 
 // Handle monta un http.Handler adicional en el mux del server, protegido por
@@ -465,8 +478,8 @@ func (srv *Server) handleObservationsPath(w http.ResponseWriter, r *http.Request
 
 	case http.MethodPatch:
 		var body struct {
-			Title   *string              `json:"title"`
-			Content *string              `json:"content"`
+			Title   *string                `json:"title"`
+			Content *string                `json:"content"`
 			Type    *store.ObservationType `json:"type"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
