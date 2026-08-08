@@ -1,4 +1,4 @@
-﻿package hooks_test
+package hooks_test
 
 import (
 	"bytes"
