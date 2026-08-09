@@ -434,6 +434,9 @@ func buildConfigFields(cfg config.Config) []configField {
 		{section: "nudge", key: "fallback_minutes", label: "Nudge Fallback (min)", value: fmt.Sprintf("%d", cfg.Nudge.FallbackMinutes)},
 		{section: "secrets", key: "enabled", label: "Secrets Detection", value: fmt.Sprintf("%v", cfg.Secrets.Enabled)},
 		{section: "export", key: "default_output", label: "Export Output Dir", value: cfg.Export.DefaultOutput},
+		{section: "export", key: "enabled", label: "Export Live Mirror", value: fmt.Sprintf("%v", cfg.Export.Enabled)},
+		{section: "db", key: "local_only_projects", label: "Local-Only Projects", value: strings.Join(cfg.DB.LocalOnlyProjects, ", ")},
+		{section: "root", key: "api_token", label: "API Token", value: cfg.APIToken},
 	}
 }
 
