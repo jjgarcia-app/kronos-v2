@@ -1,4 +1,4 @@
-﻿package mcp
+package mcp
 
 import (
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
