@@ -216,6 +216,8 @@ func (c *Config) Set(key, value string) error {
 			c.DB.PostgresDSN = value
 		case "postgres_docker":
 			c.DB.PostgresDocker = parseBool(value)
+		case "local_only_projects":
+			c.DB.LocalOnlyProjects = parseList(value)
 		default:
 			return fmt.Errorf("unknown db field: %s", field)
 		}
@@ -314,13 +316,34 @@ func (c *Config) Set(key, value string) error {
 		switch field {
 		case "default_output":
 			c.Export.DefaultOutput = value
+		case "enabled":
+			c.Export.Enabled = parseBool(value)
 		default:
 			return fmt.Errorf("unknown export field: %s", field)
+		}
+	case "root":
+		switch field {
+		case "api_token":
+			c.APIToken = value
+		default:
+			return fmt.Errorf("unknown root field: %s", field)
 		}
 	default:
 		return fmt.Errorf("unknown config section: %s", section)
 	}
 	return nil
+}
+
+func parseList(s string) []string {
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func parseBool(s string) bool {

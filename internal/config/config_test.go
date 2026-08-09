@@ -88,6 +88,9 @@ func TestSet_ValidFields(t *testing.T) {
 		{"nudge.actions_threshold", "5"},
 		{"secrets.enabled", "false"},
 		{"export.default_output", "/tmp/vault"},
+		{"export.enabled", "true"},
+		{"db.local_only_projects", "proyecto-a, proyecto-b"},
+		{"root.api_token", "sekret-token"},
 	}
 	for _, c := range cases {
 		if err := cfg.Set(c.key, c.val); err != nil {
@@ -103,6 +106,15 @@ func TestSet_ValidFields(t *testing.T) {
 	if cfg.Secrets.Enabled {
 		t.Error("secrets.enabled should be false")
 	}
+	if !cfg.Export.Enabled {
+		t.Error("export.enabled should be true")
+	}
+	if len(cfg.DB.LocalOnlyProjects) != 2 || cfg.DB.LocalOnlyProjects[0] != "proyecto-a" || cfg.DB.LocalOnlyProjects[1] != "proyecto-b" {
+		t.Errorf("local_only_projects not parsed: got %v", cfg.DB.LocalOnlyProjects)
+	}
+	if cfg.APIToken != "sekret-token" {
+		t.Errorf("api_token not set: got %q", cfg.APIToken)
+	}
 }
 
 func TestSet_InvalidKey_ReturnsError(t *testing.T) {
@@ -112,6 +124,8 @@ func TestSet_InvalidKey_ReturnsError(t *testing.T) {
 		"db.nonexistent",
 		"unknown.field",
 		"memory.not_a_field",
+		"root.not_a_field",
+		"export.not_a_field",
 	}
 	for _, key := range cases {
 		if err := cfg.Set(key, "value"); err == nil {

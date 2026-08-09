@@ -415,6 +415,8 @@ func (m Model) viewConfig() string {
 		val := f.value
 		if i == m.cursor && m.configEditing {
 			val = m.configInput.View()
+		} else if f.key == "api_token" && len(f.value) > 8 {
+			val = f.value[:4] + strings.Repeat("*", len(f.value)-8) + f.value[len(f.value)-4:]
 		}
 		line := fmt.Sprintf("  %-28s %s", f.label+":", styleSubtext.Render(val))
 		if i == m.cursor {
