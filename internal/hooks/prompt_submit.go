@@ -40,6 +40,7 @@ func RunPromptSubmit(ctx context.Context, in Input, st store.Storer, vs *embeddi
 	content := secrets.Redact(in.Prompt)
 
 	_ = st.SavePrompt(ctx, in.SessionID, proj.Name, content)
+	_ = st.TouchSessionActivity(ctx, in.SessionID)
 
 	// Search path: apply hard timeout.
 	ctx2, cancel := context.WithTimeout(ctx, promptTimeout)

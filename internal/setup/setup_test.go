@@ -37,7 +37,7 @@ func TestInstallClaudeCode_CreatesSettings(t *testing.T) {
 		t.Fatal("missing 'hooks' key in settings.json")
 	}
 
-	for _, event := range []string{"SessionStart", "UserPromptSubmit", "SubagentStop", "Stop"} {
+	for _, event := range []string{"SessionStart", "UserPromptSubmit", "SubagentStop", "Stop", "SessionEnd"} {
 		if hooks[event] == nil {
 			t.Errorf("missing hook event: %s", event)
 		}

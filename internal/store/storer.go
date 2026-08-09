@@ -20,6 +20,8 @@ type Storer interface {
 	GetSession(ctx context.Context, id string) (*Session, error)
 	GetActiveSession(ctx context.Context, project string) (*Session, error)
 	ListSessions(ctx context.Context, project string, limit int) ([]*Session, error)
+	// TouchSessionActivity actualiza el heartbeat de actividad de una sesión.
+	TouchSessionActivity(ctx context.Context, id string) error
 
 	// Phase 1, Change 1: injected-IDs dedup support
 	PersistInjectedIDs(ctx context.Context, sessionID string, ids []string) error

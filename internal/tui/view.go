@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/jjgarcia-app/kronos-v2/internal/doctor"
+	"github.com/jjgarcia-app/kronos-v2/internal/store"
 )
 
 func (m Model) View() string {
@@ -277,14 +278,10 @@ func (m Model) viewSessions() string {
 		start, end := m.scrollWindow(len(m.sessions), visible)
 		for i := start; i < end; i++ {
 			sess := m.sessions[i]
-			status := styleOK.Render("activa")
-			if sess.EndedAt != nil {
-				status = styleMuted.Render("cerrada")
-			}
 			line := fmt.Sprintf("  %s  %s  %s  %s",
 				styleSubtext.Render(sess.ID[:min(8, len(sess.ID))]),
 				styleOK.Render(sess.Project),
-				status,
+				sessionStatus(sess),
 				styleMuted.Render(sess.StartedAt.Format("2006-01-02")),
 			)
 			if i == m.cursor {
@@ -615,6 +612,22 @@ func statusIcon(s doctor.Status) string {
 		return styleFail.Render("✗")
 	}
 	return " "
+}
+
+// sessionStaleAfter: sin heartbeat (TouchSessionActivity, ver
+// internal/hooks/prompt_submit.go) en esta ventana, una sesión sin
+// ended_at ya no se muestra como "activa" sino "inactiva" — probablemente
+// se cerró sin pasar por SessionEnd (proceso matado, crash).
+const sessionStaleAfter = 30 * time.Minute
+
+func sessionStatus(sess *store.Session) string {
+	if sess.EndedAt != nil {
+		return styleMuted.Render("cerrada")
+	}
+	if time.Since(sess.LastActivityAt) > sessionStaleAfter {
+		return styleWarn.Render("inactiva")
+	}
+	return styleOK.Render("activa")
 }
 
 func formatAge(t time.Time) string {

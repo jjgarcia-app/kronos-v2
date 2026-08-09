@@ -587,3 +587,44 @@ func TestAllSessions_ScansWithoutColumnMismatch(t *testing.T) {
 		t.Errorf("len(sessions) = %d, want 1", len(sessions))
 	}
 }
+
+func TestCreateSession_SetsLastActivityAtToStartedAt(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	sess, err := s.CreateSession(ctx, "s-heartbeat-init", "p", "/tmp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess.LastActivityAt.IsZero() {
+		t.Error("LastActivityAt no debería quedar en zero-value al crear la sesión")
+	}
+	if !sess.LastActivityAt.Equal(sess.StartedAt) {
+		t.Errorf("LastActivityAt = %v, want == StartedAt (%v)", sess.LastActivityAt, sess.StartedAt)
+	}
+}
+
+func TestTouchSessionActivity_AdvancesTimestamp(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	sess, err := s.CreateSession(ctx, "s-touch", "p", "/tmp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := sess.LastActivityAt
+
+	time.Sleep(1100 * time.Millisecond)
+
+	if err := s.TouchSessionActivity(ctx, "s-touch"); err != nil {
+		t.Fatalf("TouchSessionActivity: %v", err)
+	}
+
+	got, err := s.GetSession(ctx, "s-touch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.LastActivityAt.After(before) {
+		t.Errorf("LastActivityAt no avanzó: before=%v after=%v", before, got.LastActivityAt)
+	}
+}

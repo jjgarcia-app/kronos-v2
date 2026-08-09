@@ -77,6 +77,12 @@ func kronosHooksMap() map[string][]hookMatcher {
 		"Stop": {
 			{Hooks: []hookEntry{{Type: "command", Command: cmd("session-stop")}}},
 		},
+		// SessionEnd es distinto de Stop: dispara una sola vez cuando la
+		// sesión de la CLI termina de verdad, no en cada turno — por eso acá
+		// sí es seguro cerrar la sesión (ver internal/hooks/session_end.go).
+		"SessionEnd": {
+			{Hooks: []hookEntry{{Type: "command", Command: cmd("session-end")}}},
+		},
 		// PreToolUse y PostToolUse llevan matcher "Edit|Write|Bash" — sin esto,
 		// Claude Code dispara un kronos.exe nuevo en CADA tool call (incluidas
 		// las propias llamadas MCP de kronos: mem_search, mem_doctor, etc.),
@@ -137,7 +143,7 @@ func InstallClaudeCode() error {
 
 	fmt.Printf("Kronos configurado en %s\n", settingsPath)
 	if hooksChanged {
-		fmt.Println("  hooks: SessionStart, UserPromptSubmit, SubagentStop, Stop, PreToolUse, PreCompact, PostToolUse")
+		fmt.Println("  hooks: SessionStart, UserPromptSubmit, SubagentStop, Stop, SessionEnd, PreToolUse, PreCompact, PostToolUse")
 	}
 	if mcpChanged || userMCPChanged {
 		fmt.Println("  MCP server: kronos mcp (proxy stdio → daemon compartido)")

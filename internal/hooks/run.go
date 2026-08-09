@@ -10,7 +10,7 @@ import (
 )
 
 // Run dispatches the named hook using the given store.
-// hookName matches the sub-command: session-start, prompt-submit, subagent-stop, session-stop.
+// hookName matches the sub-command: session-start, prompt-submit, subagent-stop, session-stop, session-end.
 // For session-start, the reason field in the hook input JSON selects the branch.
 func Run(ctx context.Context, hookName string, st store.Storer, vs *embeddings.VectorStore) error {
 	return RunWithReason(ctx, hookName, "", st, vs)
@@ -40,6 +40,8 @@ func RunWithReason(ctx context.Context, hookName string, reason string, st store
 		return RunSubagentStop(ctx, in, st)
 	case "session-stop":
 		return RunSessionStop(ctx, in, st)
+	case "session-end":
+		return RunSessionEnd(ctx, in, st)
 	case "pre-tool-use":
 		return RunPreToolUse(ctx, in, st)
 	case "post-tool-use":
