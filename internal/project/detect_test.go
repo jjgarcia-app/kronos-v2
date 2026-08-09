@@ -99,10 +99,8 @@ func TestDetect_Fallback(t *testing.T) {
 	dir := t.TempDir()
 	// sin git, sin kronos.toml → usa basename
 	r := project.Detect(dir)
-	if r.Name == "" || r.Name == "unknown" {
-		// los temp dirs tienen nombres como "TestDetect_Fallback123456789"
-		// solo verificamos que haya un nombre y el método sea dirname
-	}
+	// los temp dirs tienen nombres como "TestDetect_Fallback123456789" —
+	// solo verificamos que haya un nombre y el método sea dirname.
 	if r.Method != project.MethodDirname {
 		t.Errorf("method = %s, want dir_basename", r.Method)
 	}

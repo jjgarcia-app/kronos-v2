@@ -6,9 +6,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	kproject "github.com/jjgarcia-app/kronos-v2/internal/project"
 )
 
 func (s *Store) CreateSession(ctx context.Context, id, project, directory string) (*Session, error) {
+	project = kproject.Normalize(project)
 	startedAt := now()
 	_, err := s.exec(ctx,
 		`INSERT INTO sessions(id, project, directory, started_at) VALUES (?, ?, ?, ?)`,

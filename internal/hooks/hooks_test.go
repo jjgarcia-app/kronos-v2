@@ -373,15 +373,15 @@ func TestRunPostCompaction_PersistsInjectedIDs(t *testing.T) {
 	ctx := context.Background()
 	cwd, _ := os.Getwd()
 
-	var savedIDs []int64
 	for i := 0; i < 2; i++ {
-		obs, _ := st.SaveObservation(ctx, store.SaveParams{
+		if _, err := st.SaveObservation(ctx, store.SaveParams{
 			Type:    store.TypeDecision,
 			Title:   fmt.Sprintf("persist ids test obs %d", i),
 			Content: fmt.Sprintf("content for persist ids test observation %d injected", i),
 			Project: "kronos-v2",
-		})
-		savedIDs = append(savedIDs, obs.ID)
+		}); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	in := hooks.Input{

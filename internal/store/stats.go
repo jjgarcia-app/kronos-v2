@@ -117,7 +117,7 @@ func (s *Store) TimelineObservations(ctx context.Context, obsID int64, n int) ([
 		return nil, err
 	}
 	defer rows.Close()
-	all, err := scanObservations(rows)
+	all, err := s.scanObservations(rows)
 	if err != nil {
 		return nil, err
 	}

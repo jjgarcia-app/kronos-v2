@@ -13,6 +13,10 @@ import (
 type Store struct {
 	db     *sql.DB
 	driver string
+
+	// encryptionKey: si no-nil, content se cifra/descifra transparentemente
+	// en SaveObservation/scanObservation. Ver SetEncryptionKey en crypto.go.
+	encryptionKey []byte
 }
 
 func New(dbPath string) (*Store, error) {

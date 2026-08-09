@@ -293,7 +293,7 @@ func renderDoctorReport(r doctor.Report) string {
 			icon = styleFail.Render("✗")
 		}
 		name := lipgloss.NewStyle().Width(24).Render(c.Name + ":")
-		sb.WriteString(fmt.Sprintf("  %s %s%s\n", icon, name, styleMuted.Render(c.Detail)))
+		fmt.Fprintf(&sb, "  %s %s%s\n", icon, name, styleMuted.Render(c.Detail))
 	}
 	return sb.String()
 }

@@ -43,7 +43,7 @@ func (m *MirrorStore) SavePassive(ctx context.Context, sessionID, project, conte
 }
 
 func (m *MirrorStore) UpdateObservation(ctx context.Context, p store.UpdateParams) (*store.Observation, error) {
-	before, _ := m.Storer.GetObservation(ctx, p.ID)
+	before, _ := m.GetObservation(ctx, p.ID)
 	obs, err := m.Storer.UpdateObservation(ctx, p)
 	if err == nil {
 		m.mirror(ctx, obs, before)
@@ -96,7 +96,7 @@ func (m *MirrorStore) CountSessionObservations(ctx context.Context, sessionID st
 }
 
 func (m *MirrorStore) DeleteObservation(ctx context.Context, id int64) error {
-	before, _ := m.Storer.GetObservation(ctx, id)
+	before, _ := m.GetObservation(ctx, id)
 	err := m.Storer.DeleteObservation(ctx, id)
 	if err == nil && before != nil {
 		m.mu.Lock()
@@ -130,7 +130,7 @@ func (m *MirrorStore) mirror(ctx context.Context, obs *store.Observation, before
 }
 
 func (m *MirrorStore) refreshIndex(ctx context.Context) {
-	all, err := m.Storer.ListAll(ctx, "")
+	all, err := m.ListAll(ctx, "")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[obsidian-mirror] no se pudo refrescar índice: %v\n", err)
 		return

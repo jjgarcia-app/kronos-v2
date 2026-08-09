@@ -143,7 +143,6 @@ type Model struct {
 	report doctor.Report
 
 	done []string // summaries of completed phases
-	err  error
 }
 
 // New returns the initial wizard model.
@@ -322,7 +321,7 @@ func addToUserPath(dir string) error {
 			if err != nil {
 				continue
 			}
-			fmt.Fprintf(f, "\n# Kronos\n%s\n", line)
+			_, _ = fmt.Fprintf(f, "\n# Kronos\n%s\n", line)
 			f.Close()
 		}
 		return nil

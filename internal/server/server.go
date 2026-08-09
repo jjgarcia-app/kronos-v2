@@ -499,11 +499,6 @@ func (srv *Server) handleObservationsPath(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusOK, updated)
 
 	case http.MethodDelete:
-		hard := r.URL.Query().Get("hard") == "true"
-		if hard {
-			// hard delete: usa el método estándar (soft) — no hay hard delete en la interfaz
-			// enviamos soft igual para no romper la interfaz
-		}
 		if err := srv.st.DeleteObservation(ctx, id); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return

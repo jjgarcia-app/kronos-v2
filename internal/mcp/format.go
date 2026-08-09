@@ -56,25 +56,25 @@ func validateSaveParams(content string, typ store.ObservationType, topicKey stri
 		!strings.Contains(lower, "why:")
 
 	if missingQue || missingPorque {
-		return fmt.Errorf(`el content no tiene el formato requerido.
+		return fmt.Errorf(`el content no tiene el formato requerido
 
 Formato obligatorio:
 %s
 
 También se aceptan headers en inglés: What: / Why:
 Todos los agentes deben usar este mismo formato para mantener
-la memoria consistente y buscable entre sesiones.`, saveContentTemplate)
+la memoria consistente y buscable entre sesiones`, saveContentTemplate)
 	}
 
 	// Enforce topic_key for structural types
 	if typesRequiringTopicKey[typ] && topicKey == "" {
-		return fmt.Errorf(`topic_key es OBLIGATORIO para type=%s.
+		return fmt.Errorf(`topic_key es OBLIGATORIO para type=%s
 
-Usa una clave estable en formato "area/tema".
+Usa una clave estable en formato "area/tema"
 Ejemplos: "db/postgres-driver", "auth/jwt-strategy", "api/rate-limiting"
 
 El topic_key permite upsert — si el mismo tema se actualiza,
-no se crea un duplicado. Sin él, cada save crea una entrada nueva.`, typ)
+no se crea un duplicado. Sin él, cada save crea una entrada nueva`, typ)
 	}
 
 	return nil

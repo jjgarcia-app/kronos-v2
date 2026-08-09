@@ -456,15 +456,3 @@ func nullableStr(s string) any {
 	return s
 }
 
-// intVal extrae un int desde valores JSON (float64 o int).
-func intVal(v any) int {
-	switch n := v.(type) {
-	case float64:
-		return int(n)
-	case int:
-		return n
-	case int64:
-		return int(n)
-	}
-	return 1
-}
