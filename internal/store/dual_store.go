@@ -503,15 +503,14 @@ func (d *DualStore) CountSessionPromptsSinceLastSave(ctx context.Context, sessio
 	return d.buffer.CountSessionPromptsSinceLastSave(ctx, sessionID)
 }
 
-// IncrementSearchCount — antes, si primary estaba sano pero no tenía esta
-// fila de sesión (ver GetSession: divergencia de IDs entre SQLite y
-// Postgres, o una sesión creada en buffer mientras primary estaba caído),
-// el UPDATE de primary afectaba 0 filas SIN error — *store.Store tiene
-// contrato fail-open a propósito — y DualStore lo trataba como "listo",
-// sin probar nunca el buffer. Resultado real: search_count nunca se
-// incrementaba para esas sesiones y el gate de pre-tool-use quedaba
-// bloqueado para siempre pese a buscar de verdad.
-func (d *DualStore) TouchSessionActivity(ctx context.Context, id string) error {
+// TouchSessionActivity actualiza el heartbeat — respeta isLocalOnly igual
+// que el resto de los métodos de escritura de DualStore (antes no lo hacía:
+// mandaba el session_id de proyectos local-only al primary compartido en
+// cada prompt, violando esa garantía).
+func (d *DualStore) TouchSessionActivity(ctx context.Context, id, project string) error {
+	if d.isLocalOnly(project) {
+		return d.buffer.TouchSessionActivity(ctx, id, project)
+	}
 	if !d.isPrimaryDown() {
 		n, err := d.primary.touchSessionActivityAffected(ctx, id)
 		if err == nil && n > 0 {
@@ -521,14 +520,22 @@ func (d *DualStore) TouchSessionActivity(ctx context.Context, id string) error {
 			d.markDown()
 		}
 	}
-	if err := d.buffer.TouchSessionActivity(ctx, id); err != nil {
+	if err := d.buffer.TouchSessionActivity(ctx, id, project); err != nil {
 		return err
 	}
-	type touchPayload struct{ SessionID string }
-	_ = d.queue.enqueue("touch_session_activity", touchPayload{id})
+	type touchPayload struct{ SessionID, Project string }
+	_ = d.queue.enqueue("touch_session_activity", touchPayload{id, project})
 	return nil
 }
 
+// IncrementSearchCount — antes, si primary estaba sano pero no tenía esta
+// fila de sesión (ver GetSession: divergencia de IDs entre SQLite y
+// Postgres, o una sesión creada en buffer mientras primary estaba caído),
+// el UPDATE de primary afectaba 0 filas SIN error — *store.Store tiene
+// contrato fail-open a propósito — y DualStore lo trataba como "listo",
+// sin probar nunca el buffer. Resultado real: search_count nunca se
+// incrementaba para esas sesiones y el gate de pre-tool-use quedaba
+// bloqueado para siempre pese a buscar de verdad.
 func (d *DualStore) IncrementSearchCount(ctx context.Context, sessionID string) error {
 	if !d.isPrimaryDown() {
 		n, err := d.primary.incrementSearchCountAffected(ctx, sessionID)
@@ -769,11 +776,11 @@ func (d *DualStore) replayEntry(ctx context.Context, primary *Store, e syncEntry
 		return primary.IncrementSearchCount(ctx, p.SessionID)
 
 	case "touch_session_activity":
-		var p struct{ SessionID string }
+		var p struct{ SessionID, Project string }
 		if err := json.Unmarshal([]byte(e.Payload), &p); err != nil {
 			return nil
 		}
-		return primary.TouchSessionActivity(ctx, p.SessionID)
+		return primary.TouchSessionActivity(ctx, p.SessionID, p.Project)
 	}
 	return nil
 }
