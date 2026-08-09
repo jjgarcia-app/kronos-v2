@@ -405,6 +405,45 @@ func (d *DualStore) Search(ctx context.Context, p SearchParams) ([]*SearchResult
 	return d.buffer.Search(ctx, p)
 }
 
+func (d *DualStore) Stats(ctx context.Context) (*Stats, error) {
+	if !d.isPrimaryDown() {
+		st, err := d.primary.Stats(ctx)
+		if err == nil {
+			return st, nil
+		}
+		d.markDown()
+	}
+	return d.buffer.Stats(ctx)
+}
+
+func (d *DualStore) GetObservationSync(id int64) (*Observation, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return d.GetObservation(ctx, id)
+}
+
+func (d *DualStore) AllSessions(ctx context.Context, limit int) ([]*Session, error) {
+	if !d.isPrimaryDown() {
+		sessions, err := d.primary.AllSessions(ctx, limit)
+		if err == nil {
+			return sessions, nil
+		}
+		d.markDown()
+	}
+	return d.buffer.AllSessions(ctx, limit)
+}
+
+func (d *DualStore) TimelineObservations(ctx context.Context, obsID int64, n int) ([]*Observation, error) {
+	if !d.isPrimaryDown() {
+		obs, err := d.primary.TimelineObservations(ctx, obsID, n)
+		if err == nil {
+			return obs, nil
+		}
+		d.markDown()
+	}
+	return d.buffer.TimelineObservations(ctx, obsID, n)
+}
+
 func (d *DualStore) PersistInjectedIDs(ctx context.Context, sessionID string, ids []string) error {
 	if !d.isPrimaryDown() {
 		if err := d.primary.PersistInjectedIDs(ctx, sessionID, ids); err == nil {

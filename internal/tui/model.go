@@ -111,7 +111,7 @@ type configField struct {
 
 // Model is the root Bubble Tea model.
 type Model struct {
-	store  *store.Store
+	store  store.Storer
 	cfg    config.Config
 	width  int
 	height int
@@ -178,7 +178,7 @@ type Model struct {
 }
 
 // New creates a new TUI Model.
-func New(st *store.Store, cfg config.Config) Model {
+func New(st store.Storer, cfg config.Config) Model {
 	ti := textinput.New()
 	ti.Placeholder = "Buscar..."
 	ti.CharLimit = 200

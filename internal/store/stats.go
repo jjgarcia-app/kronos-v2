@@ -70,7 +70,7 @@ func (s *Store) AllSessions(ctx context.Context, limit int) ([]*Session, error) 
 		limit = 50
 	}
 	rows, err := s.query(ctx,
-		`SELECT id, project, directory, started_at, ended_at, summary
+		`SELECT id, project, directory, started_at, ended_at, summary, injected_observation_ids, search_count
 		 FROM sessions WHERE deleted_at IS NULL ORDER BY started_at DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err

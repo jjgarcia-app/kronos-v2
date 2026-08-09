@@ -565,3 +565,25 @@ func TestCountSessionPromptsSinceLastSave_ResetsAfterSave(t *testing.T) {
 		t.Errorf("CountSessionPromptsSinceLastSave = %d, want 5 (solo los prompts posteriores al save)", n)
 	}
 }
+
+// TestAllSessions_ScansWithoutColumnMismatch cubre un bug real: el SELECT de
+// AllSessions traía 6 columnas pero scanSession espera 8 (injected_ids,
+// search_count) — cualquier llamada fallaba con "sql: expected 6 destination
+// arguments in Scan, not 8", lo que en la TUI (pantalla Sesiones) se veía
+// como "Sesiones (0)" porque el error se descartaba en silencio.
+func TestAllSessions_ScansWithoutColumnMismatch(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	if _, err := s.CreateSession(ctx, "sess-1", "p", "/tmp"); err != nil {
+		t.Fatal(err)
+	}
+
+	sessions, err := s.AllSessions(ctx, 50)
+	if err != nil {
+		t.Fatalf("AllSessions: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Errorf("len(sessions) = %d, want 1", len(sessions))
+	}
+}
