@@ -335,3 +335,120 @@ func TestNewDualFromDSN_PrimaryUnreachable_DegradesGracefully(t *testing.T) {
 		t.Error("con un DSN inalcanzable, isPrimaryDown() debería ser true desde el arranque")
 	}
 }
+
+// Los siguientes 4 tests cubren Stats/AllSessions/TimelineObservations/
+// GetObservationSync en DualStore — agregados porque la TUI (internal/tui)
+// los necesitaba para funcionar contra Postgres como primary y hasta ahora
+// no existían en DualStore, forzando a la TUI a abrir un *Store SQLite
+// aparte que ignoraba el backend configurado (ver cmd/kronos/tui.go).
+
+func TestDualStore_Stats_ReadsFromPrimary(t *testing.T) {
+	ds := newTestDualStore(t)
+	ctx := context.Background()
+
+	if _, err := ds.primary.SaveObservation(ctx, SaveParams{
+		Type: TypeDiscovery, Title: "solo en primary", Content: "c", Project: "p",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := ds.Stats(ctx)
+	if err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	if st.TotalObservations != 1 {
+		t.Errorf("TotalObservations = %d, want 1 (debe leer de primary)", st.TotalObservations)
+	}
+}
+
+func TestDualStore_Stats_FallsBackToBuffer(t *testing.T) {
+	ds := newTestDualStore(t)
+	ctx := context.Background()
+
+	if _, err := ds.buffer.SaveObservation(ctx, SaveParams{
+		Type: TypeDiscovery, Title: "solo en buffer", Content: "c", Project: "p",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ds.primary.Close()
+	ds.down = false
+
+	st, err := ds.Stats(ctx)
+	if err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	if st.TotalObservations != 1 {
+		t.Errorf("TotalObservations = %d, want 1 (debe caer a buffer)", st.TotalObservations)
+	}
+	if !ds.isPrimaryDown() {
+		t.Error("primary debería marcarse down tras el error real")
+	}
+}
+
+func TestDualStore_AllSessions_FallsBackToBuffer(t *testing.T) {
+	ds := newTestDualStore(t)
+	ctx := context.Background()
+
+	if _, err := ds.buffer.CreateSession(ctx, "sess-1", "p", "/tmp"); err != nil {
+		t.Fatal(err)
+	}
+
+	ds.primary.Close()
+	ds.down = false
+
+	sessions, err := ds.AllSessions(ctx, 50)
+	if err != nil {
+		t.Fatalf("AllSessions: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Errorf("len(sessions) = %d, want 1 (debe caer a buffer)", len(sessions))
+	}
+}
+
+func TestDualStore_TimelineObservations_ReadsFromPrimary(t *testing.T) {
+	ds := newTestDualStore(t)
+	ctx := context.Background()
+
+	sess, err := ds.primary.CreateSession(ctx, "sess-1", "p", "/tmp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	obs, err := ds.primary.SaveObservation(ctx, SaveParams{
+		Type: TypeDiscovery, Title: "t1", Content: "c1", Project: "p", SessionID: sess.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	timeline, err := ds.TimelineObservations(ctx, obs.ID, 5)
+	if err != nil {
+		t.Fatalf("TimelineObservations: %v", err)
+	}
+	if len(timeline) != 1 {
+		t.Errorf("len(timeline) = %d, want 1", len(timeline))
+	}
+}
+
+func TestDualStore_GetObservationSync_FallsBackToBuffer(t *testing.T) {
+	ds := newTestDualStore(t)
+	ctx := context.Background()
+
+	obs, err := ds.buffer.SaveObservation(ctx, SaveParams{
+		Type: TypeDiscovery, Title: "solo en buffer", Content: "c", Project: "p",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ds.primary.Close()
+	ds.down = false
+
+	got, err := ds.GetObservationSync(obs.ID)
+	if err != nil {
+		t.Fatalf("GetObservationSync: %v", err)
+	}
+	if got == nil || got.ID != obs.ID {
+		t.Errorf("GetObservationSync no devolvió la observación del buffer")
+	}
+}

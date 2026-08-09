@@ -8,7 +8,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jjgarcia-app/kronos-v2/internal/config"
 	"github.com/jjgarcia-app/kronos-v2/internal/platform"
-	"github.com/jjgarcia-app/kronos-v2/internal/store"
 	"github.com/jjgarcia-app/kronos-v2/internal/tui"
 )
 
@@ -21,7 +20,7 @@ func runTUI() error {
 		return fmt.Errorf("create data dir: %w", err)
 	}
 
-	st, err := store.New(dbPath)
+	st, err := openStore(cfg, dbPath)
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
 	}

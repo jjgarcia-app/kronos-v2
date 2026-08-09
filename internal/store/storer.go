@@ -38,5 +38,12 @@ type Storer interface {
 	// uso — base para stats/analytics, ver mem_stats.
 	RecordToolUse(ctx context.Context, sessionID, project, toolName string) error
 
+	// Stats, AllSessions, TimelineObservations, GetObservationSync: usados
+	// por la TUI (internal/tui) para dashboard/sesiones/timeline.
+	Stats(ctx context.Context) (*Stats, error)
+	AllSessions(ctx context.Context, limit int) ([]*Session, error)
+	TimelineObservations(ctx context.Context, obsID int64, n int) ([]*Observation, error)
+	GetObservationSync(id int64) (*Observation, error)
+
 	Close() error
 }
