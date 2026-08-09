@@ -32,8 +32,12 @@ func (s *Store) CreateSession(ctx context.Context, id, project, directory string
 
 // TouchSessionActivity actualiza el heartbeat de actividad de una sesión —
 // llamado en cada UserPromptSubmit (ver internal/hooks/prompt_submit.go).
-// Fail-open: nunca debe interrumpir el flujo de un hook por esto.
-func (s *Store) TouchSessionActivity(ctx context.Context, id string) error {
+// project se recibe (aunque *Store no lo necesita para el UPDATE, que ya
+// filtra por id único) para que DualStore.TouchSessionActivity pueda aplicar
+// el mismo chequeo isLocalOnly que el resto de sus métodos de escritura —
+// firma alineada con RecordToolUse por el mismo motivo. Fail-open: nunca
+// debe interrumpir el flujo de un hook por esto.
+func (s *Store) TouchSessionActivity(ctx context.Context, id, project string) error {
 	_, err := s.touchSessionActivityAffected(ctx, id)
 	return err
 }
@@ -41,9 +45,12 @@ func (s *Store) TouchSessionActivity(ctx context.Context, id string) error {
 // touchSessionActivityAffected es como TouchSessionActivity pero informa
 // filas afectadas — mismo motivo que incrementSearchCountAffected: permite a
 // DualStore detectar "primary sano pero sin esta sesión" y caer al buffer.
+// Sin filtro deleted_at a propósito, igual que incrementSearchCountAffected
+// — filtrarlo hacía que una sesión soft-deleted reportara siempre 0 filas en
+// primary y encolara un touch_session_activity sin límite en cada prompt.
 func (s *Store) touchSessionActivityAffected(ctx context.Context, id string) (int64, error) {
 	res, err := s.exec(ctx,
-		`UPDATE sessions SET last_activity_at = ? WHERE id = ? AND deleted_at IS NULL`,
+		`UPDATE sessions SET last_activity_at = ? WHERE id = ?`,
 		now(), id,
 	)
 	if err != nil {

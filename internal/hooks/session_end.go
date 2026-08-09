@@ -23,9 +23,15 @@ func RunSessionEnd(ctx context.Context, in Input, st store.Storer) error {
 	if in.SessionID == "" {
 		return nil
 	}
+	// Ojo: solo se salta el cierre cuando GetSession confirma con certeza que
+	// no hace falta (no existe, o ya está cerrada). Un error de lectura
+	// (ej. primary reconectando) NO debe frenar el intento de EndSession —
+	// a diferencia de Stop, SessionEnd dispara una sola vez; tragar un error
+	// transitorio acá deja la sesión sin cerrar para siempre, exactamente el
+	// bug que este hook existe para resolver.
 	sess, err := st.GetSession(ctx, in.SessionID)
-	if err != nil || sess == nil || sess.EndedAt != nil {
-		return nil // no existe, ya está cerrada, o no se pudo leer — no pisar nada
+	if err == nil && (sess == nil || sess.EndedAt != nil) {
+		return nil
 	}
 	// summary="" preserva el resumen real si mem_session_summary ya corrió antes.
 	return st.EndSession(ctx, in.SessionID, "")
