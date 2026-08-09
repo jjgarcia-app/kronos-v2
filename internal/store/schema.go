@@ -178,4 +178,10 @@ var migrations = []string{
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_tool_usage_session ON tool_usage(session_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_tool_usage_project_tool ON tool_usage(project, tool_name)`,
+
+	// v44: heartbeat de actividad por sesión — permite distinguir en la TUI
+	// una sesión realmente activa de una que nunca se cerró (ended_at NULL
+	// para siempre porque nada la cerró jamás, ver RunSessionEnd).
+	`ALTER TABLE sessions ADD COLUMN last_activity_at TEXT`,
+	`UPDATE sessions SET last_activity_at = started_at WHERE last_activity_at IS NULL`,
 }

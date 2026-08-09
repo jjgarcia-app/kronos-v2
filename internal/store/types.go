@@ -32,6 +32,11 @@ type Session struct {
 	Summary                string
 	InjectedObservationIDs []string // decoded from JSON column; nil if never set
 	SearchCount            int
+	// LastActivityAt: heartbeat actualizado en cada UserPromptSubmit (ver
+	// TouchSessionActivity). Distinto de StartedAt/EndedAt — permite a la
+	// TUI distinguir una sesión con actividad reciente de una que nunca se
+	// cerró pero lleva días sin uso.
+	LastActivityAt time.Time
 }
 
 type Observation struct {

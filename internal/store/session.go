@@ -14,19 +14,43 @@ func (s *Store) CreateSession(ctx context.Context, id, project, directory string
 	project = kproject.Normalize(project)
 	startedAt := now()
 	_, err := s.exec(ctx,
-		`INSERT INTO sessions(id, project, directory, started_at) VALUES (?, ?, ?, ?)`,
-		id, project, directory, startedAt,
+		`INSERT INTO sessions(id, project, directory, started_at, last_activity_at) VALUES (?, ?, ?, ?, ?)`,
+		id, project, directory, startedAt, startedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create session: %w", err)
 	}
 	t, _ := time.Parse(time.RFC3339, startedAt)
 	return &Session{
-		ID:        id,
-		Project:   project,
-		Directory: directory,
-		StartedAt: t,
+		ID:             id,
+		Project:        project,
+		Directory:      directory,
+		StartedAt:      t,
+		LastActivityAt: t,
 	}, nil
+}
+
+// TouchSessionActivity actualiza el heartbeat de actividad de una sesión —
+// llamado en cada UserPromptSubmit (ver internal/hooks/prompt_submit.go).
+// Fail-open: nunca debe interrumpir el flujo de un hook por esto.
+func (s *Store) TouchSessionActivity(ctx context.Context, id string) error {
+	_, err := s.touchSessionActivityAffected(ctx, id)
+	return err
+}
+
+// touchSessionActivityAffected es como TouchSessionActivity pero informa
+// filas afectadas — mismo motivo que incrementSearchCountAffected: permite a
+// DualStore detectar "primary sano pero sin esta sesión" y caer al buffer.
+func (s *Store) touchSessionActivityAffected(ctx context.Context, id string) (int64, error) {
+	res, err := s.exec(ctx,
+		`UPDATE sessions SET last_activity_at = ? WHERE id = ? AND deleted_at IS NULL`,
+		now(), id,
+	)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
 }
 
 func (s *Store) EndSession(ctx context.Context, id, summary string) error {
@@ -49,14 +73,14 @@ func (s *Store) EndSession(ctx context.Context, id, summary string) error {
 
 func (s *Store) GetSession(ctx context.Context, id string) (*Session, error) {
 	row := s.queryRow(ctx,
-		`SELECT id, project, directory, started_at, ended_at, summary, injected_observation_ids, search_count FROM sessions
+		`SELECT id, project, directory, started_at, ended_at, summary, injected_observation_ids, search_count, last_activity_at FROM sessions
 		 WHERE id = ? AND deleted_at IS NULL`, id)
 	return scanSession(row)
 }
 
 func (s *Store) GetActiveSession(ctx context.Context, project string) (*Session, error) {
 	row := s.queryRow(ctx,
-		`SELECT id, project, directory, started_at, ended_at, summary, injected_observation_ids, search_count
+		`SELECT id, project, directory, started_at, ended_at, summary, injected_observation_ids, search_count, last_activity_at
 		 FROM sessions
 		 WHERE project = ? AND ended_at IS NULL AND deleted_at IS NULL
 		 ORDER BY started_at DESC LIMIT 1`, project)
@@ -74,7 +98,7 @@ func (s *Store) ListSessions(ctx context.Context, project string, limit int) ([]
 		limit = 20
 	}
 	rows, err := s.query(ctx,
-		`SELECT id, project, directory, started_at, ended_at, summary, injected_observation_ids, search_count
+		`SELECT id, project, directory, started_at, ended_at, summary, injected_observation_ids, search_count, last_activity_at
 		 FROM sessions WHERE project = ? AND deleted_at IS NULL
 		 ORDER BY started_at DESC LIMIT ?`, project, limit)
 	if err != nil {
@@ -140,8 +164,9 @@ func scanSession(sc sessionScanner) (*Session, error) {
 	var startedAt string
 	var endedAt sql.NullString
 	var injectedIDs sql.NullString
+	var lastActivityAt sql.NullString
 
-	err := sc.Scan(&sess.ID, &sess.Project, &sess.Directory, &startedAt, &endedAt, &sess.Summary, &injectedIDs, &sess.SearchCount)
+	err := sc.Scan(&sess.ID, &sess.Project, &sess.Directory, &startedAt, &endedAt, &sess.Summary, &injectedIDs, &sess.SearchCount, &lastActivityAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -152,6 +177,13 @@ func scanSession(sc sessionScanner) (*Session, error) {
 	sess.EndedAt = nullableTime(endedAt)
 	if injectedIDs.Valid && injectedIDs.String != "" {
 		_ = json.Unmarshal([]byte(injectedIDs.String), &sess.InjectedObservationIDs)
+	}
+	if lastActivityAt.Valid && lastActivityAt.String != "" {
+		sess.LastActivityAt, _ = time.Parse(time.RFC3339, lastActivityAt.String)
+	} else {
+		// filas viejas (previas a la migración v44/v30) nunca tuvieron
+		// heartbeat — StartedAt es la mejor aproximación disponible.
+		sess.LastActivityAt = sess.StartedAt
 	}
 	return &sess, nil
 }

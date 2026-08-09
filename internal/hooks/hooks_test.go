@@ -424,6 +424,35 @@ func TestRunPromptSubmit_SavesPrompt(t *testing.T) {
 	}
 }
 
+// TestRunPromptSubmit_TouchesSessionActivity cubre el heartbeat que permite
+// a la TUI distinguir una sesión con actividad reciente de una abandonada
+// que nunca disparó SessionEnd (ver internal/tui sessionStatus).
+func TestRunPromptSubmit_TouchesSessionActivity(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	sess, err := st.CreateSession(ctx, "sess-heartbeat", "kronos-v2", "/tmp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := sess.LastActivityAt
+
+	time.Sleep(1100 * time.Millisecond) // now() trunca a segundo — dar margen real
+
+	in := hooks.Input{SessionID: "sess-heartbeat", CWD: "/tmp", Prompt: "otro prompt"}
+	if err := hooks.RunPromptSubmit(ctx, in, st, nil, os.Stdout); err != nil {
+		t.Fatalf("RunPromptSubmit: %v", err)
+	}
+
+	got, err := st.GetSession(ctx, "sess-heartbeat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.LastActivityAt.After(before) {
+		t.Errorf("LastActivityAt no avanzó: before=%v after=%v", before, got.LastActivityAt)
+	}
+}
+
 func TestRunPromptSubmit_EmptyPrompt_Noop(t *testing.T) {
 	st := newTestStore(t)
 	in := hooks.Input{SessionID: "s", CWD: "/tmp"}

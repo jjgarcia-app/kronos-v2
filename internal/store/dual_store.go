@@ -511,6 +511,24 @@ func (d *DualStore) CountSessionPromptsSinceLastSave(ctx context.Context, sessio
 // sin probar nunca el buffer. Resultado real: search_count nunca se
 // incrementaba para esas sesiones y el gate de pre-tool-use quedaba
 // bloqueado para siempre pese a buscar de verdad.
+func (d *DualStore) TouchSessionActivity(ctx context.Context, id string) error {
+	if !d.isPrimaryDown() {
+		n, err := d.primary.touchSessionActivityAffected(ctx, id)
+		if err == nil && n > 0 {
+			return nil
+		}
+		if err != nil {
+			d.markDown()
+		}
+	}
+	if err := d.buffer.TouchSessionActivity(ctx, id); err != nil {
+		return err
+	}
+	type touchPayload struct{ SessionID string }
+	_ = d.queue.enqueue("touch_session_activity", touchPayload{id})
+	return nil
+}
+
 func (d *DualStore) IncrementSearchCount(ctx context.Context, sessionID string) error {
 	if !d.isPrimaryDown() {
 		n, err := d.primary.incrementSearchCountAffected(ctx, sessionID)
@@ -749,6 +767,13 @@ func (d *DualStore) replayEntry(ctx context.Context, primary *Store, e syncEntry
 			return nil
 		}
 		return primary.IncrementSearchCount(ctx, p.SessionID)
+
+	case "touch_session_activity":
+		var p struct{ SessionID string }
+		if err := json.Unmarshal([]byte(e.Payload), &p); err != nil {
+			return nil
+		}
+		return primary.TouchSessionActivity(ctx, p.SessionID)
 	}
 	return nil
 }

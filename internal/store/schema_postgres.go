@@ -130,4 +130,8 @@ var postgresMigrations = []string{
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_tool_usage_session ON tool_usage(session_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_tool_usage_project_tool ON tool_usage(project, tool_name)`,
+
+	// v30: heartbeat de actividad por sesión — ver v44 en schema.go (SQLite).
+	`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS last_activity_at TEXT`,
+	`UPDATE sessions SET last_activity_at = started_at WHERE last_activity_at IS NULL`,
 }
