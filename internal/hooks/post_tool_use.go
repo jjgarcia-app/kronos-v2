@@ -17,5 +17,10 @@ func RunPostToolUse(ctx context.Context, in Input, st store.Storer) error {
 		return nil
 	}
 	proj := project.Detect(in.CWD)
+	// Heartbeat también acá, no solo en UserPromptSubmit: un turno largo de
+	// puro tool-use (Edit/Write/Bash, sin un prompt nuevo del usuario) no
+	// debe leerse como "inactiva" en la TUI (ver internal/tui sessionStatus)
+	// solo porque pasaron 30min desde el último prompt.
+	_ = st.TouchSessionActivity(ctx, in.SessionID, proj.Name)
 	return st.RecordToolUse(ctx, in.SessionID, proj.Name, in.ToolName)
 }

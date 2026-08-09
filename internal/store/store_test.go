@@ -616,7 +616,7 @@ func TestTouchSessionActivity_AdvancesTimestamp(t *testing.T) {
 
 	time.Sleep(1100 * time.Millisecond)
 
-	if err := s.TouchSessionActivity(ctx, "s-touch"); err != nil {
+	if err := s.TouchSessionActivity(ctx, "s-touch", "p"); err != nil {
 		t.Fatalf("TouchSessionActivity: %v", err)
 	}
 
