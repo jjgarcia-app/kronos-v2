@@ -40,13 +40,11 @@ jobs:
           cache: true
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        # v6 no soporta golangci-lint v2 en absoluto (error explícito de la
+        # action). "latest" con v6 además resolvía a v1.64.8, compilado con
+        # go1.24 — incompatible con el toolchain go1.26.5 que pide go.mod.
+        uses: golangci/golangci-lint-action@v7
         with:
-          # "latest" resolvió a v1.64.8 (compilado con go1.24) — go.mod pide
-          # toolchain go1.26.5 y golangci-lint rechaza analizar un go.mod más
-          # nuevo que el Go con el que se compiló él mismo. Pinneado a una
-          # versión v2.x reciente, compilada con go1.26+, en vez de confiar
-          # en que "latest" resuelva a algo compatible.
           version: v2.12.2
           args: --timeout=5m
 
