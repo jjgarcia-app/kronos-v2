@@ -1,0 +1,21 @@
+version: "2"
+
+linters:
+  default: standard
+  exclusions:
+    rules:
+      # Cerrar un handle en un defer y no revisar el error de Close() es un
+      # idiom aceptado en la mayoría de los codebases Go — un error de Close
+      # en un defer casi nunca es accionable en el punto donde se descubre.
+      # No vale la pena que el gate de CI se ponga rojo por esto.
+      - linters:
+          - errcheck
+        text: "Close` is not checked$"
+      # En tests, ignorar el error de una llamada de setup (crear sesión,
+      # escribir un archivo de fixture, etc.) es el idiom estándar — si algo
+      # falla ahí, la aserción que sigue ya lo va a delatar. Exigir manejo
+      # explícito de errores en cada línea de setup de cada test no agrega
+      # señal real, solo ruido.
+      - linters:
+          - errcheck
+        path: _test\.go

@@ -160,6 +160,41 @@ func TestSaveObservation_UsesAppGeneratedID(t *testing.T) {
 	}
 }
 
+// TestSaveObservation_NormalizesProjectName reproduce la causa real de la
+// fragmentación de nombres de proyecto encontrada en producción (27
+// variantes para ~15 repos reales, ej. "ATISA" / "atisa" /
+// "atisa-provider-management-all-in-one"): resolveProject devolvía el
+// "project" explícito de la tool MCP tal cual, sin pasarlo por el mismo
+// normalize() que sí aplica la detección automática. El fix vive en la capa
+// de store — un solo choke point para cualquier caller, no en cada tool.
+func TestSaveObservation_NormalizesProjectName(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	obs, err := s.SaveObservation(ctx, store.SaveParams{
+		Type: store.TypeDiscovery, Title: "t", Content: "c", Project: "ATISA Provider-Management",
+	})
+	if err != nil {
+		t.Fatalf("SaveObservation: %v", err)
+	}
+	if obs.Project != "atisa-provider-management" {
+		t.Errorf("Project = %q, want %q (normalizado)", obs.Project, "atisa-provider-management")
+	}
+}
+
+func TestCreateSession_NormalizesProjectName(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	sess, err := s.CreateSession(ctx, "s1", "ATISA", "/tmp")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if sess.Project != "atisa" {
+		t.Errorf("Project = %q, want %q (normalizado)", sess.Project, "atisa")
+	}
+}
+
 func TestSaveObservation_UpsertByTopicKey(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

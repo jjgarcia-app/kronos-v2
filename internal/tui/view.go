@@ -7,7 +7,6 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/jjgarcia-app/kronos-v2/internal/doctor"
-	"github.com/jjgarcia-app/kronos-v2/internal/store"
 )
 
 func (m Model) View() string {
@@ -309,10 +308,10 @@ func (m Model) viewSessionDetail() string {
 	sess := m.selectedSess
 	b.WriteString(m.headerLine("Sesion " + sess.ID[:min(8, len(sess.ID))]))
 	b.WriteString("\n")
-	b.WriteString(fmt.Sprintf("  Proyecto: %s  |  Dir: %s\n",
+	fmt.Fprintf(&b, "  Proyecto: %s  |  Dir: %s\n",
 		styleOK.Render(sess.Project),
 		styleMuted.Render(truncate(sess.Directory, 40)),
-	))
+	)
 	if sess.Summary != "" {
 		b.WriteString("  " + styleSubtext.Render(truncate(sess.Summary, 80)) + "\n")
 	}
@@ -532,8 +531,8 @@ func (m Model) viewExport() string {
 	b.WriteString(m.headerLine("Exportar a Obsidian"))
 	b.WriteString("\n\n")
 
-	b.WriteString(fmt.Sprintf("  Directorio: %s\n\n",
-		styleSubtext.Render(m.exportOutput)))
+	fmt.Fprintf(&b, "  Directorio: %s\n\n",
+		styleSubtext.Render(m.exportOutput))
 
 	if m.exportDone != "" {
 		b.WriteString("  " + styleOK.Render(m.exportDone) + "\n\n")
@@ -637,27 +636,3 @@ func min(a, b int) int {
 	return b
 }
 
-// obsTypeColor returns a color per observation type
-func obsTypeColor(t store.ObservationType) lipgloss.Color {
-	switch t {
-	case store.TypeBugfix:
-		return colorLove
-	case store.TypeDecision:
-		return colorGold
-	case store.TypeArchitecture:
-		return colorPine
-	case store.TypeDiscovery:
-		return colorFoam
-	case store.TypePattern:
-		return colorIris
-	case store.TypeConfig:
-		return colorRose
-	case store.TypePreference:
-		return colorMauve
-	case store.TypePassive:
-		return colorMuted
-	case store.TypeSession:
-		return colorSubtext
-	}
-	return colorText
-}

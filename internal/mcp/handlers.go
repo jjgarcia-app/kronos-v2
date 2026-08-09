@@ -398,9 +398,11 @@ func (s *Server) handleMemSessionSummary(ctx context.Context, req mcpgo.CallTool
 		return fail(err), nil
 	}
 
-	// también guardar el resumen como observación para que sea buscable
+	// también guardar el resumen como observación para que sea buscable —
+	// best-effort: EndSession ya confirmó arriba, esto no debe hacer
+	// fallar mem_session_end si falla.
 	if project != "" && summary != "" {
-		s.store.SaveObservation(ctx, store.SaveParams{
+		_, _ = s.store.SaveObservation(ctx, store.SaveParams{
 			SessionID: sessionID,
 			Type:      store.TypeSession,
 			Title:     "Resumen de sesión " + sessionID[:min(8, len(sessionID))],

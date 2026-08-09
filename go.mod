@@ -2,11 +2,14 @@ module github.com/jjgarcia-app/kronos-v2
 
 go 1.25.5
 
+toolchain go1.26.5
+
 require (
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/jackc/pgx/v5 v5.9.2
+	github.com/kardianos/service v1.3.0
 	github.com/mark3labs/mcp-go v0.54.0
 	github.com/ncruces/go-sqlite3 v0.34.1
 	github.com/philippgille/chromem-go v0.7.0
@@ -43,6 +46,6 @@ require (
 	github.com/spf13/cast v1.7.1 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
-	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/text v0.37.0 // indirect
+	golang.org/x/sync v0.21.0 // indirect
+	golang.org/x/text v0.39.0 // indirect
 )

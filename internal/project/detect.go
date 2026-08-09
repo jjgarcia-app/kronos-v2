@@ -326,7 +326,7 @@ func gitCmd(cwd string, args ...string) string {
 		return strings.TrimSpace(string(out))
 	case <-time.After(200 * time.Millisecond):
 		if cmd.Process != nil {
-			cmd.Process.Kill()
+			_ = cmd.Process.Kill()
 		}
 		return ""
 	}
@@ -350,6 +350,15 @@ func RepoNameFromURL(url string) string {
 	}
 	return url
 }
+
+// Normalize expone normalize() para callers fuera de este paquete —
+// internal/store lo usa para que TODO nombre de proyecto que llegue a la DB
+// pase por el mismo canonicalizador, sin importar si vino de detección
+// automática o de un "project" explícito pasado a mano por una tool MCP
+// (mem_save/mem_search/etc. antes leían ese string tal cual, sin normalizar
+// — la causa real de que "ATISA", "atisa" y "Atisa_Tickets_Dashboard" hayan
+// quedado como filas separadas en producción).
+func Normalize(s string) string { return normalize(s) }
 
 // normalize convierte a minúsculas y reemplaza caracteres no alfanuméricos con guión.
 func normalize(s string) string {

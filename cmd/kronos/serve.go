@@ -24,6 +24,14 @@ import (
 )
 
 func runServe(args ...string) error {
+	return runServeWithStop(nil, args...)
+}
+
+// runServeWithStop es runServe con un stopCh externo opcional — cerrar ese
+// channel cancela el daemon igual que Ctrl+C (os.Interrupt), pensado para
+// que kronosProgram.Stop() (ver service.go) pueda parar un daemon corriendo
+// como servicio de SO, donde no llega una señal os.Interrupt normal.
+func runServeWithStop(stopCh <-chan struct{}, args ...string) error {
 	// parse --port=N, --tools=PROFILE y --daemon-mode (uso interno, ver mcp_proxy.go)
 	port := 4317
 	toolsFlag := ""
@@ -67,7 +75,10 @@ func runServe(args ...string) error {
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, os.Interrupt)
 		go func() {
-			<-sigCh
+			select {
+			case <-sigCh:
+			case <-stopCh:
+			}
 			cancel()
 		}()
 	}
@@ -115,6 +126,7 @@ func runServe(args ...string) error {
 	}()
 
 	if daemonMode {
+		go runBackupLoop(ctx)
 		fmt.Fprintf(os.Stderr, "kronos daemon listo — MCP en http://127.0.0.1:%d/mcp\n", port)
 		<-ctx.Done()
 		return nil
@@ -244,6 +256,9 @@ func openStore(cfg config.Config, localDBPath string) (store.Storer, error) {
 		// sync_queue table couldn't be created — extremely unlikely
 		fmt.Fprintf(os.Stderr, "warn: dual store init failed (%v) — usando solo sqlite\n", err)
 		return wrapExportMirror(local, cfg), nil
+	}
+	if len(cfg.DB.LocalOnlyProjects) > 0 {
+		dual.SetLocalOnlyProjects(cfg.DB.LocalOnlyProjects)
 	}
 	return wrapExportMirror(dual, cfg), nil
 }

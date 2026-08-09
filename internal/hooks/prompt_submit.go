@@ -123,7 +123,7 @@ func RunPromptSubmit(ctx context.Context, in Input, st store.Storer, vs *embeddi
 		}
 
 		for _, r := range results {
-			fmt.Fprintf(w, "[kronos] %s (%s): %s\n", r.title, r.typ, preview80(r.content))
+			_, _ = fmt.Fprintf(w, "[kronos] %s (%s): %s\n", r.title, r.typ, preview80(r.content))
 		}
 	}()
 
@@ -135,7 +135,7 @@ func RunPromptSubmit(ctx context.Context, in Input, st store.Storer, vs *embeddi
 	// the first save; see internal/store/store.go).
 	// Uses a separate recover to ensure fail-open.
 	func() {
-		defer func() { recover() }()
+		defer func() { _ = recover() }()
 		if in.SessionID != "" {
 			// Use the concrete *store.Store method if available; otherwise skip nudge.
 			type promptCounter interface {
@@ -144,7 +144,7 @@ func RunPromptSubmit(ctx context.Context, in Input, st store.Storer, vs *embeddi
 			if counter, ok := st.(promptCounter); ok {
 				n := counter.CountSessionPromptsSinceLastSave(ctx2, in.SessionID)
 				if n > 0 && n%nudgeEveryN == 0 {
-					fmt.Fprint(w, memoryNudge(n))
+					_, _ = fmt.Fprint(w, memoryNudge(n))
 				}
 			}
 		}

@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	kproject "github.com/jjgarcia-app/kronos-v2/internal/project"
 )
 
 // SaveObservation persiste una observación con dedup y upsert por topic_key.
@@ -24,6 +26,7 @@ func (s *Store) SaveObservation(ctx context.Context, p SaveParams) (*Observation
 	if p.Project == "" {
 		return nil, fmt.Errorf("project is required")
 	}
+	p.Project = kproject.Normalize(p.Project)
 	if p.Scope == "" {
 		p.Scope = ScopeProject
 	}
@@ -63,6 +66,11 @@ func (s *Store) SaveObservation(ctx context.Context, p SaveParams) (*Observation
 	// esto no cambia el resto de la lógica de inserción.
 	newID := NewID()
 
+	storedContent, err := s.maybeEncrypt(p.Content)
+	if err != nil {
+		return nil, fmt.Errorf("encrypt content: %w", err)
+	}
+
 	if s.driver == "postgres" {
 		var id int64
 		// ON CONFLICT must match the partial unique index predicate exactly.
@@ -75,7 +83,7 @@ func (s *Store) SaveObservation(ctx context.Context, p SaveParams) (*Observation
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, ?)
 			 ON CONFLICT (sync_id) WHERE sync_id != '' DO UPDATE SET updated_at = observations.updated_at
 			 RETURNING id`),
-			newID, syncID, nullStr(p.SessionID), string(p.Type), p.Title, p.Content,
+			newID, syncID, nullStr(p.SessionID), string(p.Type), p.Title, storedContent,
 			p.ToolName, p.Project, string(p.Scope), p.TopicKey, hash, ts, ts, ts,
 		).Scan(&id)
 		if err != nil {
@@ -89,7 +97,7 @@ func (s *Store) SaveObservation(ctx context.Context, p SaveParams) (*Observation
 			(id, sync_id, session_id, type, title, content, tool_name, project, scope, topic_key,
 			 normalized_hash, revision_count, duplicate_count, last_seen_at, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, ?)`,
-		newID, syncID, nullStr(p.SessionID), string(p.Type), p.Title, p.Content,
+		newID, syncID, nullStr(p.SessionID), string(p.Type), p.Title, storedContent,
 		p.ToolName, p.Project, string(p.Scope), p.TopicKey, hash, ts, ts, ts,
 	)
 	if err != nil {
@@ -110,7 +118,7 @@ func (s *Store) GetObservation(ctx context.Context, id int64) (*Observation, err
 		`SELECT id, sync_id, session_id, type, title, content, tool_name, project, scope, topic_key,
 		        normalized_hash, revision_count, duplicate_count, created_at, updated_at, deleted_at
 		 FROM observations WHERE id = ?`, id)
-	return scanObservation(row)
+	return s.scanObservation(row)
 }
 
 func (s *Store) UpdateObservation(ctx context.Context, p UpdateParams) (*Observation, error) {
@@ -164,7 +172,7 @@ func (s *Store) ListObservations(ctx context.Context, project string, limit, off
 		return nil, err
 	}
 	defer rows.Close()
-	return scanObservations(rows)
+	return s.scanObservations(rows)
 }
 
 // ListAll retorna todas las observaciones no borradas, opcionalmente filtradas por proyecto.
@@ -190,7 +198,7 @@ func (s *Store) ListAll(ctx context.Context, project string) ([]*Observation, er
 		return nil, err
 	}
 	defer rows.Close()
-	return scanObservations(rows)
+	return s.scanObservations(rows)
 }
 
 func (s *Store) ListSessionObservations(ctx context.Context, sessionID string) ([]*Observation, error) {
@@ -204,7 +212,7 @@ func (s *Store) ListSessionObservations(ctx context.Context, sessionID string) (
 		return nil, err
 	}
 	defer rows.Close()
-	return scanObservations(rows)
+	return s.scanObservations(rows)
 }
 
 // GetObservationBySyncID busca una observación por su sync_id global.
@@ -213,7 +221,7 @@ func (s *Store) GetObservationBySyncID(ctx context.Context, syncID string) (*Obs
 		`SELECT id, sync_id, session_id, type, title, content, tool_name, project, scope, topic_key,
 		        normalized_hash, revision_count, duplicate_count, created_at, updated_at, deleted_at
 		 FROM observations WHERE sync_id = ?`, syncID)
-	return scanObservation(row)
+	return s.scanObservation(row)
 }
 
 // SavePassive guarda learnings extraídos del output de sub-agentes.
@@ -292,7 +300,7 @@ func (s *Store) getByTopicKey(ctx context.Context, project, topicKey string) (*O
 		 FROM observations
 		 WHERE project = ? AND topic_key = ? AND deleted_at IS NULL
 		 ORDER BY created_at DESC LIMIT 1`, project, topicKey)
-	obs, err := scanObservation(row)
+	obs, err := s.scanObservation(row)
 	if err != nil || obs == nil {
 		return nil, err
 	}
@@ -306,7 +314,7 @@ func (s *Store) getByHash(ctx context.Context, hash, project string) (*Observati
 		 FROM observations
 		 WHERE normalized_hash = ? AND project = ? AND deleted_at IS NULL
 		 LIMIT 1`, hash, project)
-	obs, err := scanObservation(row)
+	obs, err := s.scanObservation(row)
 	if err != nil || obs == nil {
 		return nil, err
 	}
@@ -314,12 +322,16 @@ func (s *Store) getByHash(ctx context.Context, hash, project string) (*Observati
 }
 
 func (s *Store) updateObservation(ctx context.Context, id int64, title, content, typ, toolName, hash, ts string) (*Observation, error) {
-	_, err := s.exec(ctx,
+	storedContent, err := s.maybeEncrypt(content)
+	if err != nil {
+		return nil, fmt.Errorf("encrypt content: %w", err)
+	}
+	_, err = s.exec(ctx,
 		`UPDATE observations
 		 SET title = ?, content = ?, type = ?, tool_name = ?, normalized_hash = ?,
 		     revision_count = revision_count + 1, last_seen_at = ?, updated_at = ?
 		 WHERE id = ?`,
-		title, content, typ, toolName, hash, ts, ts, id,
+		title, storedContent, typ, toolName, hash, ts, ts, id,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("update observation: %w", err)
@@ -370,7 +382,10 @@ type observationScanner interface {
 	Scan(dest ...any) error
 }
 
-func scanObservation(row observationScanner) (*Observation, error) {
+// scanObservation es método de *Store (no función libre) específicamente
+// para poder descifrar content de forma transparente cuando s.encryptionKey
+// está seteado — ver crypto.go.
+func (s *Store) scanObservation(row observationScanner) (*Observation, error) {
 	var o Observation
 	var syncID, sessionID, toolName, deletedAt sql.NullString
 	var topicKey, hash, createdAt, updatedAt string
@@ -387,6 +402,13 @@ func scanObservation(row observationScanner) (*Observation, error) {
 	if err != nil {
 		return nil, err
 	}
+	if s.encryptionKey != nil {
+		plain, err := s.maybeDecrypt(o.Content)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt observation %d: %w", o.ID, err)
+		}
+		o.Content = plain
+	}
 	o.SyncID = syncID.String
 	o.SessionID = sessionID.String
 	o.ToolName = toolName.String
@@ -398,10 +420,10 @@ func scanObservation(row observationScanner) (*Observation, error) {
 	return &o, nil
 }
 
-func scanObservations(rows *sql.Rows) ([]*Observation, error) {
+func (s *Store) scanObservations(rows *sql.Rows) ([]*Observation, error) {
 	var result []*Observation
 	for rows.Next() {
-		o, err := scanObservation(rows)
+		o, err := s.scanObservation(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -460,5 +482,5 @@ func (s *Store) ListRecent(ctx context.Context, limit int) ([]*Observation, erro
 		return nil, err
 	}
 	defer rows.Close()
-	return scanObservations(rows)
+	return s.scanObservations(rows)
 }

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	kproject "github.com/jjgarcia-app/kronos-v2/internal/project"
 )
 
 // retryStage defines one phase of the staged reconnect backoff.
@@ -71,6 +73,30 @@ type DualStore struct {
 	mu         sync.RWMutex
 	queue      *syncQueue // lives in the buffer DB
 	cancel     context.CancelFunc
+
+	// localOnly: proyectos (ya normalizados) que nunca deben escribirse al
+	// primary ni encolarse para sync — se quedan solo en buffer. Ver
+	// SetLocalOnlyProjects y config.DBConfig.LocalOnlyProjects.
+	localOnly map[string]bool
+}
+
+// SetLocalOnlyProjects marca qué proyectos nunca deben salir de esta
+// máquina — ni al primary si está sano, ni encolados para sync si primary
+// está caído. Reemplaza el set completo (no acumula entre llamadas).
+func (d *DualStore) SetLocalOnlyProjects(projects []string) {
+	m := make(map[string]bool, len(projects))
+	for _, p := range projects {
+		m[kproject.Normalize(p)] = true
+	}
+	d.mu.Lock()
+	d.localOnly = m
+	d.mu.Unlock()
+}
+
+func (d *DualStore) isLocalOnly(project string) bool {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.localOnly[kproject.Normalize(project)]
 }
 
 // NewDualFromDSN creates a DualStore with the given SQLite buffer and
@@ -120,6 +146,9 @@ func (d *DualStore) markUp(p *Store) {
 // Try primary first; on failure fall back to buffer and enqueue for sync.
 
 func (d *DualStore) SaveObservation(ctx context.Context, p SaveParams) (*Observation, error) {
+	if d.isLocalOnly(p.Project) {
+		return d.buffer.SaveObservation(ctx, p)
+	}
 	if !d.isPrimaryDown() {
 		obs, err := d.primary.SaveObservation(ctx, p)
 		if err == nil {
@@ -128,6 +157,16 @@ func (d *DualStore) SaveObservation(ctx context.Context, p SaveParams) (*Observa
 		d.markDown()
 	}
 	obs, err := d.buffer.SaveObservation(ctx, p)
+	if err != nil && isFKError(err) && p.SessionID != "" {
+		// La sesión se creó mientras primary estaba sano (CreateSession
+		// escribe solo ahí, no en buffer) y recién ahora, en medio de la
+		// sesión, primary se cayó — el buffer nunca vio esa sesión, así que
+		// el FK de session_id no tiene a qué apuntar. Mismo criterio que
+		// replayEntry en la dirección inversa: preservar el contenido sin el
+		// link de sesión antes que perder el hallazgo entero.
+		p.SessionID = ""
+		obs, err = d.buffer.SaveObservation(ctx, p)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -180,6 +219,9 @@ func (d *DualStore) SavePassive(ctx context.Context, sessionID, project, content
 }
 
 func (d *DualStore) CreateSession(ctx context.Context, id, project, directory string) (*Session, error) {
+	if d.isLocalOnly(project) {
+		return d.buffer.CreateSession(ctx, id, project, directory)
+	}
 	if !d.isPrimaryDown() {
 		sess, err := d.primary.CreateSession(ctx, id, project, directory)
 		if err == nil {
@@ -197,6 +239,13 @@ func (d *DualStore) CreateSession(ctx context.Context, id, project, directory st
 }
 
 func (d *DualStore) EndSession(ctx context.Context, id, summary string) error {
+	// Una sesión local-only nunca existió en primary (CreateSession la
+	// esquivó) — sin este chequeo, intentar primary acá devolvería "no
+	// encontrada" y eso se leería como primary caído, degradando TODO lo
+	// demás por una sesión que nunca debía sincronizarse.
+	if sess, _ := d.buffer.GetSession(ctx, id); sess != nil && d.isLocalOnly(sess.Project) {
+		return d.buffer.EndSession(ctx, id, summary)
+	}
 	if !d.isPrimaryDown() {
 		if err := d.primary.EndSession(ctx, id, summary); err == nil {
 			return nil
@@ -212,6 +261,9 @@ func (d *DualStore) EndSession(ctx context.Context, id, summary string) error {
 }
 
 func (d *DualStore) RecordToolUse(ctx context.Context, sessionID, project, toolName string) error {
+	if d.isLocalOnly(project) {
+		return d.buffer.RecordToolUse(ctx, sessionID, project, toolName)
+	}
 	if !d.isPrimaryDown() {
 		if err := d.primary.RecordToolUse(ctx, sessionID, project, toolName); err == nil {
 			return nil
@@ -227,13 +279,23 @@ func (d *DualStore) RecordToolUse(ctx context.Context, sessionID, project, toolN
 }
 
 func (d *DualStore) SavePrompt(ctx context.Context, sessionID, project, content string) error {
+	if d.isLocalOnly(project) {
+		return d.buffer.SavePrompt(ctx, sessionID, project, content)
+	}
 	if !d.isPrimaryDown() {
 		if err := d.primary.SavePrompt(ctx, sessionID, project, content); err == nil {
 			return nil
 		}
 		d.markDown()
 	}
-	if err := d.buffer.SavePrompt(ctx, sessionID, project, content); err != nil {
+	err := d.buffer.SavePrompt(ctx, sessionID, project, content)
+	if err != nil && isFKError(err) && sessionID != "" {
+		// mismo caso que SaveObservation: la sesión se creó con primary sano
+		// (nunca llegó al buffer) y recién ahora primary se cayó.
+		sessionID = ""
+		err = d.buffer.SavePrompt(ctx, sessionID, project, content)
+	}
+	if err != nil {
 		return err
 	}
 	type promptPayload struct{ SessionID, Project, Content string }

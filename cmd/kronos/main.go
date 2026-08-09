@@ -45,10 +45,14 @@ func run(args []string) error {
 		return runRules(args[1:])
 	case "gc":
 		return runGC(args[1:])
+	case "backup":
+		return runBackup(args[1:])
+	case "service":
+		return runServiceCmd(args[1:])
 	case "version", "--version", "-v":
 		fmt.Printf("kronos %s\n", version)
 		return nil
 	default:
-		return fmt.Errorf("unknown command %q — use: init | serve | mcp [--tools=PROFILE] | hook | setup | export | doctor | tui | config | sync [--export|--import] | rules | gc | version", args[0])
+		return fmt.Errorf("unknown command %q — use: init | serve | mcp [--tools=PROFILE] | hook | setup | export | doctor | tui | config | sync [--export|--import] | rules | gc | backup [--list|--restore] | service <install|uninstall|start|stop|restart|status> | version", args[0])
 	}
 }

@@ -16,6 +16,13 @@ type DBConfig struct {
 	SQLitePath     string `json:"sqlite_path"`
 	PostgresDSN    string `json:"postgres_dsn"`
 	PostgresDocker bool   `json:"postgres_docker"`
+	// LocalOnlyProjects: nombres de proyecto (ya normalizados, ver
+	// internal/project.Normalize) que nunca deben escribirse al primary
+	// remoto — se quedan solo en el buffer SQLite local, sin encolarse para
+	// sync. Pensado para cuando primary es una DB remota/compartida (el
+	// camino a sync entre máquinas) y hay proyectos que el usuario no
+	// quiere que salgan de esta máquina.
+	LocalOnlyProjects []string `json:"local_only_projects"`
 }
 
 type EmbeddingsConfig struct {

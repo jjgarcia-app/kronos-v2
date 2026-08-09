@@ -10,17 +10,6 @@ import (
 	"github.com/jjgarcia-app/kronos-v2/internal/setup"
 )
 
-// installToDir installs Kronos hooks using a temp directory as the Claude dir.
-// It monkey-patches the environment so platform.ClaudeDir() returns tempDir.
-func withTempClaudeDir(t *testing.T) string {
-	t.Helper()
-	dir := t.TempDir()
-	// Override HOME so ClaudeDir() resolves to dir/.claude
-	t.Setenv("HOME", filepath.Dir(dir))
-	t.Setenv("USERPROFILE", filepath.Dir(dir))
-	return dir
-}
-
 func TestInstallClaudeCode_CreatesSettings(t *testing.T) {
 	tmpHome := t.TempDir()
 	claudeDir := filepath.Join(tmpHome, ".claude")
