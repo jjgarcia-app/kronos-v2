@@ -51,8 +51,11 @@ type Storer interface {
 	GetObservationSync(id int64) (*Observation, error)
 
 	// Timesheet reporta tiempo activo real (gap-discounted) y observaciones
-	// guardadas por sesión — ver mem_timesheet.
-	Timesheet(ctx context.Context, from, to time.Time, project string) ([]*SessionTimesheet, error)
+	// guardadas por sesión — ver mem_timesheet. Los totales del reporte
+	// (TotalMinutes/DailyMinutes) vienen de fusionar los eventos de todas
+	// las sesiones antes de calcular huecos, para no contar dos veces el
+	// tiempo de sesiones solapadas (forks, subagentes en background).
+	Timesheet(ctx context.Context, from, to time.Time, project string) (*TimesheetReport, error)
 
 	Close() error
 }

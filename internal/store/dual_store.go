@@ -416,7 +416,7 @@ func (d *DualStore) Stats(ctx context.Context) (*Stats, error) {
 	return d.buffer.Stats(ctx)
 }
 
-func (d *DualStore) Timesheet(ctx context.Context, from, to time.Time, project string) ([]*SessionTimesheet, error) {
+func (d *DualStore) Timesheet(ctx context.Context, from, to time.Time, project string) (*TimesheetReport, error) {
 	if !d.isPrimaryDown() {
 		ts, err := d.primary.Timesheet(ctx, from, to, project)
 		if err == nil {
