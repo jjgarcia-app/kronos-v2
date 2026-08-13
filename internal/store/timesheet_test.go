@@ -53,6 +53,28 @@ func insertActivityAt(t *testing.T, s *Store, sessionID, project string, ts time
 	}
 }
 
+// dayEntries flattens every SessionDayEntry across all days in the report —
+// helper for tests that just want "every session-day contribution", not the
+// per-day grouping itself.
+func dayEntries(report *TimesheetReport) []*SessionDayEntry {
+	var out []*SessionDayEntry
+	for _, d := range report.Days {
+		out = append(out, d.Sessions...)
+	}
+	return out
+}
+
+// dayMinutes returns the deduplicated minutes for a given day, or 0 if that
+// day isn't in the report.
+func dayMinutes(report *TimesheetReport, day string) int {
+	for _, d := range report.Days {
+		if d.Day == day {
+			return d.Minutes
+		}
+	}
+	return 0
+}
+
 func TestTimesheet_ComputesActiveMinutesAndListsObservations(t *testing.T) {
 	s := newInternalTestStore(t)
 	ctx := context.Background()
@@ -82,12 +104,13 @@ func TestTimesheet_ComputesActiveMinutesAndListsObservations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Timesheet: %v", err)
 	}
-	if len(report.Sessions) != 1 {
-		t.Fatalf("len(Sessions) = %d, want 1", len(report.Sessions))
+	entries := dayEntries(report)
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1", len(entries))
 	}
-	e := report.Sessions[0]
-	if e.ActiveMinutes != 30 {
-		t.Errorf("ActiveMinutes = %d, want 30", e.ActiveMinutes)
+	e := entries[0]
+	if e.Minutes != 30 {
+		t.Errorf("Minutes = %d, want 30", e.Minutes)
 	}
 	if len(e.Observations) != 1 || e.Observations[0].Title != "fix real encontrado" {
 		t.Errorf("Observations = %+v, want 1 con el fix guardado", e.Observations)
@@ -95,8 +118,8 @@ func TestTimesheet_ComputesActiveMinutesAndListsObservations(t *testing.T) {
 	if report.TotalMinutes != 30 {
 		t.Errorf("TotalMinutes = %d, want 30", report.TotalMinutes)
 	}
-	if got := report.DailyMinutes[day.Format("2006-01-02")]; got != 30 {
-		t.Errorf("DailyMinutes[%s] = %d, want 30", day.Format("2006-01-02"), got)
+	if got := dayMinutes(report, day.Format("2006-01-02")); got != 30 {
+		t.Errorf("dayMinutes(%s) = %d, want 30", day.Format("2006-01-02"), got)
 	}
 }
 
@@ -136,14 +159,15 @@ func TestTimesheet_OverlappingSessionsDoNotDoubleCountTotal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Timesheet: %v", err)
 	}
-	if len(report.Sessions) != 2 {
-		t.Fatalf("len(Sessions) = %d, want 2", len(report.Sessions))
+	entries := dayEntries(report)
+	if len(entries) != 2 {
+		t.Fatalf("len(entries) = %d, want 2", len(entries))
 	}
 
 	// Cada sesión por separado ve sus propios 20/10 min.
 	var sumPerSession int
-	for _, e := range report.Sessions {
-		sumPerSession += e.ActiveMinutes
+	for _, e := range entries {
+		sumPerSession += e.Minutes
 	}
 	if sumPerSession != 30 { // 20 (main) + 10 (fork)
 		t.Errorf("sumPerSession = %d, want 30 (20 main + 10 fork, contado por separado)", sumPerSession)
@@ -155,8 +179,98 @@ func TestTimesheet_OverlappingSessionsDoNotDoubleCountTotal(t *testing.T) {
 	if report.TotalMinutes != 20 {
 		t.Errorf("TotalMinutes = %d, want 20 (fusionado — el solape del fork no debe contarse aparte)", report.TotalMinutes)
 	}
-	if got := report.DailyMinutes[day.Format("2006-01-02")]; got != 20 {
-		t.Errorf("DailyMinutes[%s] = %d, want 20", day.Format("2006-01-02"), got)
+	if got := dayMinutes(report, day.Format("2006-01-02")); got != 20 {
+		t.Errorf("dayMinutes(%s) = %d, want 20", day.Format("2006-01-02"), got)
+	}
+}
+
+// TestTimesheet_FindsLongLivedSessionByActivityNotStartDate reproduce el
+// caso real que motiva este fix: una conversacion de Claude Code arranco
+// semanas antes del rango pedido (esta misma sesion, por ejemplo, lleva
+// desde el 27/jul activa) pero tuvo actividad real DENTRO del rango. Filtrar
+// por started_at la dejaba invisible aunque casi todo su trabajo real cayera
+// dentro de la ventana consultada.
+func TestTimesheet_FindsLongLivedSessionByActivityNotStartDate(t *testing.T) {
+	s := newInternalTestStore(t)
+	ctx := context.Background()
+
+	longAgo := time.Date(2026, 7, 27, 14, 0, 0, 0, time.UTC)
+	rangeStart := time.Date(2026, 8, 2, 0, 0, 0, 0, time.UTC)
+	activityDay := time.Date(2026, 8, 11, 9, 0, 0, 0, time.UTC)
+
+	sess, err := s.CreateSession(ctx, "sess-long-lived", "p", "/tmp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// started_at queda MUY antes del rango consultado — el caso real.
+	if _, err := s.exec(ctx, `UPDATE sessions SET started_at = ? WHERE id = ?`,
+		longAgo.Format(time.RFC3339), sess.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	insertActivityAt(t, s, sess.ID, "p", activityDay)
+	insertActivityAt(t, s, sess.ID, "p", activityDay.Add(15*time.Minute))
+
+	report, err := s.Timesheet(ctx, rangeStart, rangeStart.AddDate(0, 0, 14), "p")
+	if err != nil {
+		t.Fatalf("Timesheet: %v", err)
+	}
+	entries := dayEntries(report)
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1 (la sesión longeva debe aparecer por su actividad, no por started_at)", len(entries))
+	}
+	if entries[0].Minutes != 15 {
+		t.Errorf("Minutes = %d, want 15", entries[0].Minutes)
+	}
+	if report.TotalMinutes != 15 {
+		t.Errorf("TotalMinutes = %d, want 15", report.TotalMinutes)
+	}
+	// La sesión debe agruparse bajo el día REAL de su actividad
+	// (activityDay, 2026-08-11), no bajo su started_at (longAgo, 2026-07-27
+	// — fuera incluso del rango consultado).
+	if len(report.Days) != 1 || report.Days[0].Day != "2026-08-11" {
+		t.Fatalf("Days = %+v, want un solo día '2026-08-11'", report.Days)
+	}
+}
+
+// TestTimesheet_ActivityTimestampsBoundedToRange confirma que una sesión
+// longeva con actividad TANTO dentro como fuera del rango consultado solo
+// aporta al reporte los minutos que realmente caen dentro de la ventana —
+// no arrastra semanas de historia solo porque coincide el session_id.
+func TestTimesheet_ActivityTimestampsBoundedToRange(t *testing.T) {
+	s := newInternalTestStore(t)
+	ctx := context.Background()
+
+	longAgo := time.Date(2026, 7, 27, 14, 0, 0, 0, time.UTC)
+	beforeRange := time.Date(2026, 7, 28, 9, 0, 0, 0, time.UTC) // fuera de rango
+	inRange := time.Date(2026, 8, 11, 9, 0, 0, 0, time.UTC)
+
+	sess, err := s.CreateSession(ctx, "sess-mixed", "p", "/tmp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.exec(ctx, `UPDATE sessions SET started_at = ? WHERE id = ?`, longAgo.Format(time.RFC3339), sess.ID)
+
+	// Actividad ANTES del rango — no debe contarse.
+	insertActivityAt(t, s, sess.ID, "p", beforeRange)
+	insertActivityAt(t, s, sess.ID, "p", beforeRange.Add(20*time.Minute))
+	// Actividad DENTRO del rango — sí debe contarse.
+	insertActivityAt(t, s, sess.ID, "p", inRange)
+	insertActivityAt(t, s, sess.ID, "p", inRange.Add(10*time.Minute))
+
+	report, err := s.Timesheet(ctx,
+		time.Date(2026, 8, 2, 0, 0, 0, 0, time.UTC),
+		time.Date(2026, 8, 16, 0, 0, 0, 0, time.UTC),
+		"p")
+	if err != nil {
+		t.Fatalf("Timesheet: %v", err)
+	}
+	entries := dayEntries(report)
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1", len(entries))
+	}
+	if entries[0].Minutes != 10 {
+		t.Errorf("Minutes = %d, want 10 (solo el gap dentro del rango, no los 20min de antes)", entries[0].Minutes)
 	}
 }
 
@@ -213,18 +327,22 @@ func TestTimesheet_FiltersByProjectAndDateRange(t *testing.T) {
 
 	sessIn, _ := s.CreateSession(ctx, "sess-in", "p", "/tmp")
 	s.exec(ctx, `UPDATE sessions SET started_at = ? WHERE id = ?`, inRange.Format(time.RFC3339), sessIn.ID)
+	insertActivityAt(t, s, sessIn.ID, "p", inRange)
 
 	sessOut, _ := s.CreateSession(ctx, "sess-out-date", "p", "/tmp")
 	s.exec(ctx, `UPDATE sessions SET started_at = ? WHERE id = ?`, outOfRange.Format(time.RFC3339), sessOut.ID)
+	insertActivityAt(t, s, sessOut.ID, "p", outOfRange)
 
 	sessOtherProject, _ := s.CreateSession(ctx, "sess-other-proj", "otro-proyecto", "/tmp")
 	s.exec(ctx, `UPDATE sessions SET started_at = ? WHERE id = ?`, inRange.Format(time.RFC3339), sessOtherProject.ID)
+	insertActivityAt(t, s, sessOtherProject.ID, "otro-proyecto", inRange)
 
 	report, err := s.Timesheet(ctx, time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC), "p")
 	if err != nil {
 		t.Fatalf("Timesheet: %v", err)
 	}
-	if len(report.Sessions) != 1 || report.Sessions[0].Session.ID != "sess-in" {
-		t.Errorf("Sessions = %+v, want solo sess-in (fuera de rango y de otro proyecto excluidos)", report.Sessions)
+	entries := dayEntries(report)
+	if len(entries) != 1 || entries[0].Session.ID != "sess-in" {
+		t.Errorf("entries = %+v, want solo sess-in (fuera de rango y de otro proyecto excluidos)", entries)
 	}
 }
