@@ -639,6 +639,78 @@ func (s *Server) handleMemStats(ctx context.Context, req mcpgo.CallToolRequest) 
 	return ok(sb.String()), nil
 }
 
+func (s *Server) handleMemTimesheet(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	proj := str(req, "project")
+
+	to := time.Now().UTC()
+	if toStr := str(req, "to"); toStr != "" {
+		t, err := time.Parse("2006-01-02", toStr)
+		if err != nil {
+			return fail(fmt.Errorf("to inválido, usar YYYY-MM-DD: %s", toStr)), nil
+		}
+		to = t
+	}
+	from := to
+	if fromStr := str(req, "from"); fromStr != "" {
+		t, err := time.Parse("2006-01-02", fromStr)
+		if err != nil {
+			return fail(fmt.Errorf("from inválido, usar YYYY-MM-DD: %s", fromStr)), nil
+		}
+		from = t
+	}
+
+	entries, err := s.store.Timesheet(ctx, from, to.Add(24*time.Hour), proj)
+	if err != nil {
+		return fail(err), nil
+	}
+	if len(entries) == 0 {
+		projSuffix := ""
+		if proj != "" {
+			projSuffix = " [" + proj + "]"
+		}
+		return ok(fmt.Sprintf("Sin sesiones entre %s y %s%s", from.Format("2006-01-02"), to.Format("2006-01-02"), projSuffix)), nil
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "## Timesheet: %s → %s", from.Format("2006-01-02"), to.Format("2006-01-02"))
+	if proj != "" {
+		fmt.Fprintf(&sb, " [%s]", proj)
+	}
+	sb.WriteString("\n\n")
+
+	currentDay := ""
+	totalMinutes := 0
+	for _, e := range entries {
+		day := e.Session.StartedAt.Format("2006-01-02")
+		if day != currentDay {
+			if currentDay != "" {
+				sb.WriteString("\n")
+			}
+			fmt.Fprintf(&sb, "### %s\n\n", day)
+			currentDay = day
+		}
+		totalMinutes += e.ActiveMinutes
+		id := e.Session.ID
+		if len(id) > 8 {
+			id = id[:8]
+		}
+		fmt.Fprintf(&sb, "- Sesión %s (%s, %s) — %dmin activos\n",
+			id, e.Session.Project, e.Session.StartedAt.Format("15:04"), e.ActiveMinutes)
+		if len(e.Observations) == 0 {
+			if e.ActiveMinutes > 0 {
+				sb.WriteString("  - (sin observaciones guardadas — hubo actividad pero ninguna narrativa con mem_save)\n")
+			}
+			continue
+		}
+		for _, o := range e.Observations {
+			fmt.Fprintf(&sb, "  - [%s] %s\n", o.Type, o.Title)
+		}
+	}
+	fmt.Fprintf(&sb, "\n**Total activo: %dh %dmin**\n", totalMinutes/60, totalMinutes%60)
+
+	return ok(sb.String()), nil
+}
+
 func (s *Server) handleMemCurrentProject(_ context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
 	dir := str(req, "directory")
 	dr := project.DetectFull(dir)

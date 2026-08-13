@@ -1,6 +1,9 @@
 package store
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // Storer is the interface satisfied by both *Store (single backend) and
 // *DualStore (local-first with PostgreSQL async replication).
@@ -46,6 +49,10 @@ type Storer interface {
 	AllSessions(ctx context.Context, limit int) ([]*Session, error)
 	TimelineObservations(ctx context.Context, obsID int64, n int) ([]*Observation, error)
 	GetObservationSync(id int64) (*Observation, error)
+
+	// Timesheet reporta tiempo activo real (gap-discounted) y observaciones
+	// guardadas por sesión — ver mem_timesheet.
+	Timesheet(ctx context.Context, from, to time.Time, project string) ([]*SessionTimesheet, error)
 
 	Close() error
 }
