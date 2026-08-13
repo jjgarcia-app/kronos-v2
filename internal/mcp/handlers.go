@@ -592,12 +592,13 @@ func (s *Server) handleMemTimeline(ctx context.Context, req mcpgo.CallToolReques
 func (s *Server) handleMemStats(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
 	proj := str(req, "project")
 
-	ls := s.localStore()
-	if ls == nil {
-		return fail(fmt.Errorf("mem_stats no disponible")), nil
-	}
-
-	st, err := ls.Stats(ctx)
+	// s.store (no s.localStore()): Stats() es primary-aware en DualStore
+	// (intenta Postgres primero, cae al buffer solo si el primary está
+	// caído) — antes esto leía SIEMPRE el buffer local sin importar el
+	// estado del primary, dando un conteo de sesiones desactualizado que
+	// se confundía con "el primary está caído" cuando en realidad mem_stats
+	// nunca había consultado el primary en absoluto.
+	st, err := s.store.Stats(ctx)
 	if err != nil {
 		return fail(err), nil
 	}
@@ -611,22 +612,27 @@ func (s *Server) handleMemStats(ctx context.Context, req mcpgo.CallToolRequest) 
 		fmt.Fprintf(&sb, "**Proyectos**: %s\n", strings.Join(st.Projects, ", "))
 	}
 
-	if proj != "" {
-		relStats, err := ls.GetRelationStats(ctx, proj)
-		if err == nil && relStats.Total > 0 {
-			fmt.Fprintf(&sb, "\n**Relaciones [%s]**: %d total | %d pendientes | %d juzgadas\n",
-				proj, relStats.Total, relStats.Pending, relStats.Judged)
-		}
-	}
-
-	if tools, err := ls.ToolUsageStats(ctx, proj, 5); err == nil && len(tools) > 0 {
-		fmt.Fprintf(&sb, "\n**Tools más usados**")
+	// GetRelationStats/ToolUsageStats no son parte de la interfaz Storer
+	// (solo *Store) — quedan en el buffer local a propósito; opcionales, no
+	// bloquean el resto del reporte si no hay store local disponible.
+	if ls := s.localStore(); ls != nil {
 		if proj != "" {
-			fmt.Fprintf(&sb, " [%s]", proj)
+			relStats, err := ls.GetRelationStats(ctx, proj)
+			if err == nil && relStats.Total > 0 {
+				fmt.Fprintf(&sb, "\n**Relaciones [%s]**: %d total | %d pendientes | %d juzgadas\n",
+					proj, relStats.Total, relStats.Pending, relStats.Judged)
+			}
 		}
-		fmt.Fprintf(&sb, ":\n")
-		for _, t := range tools {
-			fmt.Fprintf(&sb, "- %s: %d\n", t.ToolName, t.Count)
+
+		if tools, err := ls.ToolUsageStats(ctx, proj, 5); err == nil && len(tools) > 0 {
+			fmt.Fprintf(&sb, "\n**Tools más usados**")
+			if proj != "" {
+				fmt.Fprintf(&sb, " [%s]", proj)
+			}
+			fmt.Fprintf(&sb, ":\n")
+			for _, t := range tools {
+				fmt.Fprintf(&sb, "- %s: %d\n", t.ToolName, t.Count)
+			}
 		}
 	}
 
