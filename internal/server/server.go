@@ -273,13 +273,11 @@ func (srv *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := context.Background()
 
-	s := srv.sqliteStore()
-	if s == nil {
-		writeError(w, http.StatusNotImplemented, "stats solo disponible en backend SQLite directo")
-		return
-	}
-
-	st, err := s.Stats(ctx)
+	// srv.st (no sqliteStore()): Stats() es primary-aware en DualStore —
+	// antes esto leía siempre el buffer SQLite local vía sqliteStore(), sin
+	// importar el estado del primary (mismo bug ya corregido en el tool MCP
+	// mem_stats, ver internal/mcp/handlers.go).
+	st, err := srv.st.Stats(ctx)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
