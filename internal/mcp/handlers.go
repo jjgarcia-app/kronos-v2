@@ -659,11 +659,11 @@ func (s *Server) handleMemTimesheet(ctx context.Context, req mcpgo.CallToolReque
 		from = t
 	}
 
-	entries, err := s.store.Timesheet(ctx, from, to.Add(24*time.Hour), proj)
+	report, err := s.store.Timesheet(ctx, from, to.Add(24*time.Hour), proj)
 	if err != nil {
 		return fail(err), nil
 	}
-	if len(entries) == 0 {
+	if len(report.Sessions) == 0 {
 		projSuffix := ""
 		if proj != "" {
 			projSuffix = " [" + proj + "]"
@@ -679,22 +679,20 @@ func (s *Server) handleMemTimesheet(ctx context.Context, req mcpgo.CallToolReque
 	sb.WriteString("\n\n")
 
 	currentDay := ""
-	totalMinutes := 0
-	for _, e := range entries {
+	for _, e := range report.Sessions {
 		day := e.Session.StartedAt.Format("2006-01-02")
 		if day != currentDay {
 			if currentDay != "" {
 				sb.WriteString("\n")
 			}
-			fmt.Fprintf(&sb, "### %s\n\n", day)
+			fmt.Fprintf(&sb, "### %s — %dmin activos (fusionado, sin doble conteo)\n\n", day, report.DailyMinutes[day])
 			currentDay = day
 		}
-		totalMinutes += e.ActiveMinutes
 		id := e.Session.ID
 		if len(id) > 8 {
 			id = id[:8]
 		}
-		fmt.Fprintf(&sb, "- Sesión %s (%s, %s) — %dmin activos\n",
+		fmt.Fprintf(&sb, "- Sesión %s (%s, %s) — %dmin activos (esta sesión sola; puede solaparse con otra, ver total del día)\n",
 			id, e.Session.Project, e.Session.StartedAt.Format("15:04"), e.ActiveMinutes)
 		if len(e.Observations) == 0 {
 			if e.ActiveMinutes > 0 {
@@ -706,7 +704,21 @@ func (s *Server) handleMemTimesheet(ctx context.Context, req mcpgo.CallToolReque
 			fmt.Fprintf(&sb, "  - [%s] %s\n", o.Type, o.Title)
 		}
 	}
-	fmt.Fprintf(&sb, "\n**Total activo: %dh %dmin**\n", totalMinutes/60, totalMinutes%60)
+
+	// Si la suma de minutos por sesión no coincide con el total fusionado,
+	// hubo sesiones solapadas (forks/subagentes en background) — avisar para
+	// que la diferencia no se lea como un bug.
+	sumPerSession := 0
+	for _, e := range report.Sessions {
+		sumPerSession += e.ActiveMinutes
+	}
+	overlapsFound := sumPerSession > report.TotalMinutes
+
+	fmt.Fprintf(&sb, "\n**Total activo: %dh %dmin**", report.TotalMinutes/60, report.TotalMinutes%60)
+	if overlapsFound {
+		fmt.Fprintf(&sb, " (hubo sesiones con actividad solapada — la suma de minutos por sesión arriba, %dmin, es mayor porque cuenta el solape más de una vez; este total no)", sumPerSession)
+	}
+	sb.WriteString("\n")
 
 	return ok(sb.String()), nil
 }

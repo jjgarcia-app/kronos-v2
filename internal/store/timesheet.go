@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"sort"
 	"time"
 
 	kproject "github.com/jjgarcia-app/kronos-v2/internal/project"
@@ -10,10 +11,28 @@ import (
 // SessionTimesheet is one session's real activity: gap-discounted active
 // minutes (computed from tool_usage ∪ user_prompts timestamps, never
 // estimated) plus the observations saved during it.
+//
+// ActiveMinutes is scoped to THIS session alone — when sessions overlap in
+// wall-clock time (a fork or a background subagent runs while the parent
+// session keeps going; the harness gives each its own session_id), the same
+// real minute is counted once per session here. Never sum ActiveMinutes
+// across sessions for a grand total — use TimesheetReport.TotalMinutes /
+// DailyMinutes instead, which are computed from the globally merged event
+// stream and dedup overlapping time automatically.
 type SessionTimesheet struct {
 	Session       *Session
 	ActiveMinutes int
 	Observations  []*Observation
+}
+
+// TimesheetReport is the full result of a Timesheet query: the per-session
+// breakdown (for listing what happened and where) plus deduplicated totals
+// computed from every session's events merged into one timeline, so
+// concurrent sessions (forks, background subagents) never double-count.
+type TimesheetReport struct {
+	Sessions     []*SessionTimesheet
+	DailyMinutes map[string]int // "2026-08-05" -> active minutes that day, deduplicated
+	TotalMinutes int
 }
 
 // timesheetGapThreshold: a gap between two consecutive activity events
@@ -25,13 +44,22 @@ const timesheetGapThreshold = 30 * time.Minute
 
 // Timesheet reports real active time and saved observations, per session
 // that started within [from, to), optionally filtered by project.
-func (s *Store) Timesheet(ctx context.Context, from, to time.Time, project string) ([]*SessionTimesheet, error) {
+//
+// Per-session ActiveMinutes and the report's dedup'd totals are computed
+// separately on purpose: a fork or background subagent gets its own
+// session_id from the harness, so two sessions can have real, overlapping
+// wall-clock activity at the same time. Merging every session's events into
+// one sorted timeline before computing gaps (instead of summing each
+// session's independently-computed minutes) is what prevents that overlap
+// from being counted twice in the total.
+func (s *Store) Timesheet(ctx context.Context, from, to time.Time, project string) (*TimesheetReport, error) {
 	sessions, err := s.sessionsInRange(ctx, from, to, project)
 	if err != nil {
 		return nil, err
 	}
 
-	out := make([]*SessionTimesheet, 0, len(sessions))
+	sessionEntries := make([]*SessionTimesheet, 0, len(sessions))
+	var allEvents []time.Time
 	for _, sess := range sessions {
 		events, err := s.activityTimestamps(ctx, sess.ID)
 		if err != nil {
@@ -41,13 +69,21 @@ func (s *Store) Timesheet(ctx context.Context, from, to time.Time, project strin
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, &SessionTimesheet{
+		sessionEntries = append(sessionEntries, &SessionTimesheet{
 			Session:       sess,
 			ActiveMinutes: activeMinutes(events),
 			Observations:  obs,
 		})
+		allEvents = append(allEvents, events...)
 	}
-	return out, nil
+
+	sort.Slice(allEvents, func(i, j int) bool { return allEvents[i].Before(allEvents[j]) })
+
+	return &TimesheetReport{
+		Sessions:     sessionEntries,
+		DailyMinutes: dailyActiveMinutes(allEvents),
+		TotalMinutes: activeMinutes(allEvents),
+	}, nil
 }
 
 func (s *Store) sessionsInRange(ctx context.Context, from, to time.Time, project string) ([]*Session, error) {
@@ -122,4 +158,46 @@ func activeMinutes(events []time.Time) int {
 		}
 	}
 	return int(total.Minutes())
+}
+
+// dailyActiveMinutes buckets the same gap-discounted active time as
+// activeMinutes, but per UTC calendar day — a session that keeps going past
+// midnight has its minutes split between the two days they actually
+// happened in, instead of all landing on whichever day the session started.
+// events must already be sorted ascending.
+//
+// Accumulates as time.Duration per day and only truncates to whole minutes
+// once, at the very end — same as activeMinutes. Truncating each individual
+// gap to int minutes before summing loses every gap shorter than a minute
+// (routine between consecutive tool calls), which silently drops real
+// active time on a session with many short gaps.
+//
+// A gap can cross at most one midnight: gaps longer than timesheetGapThreshold
+// (30min) are discarded before they'd ever need to, since 30min < 24h.
+func dailyActiveMinutes(events []time.Time) map[string]int {
+	totals := make(map[string]time.Duration)
+	for i := 1; i < len(events); i++ {
+		start, end := events[i-1], events[i]
+		gap := end.Sub(start)
+		if gap <= 0 || gap > timesheetGapThreshold {
+			continue
+		}
+
+		startDay := start.Format("2006-01-02")
+		endDay := end.Format("2006-01-02")
+		if startDay == endDay {
+			totals[startDay] += gap
+			continue
+		}
+
+		midnight := time.Date(end.Year(), end.Month(), end.Day(), 0, 0, 0, 0, time.UTC)
+		totals[startDay] += midnight.Sub(start)
+		totals[endDay] += end.Sub(midnight)
+	}
+
+	out := make(map[string]int, len(totals))
+	for day, d := range totals {
+		out[day] = int(d.Minutes())
+	}
+	return out
 }
