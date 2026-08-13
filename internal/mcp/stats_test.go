@@ -52,6 +52,10 @@ func TestMemStats_ReadsFromPrimaryNotBuffer_RealPostgres(t *testing.T) {
 	}
 	t.Cleanup(func() { buffer.Close() })
 
+	// NewDualFromDSN NUNCA devuelve error si el primary no está disponible —
+	// degrada con gracia a propósito (ver TestNewDualFromDSN_PrimaryUnreachable_DegradesGracefully
+	// en internal/store). El chequeo real de disponibilidad va después, con
+	// CreateSession: si termina en el buffer, es que no hay Postgres acá.
 	dual, err := store.NewDualFromDSN(buffer, testStatsPostgresDSN)
 	if err != nil {
 		t.Skipf("Postgres no disponible en %s, se salta el test de integración: %v", testStatsPostgresDSN, err)
@@ -76,7 +80,7 @@ func TestMemStats_ReadsFromPrimaryNotBuffer_RealPostgres(t *testing.T) {
 	})
 
 	if got, _ := buffer.GetSession(ctx, sess.ID); got != nil {
-		t.Fatal("la sesión ya existía en el buffer — el test no prueba lo que dice probar")
+		t.Skip("CreateSession cayó al buffer — Postgres no está disponible en este entorno (ej. CI), se salta el test de integración")
 	}
 
 	// El buffer temporal es fresco y CreateSession con primary sano nunca lo
