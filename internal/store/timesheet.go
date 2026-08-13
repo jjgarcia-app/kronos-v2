@@ -8,30 +8,39 @@ import (
 	kproject "github.com/jjgarcia-app/kronos-v2/internal/project"
 )
 
-// SessionTimesheet is one session's real activity: gap-discounted active
-// minutes (computed from tool_usage ∪ user_prompts timestamps, never
-// estimated) plus the observations saved during it.
-//
-// ActiveMinutes is scoped to THIS session alone — when sessions overlap in
-// wall-clock time (a fork or a background subagent runs while the parent
-// session keeps going; the harness gives each its own session_id), the same
-// real minute is counted once per session here. Never sum ActiveMinutes
-// across sessions for a grand total — use TimesheetReport.TotalMinutes /
-// DailyMinutes instead, which are computed from the globally merged event
-// stream and dedup overlapping time automatically.
-type SessionTimesheet struct {
-	Session       *Session
-	ActiveMinutes int
-	Observations  []*Observation
+// SessionDayEntry is one session's contribution to one calendar day: its own
+// gap-discounted active minutes that landed on that specific day (a
+// long-lived session — Claude Code conversations routinely span days or
+// weeks — can contribute to several different DayTimesheet entries, one per
+// day it actually touched). Observations are attached only on the day of
+// the session's earliest in-range activity, so a long session's saved
+// narrative isn't repeated under every day it spans.
+type SessionDayEntry struct {
+	Session      *Session
+	Minutes      int
+	Observations []*Observation
 }
 
-// TimesheetReport is the full result of a Timesheet query: the per-session
-// breakdown (for listing what happened and where) plus deduplicated totals
-// computed from every session's events merged into one timeline, so
-// concurrent sessions (forks, background subagents) never double-count.
+// DayTimesheet is one calendar day's real activity: Minutes is
+// deduplicated — computed from every session's events for this project
+// merged into one timeline before counting gaps, so two sessions with real,
+// overlapping wall-clock activity (a fork or background subagent running
+// alongside the session that spawned it) never double-count the same
+// minute. Sessions lists which sessions contributed and how much each did
+// on this day specifically — those per-session figures are NOT deduplicated
+// against each other, so don't sum them expecting to match Minutes.
+type DayTimesheet struct {
+	Day      string // "2026-08-05"
+	Minutes  int
+	Sessions []*SessionDayEntry
+}
+
+// TimesheetReport is the full result of a Timesheet query, organized by the
+// calendar day activity actually happened on — never by which day a session
+// started, since a long-lived session's start date can be weeks before any
+// of the activity a given query range cares about.
 type TimesheetReport struct {
-	Sessions     []*SessionTimesheet
-	DailyMinutes map[string]int // "2026-08-05" -> active minutes that day, deduplicated
+	Days         []*DayTimesheet // sorted ascending by day
 	TotalMinutes int
 }
 
@@ -42,26 +51,38 @@ type TimesheetReport struct {
 // worked on.
 const timesheetGapThreshold = 30 * time.Minute
 
-// Timesheet reports real active time and saved observations, per session
-// that started within [from, to), optionally filtered by project.
+// Timesheet reports real active time and saved observations, organized by
+// the calendar day activity actually happened on, for every session with
+// activity in [from, to), optionally filtered by project.
 //
-// Per-session ActiveMinutes and the report's dedup'd totals are computed
-// separately on purpose: a fork or background subagent gets its own
-// session_id from the harness, so two sessions can have real, overlapping
-// wall-clock activity at the same time. Merging every session's events into
-// one sorted timeline before computing gaps (instead of summing each
-// session's independently-computed minutes) is what prevents that overlap
-// from being counted twice in the total.
+// Per-day totals and the report's grand total are computed from every
+// session's events merged into one timeline BEFORE counting gaps (instead
+// of summing each session's independently-computed minutes) — a fork or
+// background subagent gets its own session_id from the harness, so two
+// sessions can have real, overlapping wall-clock activity at the same time,
+// and summing their minutes separately would double-count that overlap.
+//
+// Grouping by day is likewise driven by where each event actually falls,
+// never by Session.StartedAt — a session can live for days or weeks (this
+// package itself was built inside one that started 2026-07-27 and was still
+// active over two weeks later), so its activity routinely spans many days
+// within a single query range.
 func (s *Store) Timesheet(ctx context.Context, from, to time.Time, project string) (*TimesheetReport, error) {
 	sessions, err := s.sessionsInRange(ctx, from, to, project)
 	if err != nil {
 		return nil, err
 	}
 
-	sessionEntries := make([]*SessionTimesheet, 0, len(sessions))
+	type sessionActivity struct {
+		session      *Session
+		events       []time.Time
+		observations []*Observation
+	}
+
+	activities := make([]sessionActivity, 0, len(sessions))
 	var allEvents []time.Time
 	for _, sess := range sessions {
-		events, err := s.activityTimestamps(ctx, sess.ID)
+		events, err := s.activityTimestamps(ctx, sess.ID, from, to)
 		if err != nil {
 			return nil, err
 		}
@@ -69,32 +90,107 @@ func (s *Store) Timesheet(ctx context.Context, from, to time.Time, project strin
 		if err != nil {
 			return nil, err
 		}
-		sessionEntries = append(sessionEntries, &SessionTimesheet{
-			Session:       sess,
-			ActiveMinutes: activeMinutes(events),
-			Observations:  obs,
-		})
+		activities = append(activities, sessionActivity{session: sess, events: events, observations: obs})
 		allEvents = append(allEvents, events...)
 	}
 
 	sort.Slice(allEvents, func(i, j int) bool { return allEvents[i].Before(allEvents[j]) })
+	globalDaily := dailyActiveMinutes(allEvents)
+
+	dayMap := make(map[string]*DayTimesheet, len(globalDaily))
+	for day, minutes := range globalDaily {
+		dayMap[day] = &DayTimesheet{Day: day, Minutes: minutes}
+	}
+
+	for _, a := range activities {
+		if len(a.events) == 0 {
+			// sessionsInRange only returns sessions with an activity row in
+			// range, so this shouldn't happen — but skip defensively rather
+			// than attribute a session to a day it has no evidence for.
+			continue
+		}
+
+		earliestDay := ""
+		for _, e := range a.events {
+			d := e.Format("2006-01-02")
+			if earliestDay == "" || d < earliestDay {
+				earliestDay = d
+			}
+		}
+
+		sessDaily := dailyActiveMinutes(a.events)
+		if len(sessDaily) == 0 {
+			// Fewer than 2 events (or a single lone event) means no gap to
+			// measure, not "no activity" — a session with exactly one real
+			// tool call, or one carrying a saved observation, must still
+			// surface with 0 minutes on its one real day rather than vanish
+			// from the report entirely.
+			sessDaily = map[string]int{earliestDay: 0}
+		}
+
+		for day, minutes := range sessDaily {
+			dt, ok := dayMap[day]
+			if !ok {
+				// Only reachable if a session's own gaps produced a day the
+				// merged global timeline didn't (shouldn't happen since
+				// allEvents is a superset), but fail safe instead of losing
+				// the entry.
+				dt = &DayTimesheet{Day: day}
+				dayMap[day] = dt
+			}
+			entry := &SessionDayEntry{Session: a.session, Minutes: minutes}
+			if day == earliestDay {
+				entry.Observations = a.observations
+			}
+			dt.Sessions = append(dt.Sessions, entry)
+		}
+	}
+
+	days := make([]*DayTimesheet, 0, len(dayMap))
+	for _, dt := range dayMap {
+		sort.Slice(dt.Sessions, func(i, j int) bool {
+			return dt.Sessions[i].Session.StartedAt.Before(dt.Sessions[j].Session.StartedAt)
+		})
+		days = append(days, dt)
+	}
+	sort.Slice(days, func(i, j int) bool { return days[i].Day < days[j].Day })
 
 	return &TimesheetReport{
-		Sessions:     sessionEntries,
-		DailyMinutes: dailyActiveMinutes(allEvents),
+		Days:         days,
 		TotalMinutes: activeMinutes(allEvents),
 	}, nil
 }
 
+// sessionsInRange returns every session with real activity (a tool_usage or
+// user_prompts row) inside [from, to) — NOT sessions whose started_at falls
+// in that window.
+//
+// Claude Code sessions routinely live for days or weeks (this very
+// conversation started 2026-07-27 and is still active today): filtering by
+// started_at would make a long-lived session's entire activity invisible to
+// any date range query that doesn't happen to include its original start
+// date, even though most of its real work happened well within the
+// requested range. Filtering by "has an activity row in range" instead
+// finds the session regardless of how old it is.
 func (s *Store) sessionsInRange(ctx context.Context, from, to time.Time, project string) ([]*Session, error) {
-	query := `SELECT id, project, directory, started_at, ended_at, summary, injected_observation_ids, search_count, last_activity_at
-		 FROM sessions WHERE deleted_at IS NULL AND started_at >= ? AND started_at < ?`
-	args := []any{from.UTC().Format(time.RFC3339), to.UTC().Format(time.RFC3339)}
+	fromStr := from.UTC().Format(time.RFC3339)
+	toStr := to.UTC().Format(time.RFC3339)
+
+	query := `SELECT s.id, s.project, s.directory, s.started_at, s.ended_at, s.summary,
+			s.injected_observation_ids, s.search_count, s.last_activity_at
+		 FROM sessions s
+		 WHERE s.deleted_at IS NULL
+		 AND s.id IN (
+			SELECT session_id FROM tool_usage WHERE created_at >= ? AND created_at < ?
+			UNION
+			SELECT session_id FROM user_prompts WHERE created_at >= ? AND created_at < ? AND deleted_at IS NULL
+		 )`
+	args := []any{fromStr, toStr, fromStr, toStr}
 	if project != "" {
-		query += " AND project = ?"
+		query += " AND s.project = ?"
 		args = append(args, kproject.Normalize(project))
 	}
-	query += " ORDER BY started_at ASC"
+	query += " ORDER BY s.started_at ASC"
 
 	rows, err := s.query(ctx, query, args...)
 	if err != nil {
@@ -114,15 +210,19 @@ func (s *Store) sessionsInRange(ctx context.Context, from, to time.Time, project
 }
 
 // activityTimestamps returns every tool_usage/user_prompt timestamp for a
-// session, sorted ascending — the raw event stream used to compute real
-// active time.
-func (s *Store) activityTimestamps(ctx context.Context, sessionID string) ([]time.Time, error) {
+// session within [from, to), sorted ascending — the raw event stream used to
+// compute real active time. Bounded to the requested range so a long-lived
+// session (see sessionsInRange) contributes only the activity that actually
+// happened in this window, not its entire multi-day history.
+func (s *Store) activityTimestamps(ctx context.Context, sessionID string, from, to time.Time) ([]time.Time, error) {
+	fromStr := from.UTC().Format(time.RFC3339)
+	toStr := to.UTC().Format(time.RFC3339)
 	rows, err := s.query(ctx,
-		`SELECT created_at FROM tool_usage WHERE session_id = ?
+		`SELECT created_at FROM tool_usage WHERE session_id = ? AND created_at >= ? AND created_at < ?
 		 UNION ALL
-		 SELECT created_at FROM user_prompts WHERE session_id = ? AND deleted_at IS NULL
+		 SELECT created_at FROM user_prompts WHERE session_id = ? AND deleted_at IS NULL AND created_at >= ? AND created_at < ?
 		 ORDER BY created_at ASC`,
-		sessionID, sessionID,
+		sessionID, fromStr, toStr, sessionID, fromStr, toStr,
 	)
 	if err != nil {
 		return nil, err

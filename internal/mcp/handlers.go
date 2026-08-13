@@ -669,7 +669,7 @@ func (s *Server) handleMemTimesheet(ctx context.Context, req mcpgo.CallToolReque
 	if err != nil {
 		return fail(err), nil
 	}
-	if len(report.Sessions) == 0 {
+	if len(report.Days) == 0 {
 		projSuffix := ""
 		if proj != "" {
 			projSuffix = " [" + proj + "]"
@@ -684,45 +684,41 @@ func (s *Server) handleMemTimesheet(ctx context.Context, req mcpgo.CallToolReque
 	}
 	sb.WriteString("\n\n")
 
-	currentDay := ""
-	for _, e := range report.Sessions {
-		day := e.Session.StartedAt.Format("2006-01-02")
-		if day != currentDay {
-			if currentDay != "" {
-				sb.WriteString("\n")
+	sumPerSessionDay := 0
+	for i, day := range report.Days {
+		if i > 0 {
+			sb.WriteString("\n")
+		}
+		fmt.Fprintf(&sb, "### %s — %dmin activos (fusionado, sin doble conteo)\n\n", day.Day, day.Minutes)
+
+		for _, e := range day.Sessions {
+			sumPerSessionDay += e.Minutes
+			id := e.Session.ID
+			if len(id) > 8 {
+				id = id[:8]
 			}
-			fmt.Fprintf(&sb, "### %s — %dmin activos (fusionado, sin doble conteo)\n\n", day, report.DailyMinutes[day])
-			currentDay = day
-		}
-		id := e.Session.ID
-		if len(id) > 8 {
-			id = id[:8]
-		}
-		fmt.Fprintf(&sb, "- Sesión %s (%s, %s) — %dmin activos (esta sesión sola; puede solaparse con otra, ver total del día)\n",
-			id, e.Session.Project, e.Session.StartedAt.Format("15:04"), e.ActiveMinutes)
-		if len(e.Observations) == 0 {
-			if e.ActiveMinutes > 0 {
-				sb.WriteString("  - (sin observaciones guardadas — hubo actividad pero ninguna narrativa con mem_save)\n")
+			fmt.Fprintf(&sb, "- Sesión %s (%s, arrancó %s) — %dmin activos este día (esta sesión sola; puede solaparse con otra, ver total del día)\n",
+				id, e.Session.Project, e.Session.StartedAt.Format("2006-01-02 15:04"), e.Minutes)
+			if len(e.Observations) == 0 {
+				if e.Minutes > 0 {
+					sb.WriteString("  - (sin observaciones guardadas — hubo actividad pero ninguna narrativa con mem_save)\n")
+				}
+				continue
 			}
-			continue
-		}
-		for _, o := range e.Observations {
-			fmt.Fprintf(&sb, "  - [%s] %s\n", o.Type, o.Title)
+			for _, o := range e.Observations {
+				fmt.Fprintf(&sb, "  - [%s] %s\n", o.Type, o.Title)
+			}
 		}
 	}
 
-	// Si la suma de minutos por sesión no coincide con el total fusionado,
+	// Si la suma de minutos por sesión-día no coincide con el total fusionado,
 	// hubo sesiones solapadas (forks/subagentes en background) — avisar para
 	// que la diferencia no se lea como un bug.
-	sumPerSession := 0
-	for _, e := range report.Sessions {
-		sumPerSession += e.ActiveMinutes
-	}
-	overlapsFound := sumPerSession > report.TotalMinutes
+	overlapsFound := sumPerSessionDay > report.TotalMinutes
 
 	fmt.Fprintf(&sb, "\n**Total activo: %dh %dmin**", report.TotalMinutes/60, report.TotalMinutes%60)
 	if overlapsFound {
-		fmt.Fprintf(&sb, " (hubo sesiones con actividad solapada — la suma de minutos por sesión arriba, %dmin, es mayor porque cuenta el solape más de una vez; este total no)", sumPerSession)
+		fmt.Fprintf(&sb, " (hubo sesiones con actividad solapada — la suma de minutos por sesión-día arriba, %dmin, es mayor porque cuenta el solape más de una vez; este total no)", sumPerSessionDay)
 	}
 	sb.WriteString("\n")
 
