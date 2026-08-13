@@ -149,6 +149,8 @@ func (s *Server) Call(ctx context.Context, tool string, arguments map[string]any
 		handler = s.handleMemTimeline
 	case "mem_stats":
 		handler = s.handleMemStats
+	case "mem_timesheet":
+		handler = s.handleMemTimesheet
 	case "mem_current_project":
 		handler = s.handleMemCurrentProject
 	case "mem_capture_passive":
@@ -185,6 +187,7 @@ func (s *Server) registerTools() {
 		{toolMemSuggestTopicKey, s.handleMemSuggestTopicKey},
 		{toolMemTimeline, s.handleMemTimeline},
 		{toolMemStats, s.handleMemStats},
+		{toolMemTimesheet, s.handleMemTimesheet},
 		{toolMemCurrentProject, s.handleMemCurrentProject},
 		{toolMemCapturePassive, s.handleMemCapturePassive},
 		{toolMemMergeProjects, s.handleMemMergeProjects},

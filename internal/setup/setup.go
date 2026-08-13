@@ -47,6 +47,7 @@ var kronosToolPermissions = []string{
 	"mcp__kronos__mem_capture_passive",
 	"mcp__kronos__mem_merge_projects",
 	"mcp__kronos__mem_doctor",
+	"mcp__kronos__mem_timesheet",
 }
 
 // kronosHooksMap returns the hooks we inject into Claude Code settings.json,

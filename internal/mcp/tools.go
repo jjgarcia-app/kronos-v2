@@ -287,6 +287,21 @@ CUÁNDO LLAMAR:
 	)
 }
 
+func toolMemTimesheet() mcpgo.Tool {
+	return mcpgo.NewTool("mem_timesheet",
+		mcpgo.WithDescription(`Reporta tiempo activo REAL por sesión en un rango de fechas, para cargar horas trabajadas (ej. planillas de horas).
+
+No estima ni reconstruye desde git log — calcula minutos activos reales sumando los intervalos entre eventos consecutivos (tool calls + prompts) de cada sesión, descartando huecos mayores a 30min (sesión inactiva, no trabajo). Junto a cada sesión lista las observaciones (mem_save) guardadas durante ella — la narrativa real de lo investigado/hecho, no reconstruida después.
+
+CUÁNDO LLAMAR: al armar un reporte de horas/actividad para un día o rango de días. Complementa (no reemplaza) un cruce con git log para el detalle de qué se commiteó.
+
+Si una sesión aparece con minutos activos pero sin observaciones, es una señal de que hubo trabajo real (investigación, soporte) que nunca se guardó con mem_save — vale la pena preguntarle al usuario qué se hizo antes de reportar esa sesión.`),
+		mcpgo.WithString("from", mcpgo.Description("Fecha de inicio, YYYY-MM-DD (default: igual a 'to')")),
+		mcpgo.WithString("to", mcpgo.Description("Fecha de fin, YYYY-MM-DD, inclusive (default: hoy)")),
+		mcpgo.WithString("project", mcpgo.Description("Filtrar por proyecto. Si se omite, cruza todos los proyectos")),
+	)
+}
+
 func toolMemCurrentProject() mcpgo.Tool {
 	return mcpgo.NewTool("mem_current_project",
 		mcpgo.WithDescription(`Detecta el proyecto del directorio de trabajo usando el algoritmo de 5 casos de Kronos.

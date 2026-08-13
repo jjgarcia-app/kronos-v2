@@ -416,6 +416,17 @@ func (d *DualStore) Stats(ctx context.Context) (*Stats, error) {
 	return d.buffer.Stats(ctx)
 }
 
+func (d *DualStore) Timesheet(ctx context.Context, from, to time.Time, project string) ([]*SessionTimesheet, error) {
+	if !d.isPrimaryDown() {
+		ts, err := d.primary.Timesheet(ctx, from, to, project)
+		if err == nil {
+			return ts, nil
+		}
+		d.markDown()
+	}
+	return d.buffer.Timesheet(ctx, from, to, project)
+}
+
 func (d *DualStore) GetObservationSync(id int64) (*Observation, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

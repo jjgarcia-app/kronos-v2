@@ -28,6 +28,7 @@ var ProfileAdmin = map[string]bool{
 	"mem_delete":         true,
 	"mem_stats":          true,
 	"mem_timeline":       true,
+	"mem_timesheet":      true,
 	"mem_merge_projects": true,
 	"mem_save_prompt":    true,
 }
