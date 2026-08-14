@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/jjgarcia-app/kronos-v2/internal/config"
 	"github.com/jjgarcia-app/kronos-v2/internal/hooks"
 )
 
@@ -42,20 +43,38 @@ func TestNotifyPreCompactCapture_SendsSessionAndTranscriptPath(t *testing.T) {
 	}
 }
 
-// TestNotifyPreCompactCapture_DaemonDown_NeverPanics confirma el contrato
-// fire-and-forget: sin nada escuchando, no debe panicar ni bloquear —
-// simplemente no hace nada.
-func TestNotifyPreCompactCapture_DaemonDown_NeverPanics(t *testing.T) {
+// TestNotifyPreCompactCapture_DaemonDown_ReturnsFalse reproduce el bug real:
+// antes esto no devolvía nada, así que el caller no tenía forma de saber que
+// el daemon no aceptó la captura y activar un fallback — la captura se
+// perdía en silencio para siempre. Ahora el valor de retorno es justo la
+// señal que runPreCompactHook usa para decidir si corre el fallback local.
+func TestNotifyPreCompactCapture_DaemonDown_ReturnsFalse(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	deadURL := ts.URL
 	ts.Close()
 
-	notifyPreCompactCapture(deadURL, hooks.Input{SessionID: "s1", TranscriptPath: "x.jsonl"})
+	if got := notifyPreCompactCapture(deadURL, hooks.Input{SessionID: "s1", TranscriptPath: "x.jsonl"}); got {
+		t.Error("notifyPreCompactCapture con daemon caído debería devolver false")
+	}
+}
+
+// TestNotifyPreCompactCapture_DaemonAccepts_ReturnsTrue confirma el camino
+// feliz: daemon responde 202, no hace falta fallback.
+func TestNotifyPreCompactCapture_DaemonAccepts_ReturnsTrue(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer ts.Close()
+
+	if got := notifyPreCompactCapture(ts.URL, hooks.Input{SessionID: "s1", TranscriptPath: "x.jsonl"}); !got {
+		t.Error("notifyPreCompactCapture con daemon sano debería devolver true")
+	}
 }
 
 // TestNotifyPreCompactCapture_MissingFields_NeverCallsDaemon confirma que
 // sin session_id o transcript_path ni siquiera se intenta la request — no
-// tiene sentido avisarle al daemon sin esos dos datos.
+// tiene sentido avisarle al daemon sin esos dos datos. Devuelve true (no
+// hace falta fallback: no hay nada que capturar).
 func TestNotifyPreCompactCapture_MissingFields_NeverCallsDaemon(t *testing.T) {
 	called := false
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -64,10 +83,22 @@ func TestNotifyPreCompactCapture_MissingFields_NeverCallsDaemon(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	notifyPreCompactCapture(ts.URL, hooks.Input{SessionID: "", TranscriptPath: "x.jsonl"})
-	notifyPreCompactCapture(ts.URL, hooks.Input{SessionID: "s1", TranscriptPath: ""})
+	if got := notifyPreCompactCapture(ts.URL, hooks.Input{SessionID: "", TranscriptPath: "x.jsonl"}); !got {
+		t.Error("sin session_id debería devolver true (nada que capturar)")
+	}
+	if got := notifyPreCompactCapture(ts.URL, hooks.Input{SessionID: "s1", TranscriptPath: ""}); !got {
+		t.Error("sin transcript_path debería devolver true (nada que capturar)")
+	}
 
 	if called {
 		t.Error("no debería haber llamado al daemon sin session_id o transcript_path")
 	}
+}
+
+// TestRunLocalPreCompactCaptureFallback_MissingFields_NoopSinPanic confirma
+// que el fallback local es seguro llamarlo con datos incompletos (mismo
+// guard que notifyPreCompactCapture) — no debe panicar ni intentar nada.
+func TestRunLocalPreCompactCaptureFallback_MissingFields_NoopSinPanic(t *testing.T) {
+	runLocalPreCompactCaptureFallback(config.Config{}, nil, hooks.Input{SessionID: "", TranscriptPath: "x.jsonl"})
+	runLocalPreCompactCaptureFallback(config.Config{}, nil, hooks.Input{SessionID: "s1", TranscriptPath: ""})
 }
