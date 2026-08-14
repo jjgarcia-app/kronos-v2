@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jjgarcia-app/kronos-v2/internal/config"
 	"github.com/jjgarcia-app/kronos-v2/internal/llm"
 )
 
@@ -40,7 +41,7 @@ func TestHandlePreCompactCapture_RespondsImmediately_WithoutWaitingForLLM(t *tes
 	defer slowOllama.Close()
 
 	srv, ts := newTestServer(t, "")
-	srv.SetCaptureLLM(llm.NewClient(slowOllama.URL, "llama3.2:1b"))
+	srv.SetCaptureLLM(llm.NewClient(slowOllama.URL, "llama3.2:1b"), config.Config{})
 
 	transcriptPath := filepath.Join(t.TempDir(), "t.jsonl")
 	_ = os.WriteFile(transcriptPath, []byte(`{"type":"user","message":{"role":"user","content":"algo"}}`+"\n"), 0o644)
@@ -93,7 +94,7 @@ func TestHandlePreCompactCapture_EndToEnd_SavesObservationAsync(t *testing.T) {
 	defer ollama.Close()
 
 	srv, ts := newTestServer(t, "")
-	srv.SetCaptureLLM(llm.NewClient(ollama.URL, "llama3.2:1b"))
+	srv.SetCaptureLLM(llm.NewClient(ollama.URL, "llama3.2:1b"), config.Config{})
 
 	ctx := context.Background()
 	if _, err := srv.st.CreateSession(ctx, "s1", "proj", "/tmp"); err != nil {

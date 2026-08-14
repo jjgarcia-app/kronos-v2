@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jjgarcia-app/kronos-v2/internal/config"
 	"github.com/jjgarcia-app/kronos-v2/internal/embeddings"
 	"github.com/jjgarcia-app/kronos-v2/internal/llm"
 	"github.com/jjgarcia-app/kronos-v2/internal/project"
@@ -59,11 +60,15 @@ type Server struct {
 	st         store.Storer
 	vs         *embeddings.VectorStore
 	captureLLM *llm.Client
-	port       int
-	token      string
-	mux        *http.ServeMux
-	limiter    *rateLimiter
-	httpSrv    *http.Server
+	// captureLLMCfg y captureLLMMu habilitan reintentar la conexión a
+	// Ollama más tarde si el ping inicial falló — ver getCaptureLLM.
+	captureLLMCfg config.Config
+	captureLLMMu  sync.Mutex
+	port          int
+	token         string
+	mux           *http.ServeMux
+	limiter       *rateLimiter
+	httpSrv       *http.Server
 }
 
 // SetVectorStore conecta el vector store del daemon al endpoint
@@ -74,14 +79,39 @@ func (srv *Server) SetVectorStore(vs *embeddings.VectorStore) {
 	srv.vs = vs
 }
 
-// SetCaptureLLM conecta el cliente Ollama local al endpoint
-// /hooks/pre-compact-capture (ver internal/server/pre_compact_capture.go) —
-// opcional, seteado solo en modo daemon si Ollama respondió al ping. Sin
-// esto, el endpoint acepta la request pero no hace nada (RunPreCompactCapture
-// es no-op con llmClient nil) — misma degradación silenciosa que el resto
-// de las features que dependen de Ollama.
-func (srv *Server) SetCaptureLLM(c *llm.Client) {
+// SetCaptureLLM conecta el cliente Ollama local a los endpoints que hacen
+// captura pasiva (/hooks/pre-compact-capture, ver pre_compact_capture.go) y
+// digest corriente de sesión (/hooks/prompt-submit, ver prompt_submit.go) —
+// opcional, seteado solo en modo daemon. c puede ser nil si Ollama no
+// respondió al ping en el arranque del daemon; cfg se guarda para que
+// getCaptureLLM pueda reintentar la conexión más tarde sin necesitar
+// reiniciar el daemon a mano.
+//
+// Bug real encontrado en vivo: antes, si el ping fallaba una sola vez al
+// arrancar (Docker Desktop todavía inicializando, por ejemplo), captureLLM
+// quedaba en nil PARA SIEMPRE mientras ese daemon viviera — la captura
+// pasiva y el digest de sesión se rompían en silencio incluso después de
+// que Ollama se recuperara, sin ningún aviso, hasta que alguien reiniciara
+// el daemon manualmente.
+func (srv *Server) SetCaptureLLM(c *llm.Client, cfg config.Config) {
+	srv.captureLLMMu.Lock()
+	defer srv.captureLLMMu.Unlock()
 	srv.captureLLM = c
+	srv.captureLLMCfg = cfg
+}
+
+// getCaptureLLM devuelve el cliente Ollama cacheado si ya está sano, o
+// reintenta construirlo (mismo ping de 2s que NewOllamaFromConfig) si la
+// última vez no había respondido — self-healing sin depender de que
+// alguien reinicie el daemon después de que Ollama se recupera.
+func (srv *Server) getCaptureLLM(ctx context.Context) *llm.Client {
+	srv.captureLLMMu.Lock()
+	defer srv.captureLLMMu.Unlock()
+	if srv.captureLLM != nil {
+		return srv.captureLLM
+	}
+	srv.captureLLM = llm.NewOllamaFromConfig(ctx, srv.captureLLMCfg)
+	return srv.captureLLM
 }
 
 // New crea un Server listo para arrancar.
