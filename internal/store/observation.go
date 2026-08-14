@@ -113,6 +113,15 @@ func (s *Store) SaveObservation(ctx context.Context, p SaveParams) (*Observation
 	return s.GetObservation(ctx, id)
 }
 
+// GetByTopicKey busca una observación por su topic_key dentro de un
+// proyecto — mismo choque de upsert que usa SaveObservation, expuesto para
+// callers que necesitan leer (no solo escribir) el estado actual de un
+// topic_key, ej. el digest corriendo de una sesión (ver internal/hooks).
+// nil, nil si no existe.
+func (s *Store) GetByTopicKey(ctx context.Context, project, topicKey string) (*Observation, error) {
+	return s.getByTopicKey(ctx, project, topicKey)
+}
+
 func (s *Store) GetObservation(ctx context.Context, id int64) (*Observation, error) {
 	row := s.queryRow(ctx,
 		`SELECT id, sync_id, session_id, type, title, content, tool_name, project, scope, topic_key,

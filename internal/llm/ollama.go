@@ -210,6 +210,101 @@ func (c *Client) ExtractFinding(ctx context.Context, excerpt string) (*Finding, 
 	return &f, nil
 }
 
+// DigestUpdate is the result of UpdateDigest — the running session summary
+// after folding in the new excerpt (may be identical to the previous
+// version if nothing substantive happened since).
+type DigestUpdate struct {
+	Content string `json:"content"`
+}
+
+// UpdateDigest asks the local LLM to extend a running per-session summary
+// with whatever new, concrete work shows up in a fresh transcript excerpt —
+// the periodic counterpart to ExtractFinding's one-shot "is this excerpt
+// worth saving" judgment. Called on an interval while a session is still
+// going (see internal/hooks.MaybeUpdateDigest), not just once at the end,
+// so mem_search/mem_context have a running thread of what's been worked on
+// without depending on the agent remembering to call mem_save.
+//
+// Returns (nil, nil) on any failure or empty response — same fail-open
+// contract as ExtractFinding/JudgeRelation.
+func (c *Client) UpdateDigest(ctx context.Context, previousDigest, excerpt string) (*DigestUpdate, error) {
+	prompt := buildDigestPrompt(previousDigest, excerpt)
+
+	payload, err := json.Marshal(map[string]any{
+		"model":  c.model,
+		"prompt": prompt,
+		"stream": false,
+		"format": "json",
+		"options": map[string]any{
+			"temperature": 0.1,
+			"num_predict": 600,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+"/api/generate", bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("ollama unavailable: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("ollama returned status %d", resp.StatusCode)
+	}
+
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read ollama response: %w", err)
+	}
+
+	var outer struct {
+		Response string `json:"response"`
+	}
+	if err := json.Unmarshal(raw, &outer); err != nil {
+		return nil, fmt.Errorf("parse ollama wrapper: %w", err)
+	}
+
+	var d DigestUpdate
+	if err := json.Unmarshal([]byte(outer.Response), &d); err != nil {
+		return nil, fmt.Errorf("parse llm digest: %w", err)
+	}
+	if strings.TrimSpace(d.Content) == "" {
+		return nil, nil
+	}
+	return &d, nil
+}
+
+func buildDigestPrompt(previousDigest, excerpt string) string {
+	prior := "No hay resumen previo — esta es la primera actualización."
+	if strings.TrimSpace(previousDigest) != "" {
+		prior = fmt.Sprintf("Resumen previo:\n---\n%s\n---", truncate(previousDigest, 3000))
+	}
+
+	return fmt.Sprintf(`You maintain a running summary of an ongoing coding session for a persistent memory system — so that later, anyone (or any agent) querying memory gets a real answer to "what has been worked on here", without re-reading the full transcript.
+
+%s
+
+New transcript excerpt since the last update (oldest first):
+---
+%s
+---
+
+Extend the summary with anything new and concrete from this excerpt: what was investigated, decided, fixed, or built. Keep it dense — short bullet points, no filler, no restating obvious code. Preserve earlier content that's still relevant; drop anything superseded by newer information. If truly nothing new and substantive happened (small talk, routine back-and-forth with no real progress), return the previous summary completely unchanged.
+
+Respond ONLY with valid JSON (no markdown, no explanation outside JSON):
+{"content": "<updated running summary, plain text with line breaks, en español>"}`,
+		prior, truncate(excerpt, 6000),
+	)
+}
+
 func buildExtractPrompt(excerpt string) string {
 	return fmt.Sprintf(`You are screening a coding-session transcript excerpt for a persistent memory system, right before the conversation context gets compacted (destroyed).
 
