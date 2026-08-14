@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jjgarcia-app/kronos-v2/internal/config"
 	"github.com/jjgarcia-app/kronos-v2/internal/llm"
 	"github.com/jjgarcia-app/kronos-v2/internal/project"
 	"github.com/jjgarcia-app/kronos-v2/internal/store"
@@ -33,7 +34,7 @@ func TestHandlePromptSubmit_TriggersDigestUpdate(t *testing.T) {
 		})
 	}))
 	defer llmSrv.Close()
-	srv.SetCaptureLLM(llm.NewClient(llmSrv.URL, "llama3.2:1b"))
+	srv.SetCaptureLLM(llm.NewClient(llmSrv.URL, "llama3.2:1b"), config.Config{})
 
 	cwd := t.TempDir()
 	st, ok := srv.st.(*store.Store)

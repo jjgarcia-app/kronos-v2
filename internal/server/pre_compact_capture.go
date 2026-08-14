@@ -37,8 +37,14 @@ func (srv *Server) handlePreCompactCapture(w http.ResponseWriter, r *http.Reques
 	if in.SessionID == "" || in.TranscriptPath == "" {
 		return
 	}
-	st, llmClient := srv.st, srv.captureLLM
+	st := srv.st
 	go func() {
-		_ = hooks.RunPreCompactCapture(context.Background(), st, llmClient, in.SessionID, in.TranscriptPath, in.CWD)
+		ctx := context.Background()
+		// getCaptureLLM adentro de la goroutine, no antes de responder:
+		// si el cliente cacheado es nil y hace falta reintentar el ping
+		// (ver Server.getCaptureLLM), ese reintento no debe demorar la
+		// respuesta 202 de la request que disparó esto.
+		llmClient := srv.getCaptureLLM(ctx)
+		_ = hooks.RunPreCompactCapture(ctx, st, llmClient, in.SessionID, in.TranscriptPath, in.CWD)
 	}()
 }

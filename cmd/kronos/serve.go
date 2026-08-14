@@ -111,7 +111,7 @@ func runServeWithStop(stopCh <-chan struct{}, args ...string) error {
 		// provider tenga configurado el judge de relaciones — la captura
 		// pasiva manda texto de la conversación a un LLM y eso debe quedarse
 		// local por default (ver internal/llm.NewOllamaFromConfig).
-		hs.SetCaptureLLM(llm.NewOllamaFromConfig(ctx, cfg))
+		hs.SetCaptureLLM(llm.NewOllamaFromConfig(ctx, cfg), cfg)
 	}
 	if err := hs.Start(); err != nil {
 		if daemonMode {

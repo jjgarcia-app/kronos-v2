@@ -55,11 +55,15 @@ func (srv *Server) handlePromptSubmit(w http.ResponseWriter, r *http.Request) {
 	// spawnear una goroutine + tocar el LLM client en CADA prompt cuando la
 	// gran mayoría de las veces todavía no corresponde actualizar.
 	if in.SessionID != "" && in.TranscriptPath != "" && hooks.IsDigestDue(r.Context(), srv.st, in.SessionID, in.CWD) {
-		st, llmClient := srv.st, srv.captureLLM
+		st := srv.st
 		sessionID, transcriptPath, cwd := in.SessionID, in.TranscriptPath, in.CWD
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), digestUpdateTimeout)
 			defer cancel()
+			// getCaptureLLM adentro de la goroutine — si hace falta
+			// reintentar el ping a Ollama (ver Server.getCaptureLLM), ese
+			// costo no debe demorar nada del lado de la request original.
+			llmClient := srv.getCaptureLLM(ctx)
 			_ = hooks.MaybeUpdateDigest(ctx, st, llmClient, sessionID, transcriptPath, cwd)
 		}()
 	}
