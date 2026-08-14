@@ -152,32 +152,55 @@ func scanSearchResult(row interface{ Scan(dest ...any) error }) (*SearchResult, 
 
 // sanitizeFTSQuery limpia el query para evitar errores de sintaxis FTS5.
 //
-// Si el caller ya usa sintaxis FTS5 explícita (comillas, operadores booleanos,
-// wildcards, agrupación), se respeta tal cual. En caso contrario, cada término
-// separado por espacios se encierra en comillas por separado y se unen con AND:
-// esto neutraliza caracteres que romperían el parser de FTS5 (p.ej. el "." en
-// "Modal.confirm") y busca "el documento contiene todos estos términos" en vez
-// de una frase exacta contigua, que casi nunca matchea contra prosa real.
+// Si el caller ya usa comillas, wildcards o agrupación explícitas, se
+// respeta tal cual — son señales inequívocas de sintaxis FTS5 deliberada.
+// En cualquier otro caso, cada término se encierra en comillas por
+// separado — incluido un término como "AT-441": el parser de queries de
+// FTS5 (distinto del tokenizer que indexa el contenido) corta un bareword
+// sin comillas en el primer "-", así que "AT-441" sin comillas se lee como
+// "AT" seguido del operador NOT aplicado a "441", y en ciertas
+// combinaciones (ej. con OR) esto rompe con "no such column: 441" en vez
+// de buscar. Encerrarlo en comillas lo vuelve una frase de 2 tokens ("at"
+// "441", mismo corte que aplica el tokenizer al indexar) en vez de
+// sintaxis de operadores.
+//
+// Antes esto se saltaba enteramente la sanitización si el query contenía
+// " OR "/" AND "/" NOT " como texto — asumiendo que eso significaba
+// "sintaxis FTS5 avanzada, no tocar". Bug real: un query normal como
+// "AT-441 OR AT-442 agrupar subcontratos" (búsqueda con múltiples tickets,
+// nada de FTS5 avanzado) calificaba igual y rompía. Ahora los operadores
+// booleanos (OR/AND/NOT, mayúsculas exactas — así los reconoce FTS5) se
+// preservan como operadores; todo lo demás se sanea término por término,
+// sin importar si aparecen mezclados con operadores o no.
 func sanitizeFTSQuery(q string) string {
 	q = strings.TrimSpace(q)
 	if q == "" {
 		return q
 	}
-	if strings.ContainsAny(q, `"*^()`) || strings.Contains(q, " OR ") || strings.Contains(q, " AND ") || strings.Contains(q, " NOT ") {
+	if strings.ContainsAny(q, `"*^()`) {
 		return q
 	}
 
 	terms := strings.Fields(q)
-	quoted := make([]string, 0, len(terms))
+	parts := make([]string, 0, len(terms))
 	for _, t := range terms {
-		t = strings.ReplaceAll(t, `"`, "")
-		if t == "" {
-			continue
+		switch t {
+		case "OR", "AND", "NOT":
+			parts = append(parts, t)
+		default:
+			t = strings.ReplaceAll(t, `"`, "")
+			if t == "" {
+				continue
+			}
+			parts = append(parts, fmt.Sprintf(`"%s"`, t))
 		}
-		quoted = append(quoted, fmt.Sprintf(`"%s"`, t))
 	}
-	if len(quoted) == 0 {
+	if len(parts) == 0 {
 		return q
 	}
-	return strings.Join(quoted, " AND ")
+	// Espacio simple, no " AND " — entre dos frases entre comillas sin
+	// operador de por medio, FTS5 ya aplica AND implícito por default;
+	// insertar "AND" a mano acá rompería justo al lado de un OR/AND/NOT
+	// explícito que ya vino en parts (ej. `"a" AND OR "b"`, inválido).
+	return strings.Join(parts, " ")
 }
