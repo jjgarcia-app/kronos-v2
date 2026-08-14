@@ -493,7 +493,7 @@ func checkDockerAvailable(ctx context.Context) error {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "docker", "info")
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("Docker Desktop no está corriendo (docker info falló: %s) — arrancá Docker Desktop y reintentá", strings.TrimSpace(string(out)))
+		return fmt.Errorf("docker desktop no está corriendo (docker info falló: %s) — arrancá Docker Desktop y reintentá", strings.TrimSpace(string(out)))
 	}
 	return nil
 }
