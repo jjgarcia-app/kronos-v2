@@ -324,6 +324,19 @@ func (d *DualStore) GetObservation(ctx context.Context, id int64) (*Observation,
 	return d.buffer.GetObservation(ctx, id)
 }
 
+func (d *DualStore) GetByTopicKey(ctx context.Context, project, topicKey string) (*Observation, error) {
+	if !d.isPrimaryDown() {
+		obs, err := d.primary.GetByTopicKey(ctx, project, topicKey)
+		if err == nil && obs != nil {
+			return obs, nil
+		}
+		if err != nil {
+			d.markDown()
+		}
+	}
+	return d.buffer.GetByTopicKey(ctx, project, topicKey)
+}
+
 func (d *DualStore) ListObservations(ctx context.Context, project string, limit, offset int) ([]*Observation, error) {
 	if !d.isPrimaryDown() {
 		obs, err := d.primary.ListObservations(ctx, project, limit, offset)

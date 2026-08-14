@@ -17,6 +17,10 @@ type Storer interface {
 	ListAll(ctx context.Context, project string) ([]*Observation, error)
 	ListSessionObservations(ctx context.Context, sessionID string) ([]*Observation, error)
 	SavePassive(ctx context.Context, sessionID, project, content string) (*Observation, error)
+	// GetByTopicKey busca por topic_key — usado por el digest corriente de
+	// sesión (ver internal/hooks) para leer la versión previa antes de
+	// pedirle al LLM que la extienda.
+	GetByTopicKey(ctx context.Context, project, topicKey string) (*Observation, error)
 
 	CreateSession(ctx context.Context, id, project, directory string) (*Session, error)
 	EndSession(ctx context.Context, id, summary string) error

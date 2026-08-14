@@ -148,7 +148,21 @@ func runPromptSubmitHook(reason string) error {
 		vsCancel()
 	}
 
-	return hooks.RunPromptSubmit(context.Background(), in, st, vs, os.Stdout)
+	runErr := hooks.RunPromptSubmit(context.Background(), in, st, vs, os.Stdout)
+
+	// Digest corriente de la sesión — cuando el daemon no responde, este
+	// proceso corto es lo único que va a intentar actualizarlo. IsDigestDue
+	// primero (barato, sin LLM) para no pagar el ping a Ollama de
+	// llm.NewOllamaFromConfig en CADA prompt cuando casi siempre todavía no
+	// corresponde.
+	if hooks.IsDigestDue(context.Background(), st, in.SessionID, in.CWD) {
+		digestCtx, cancel := context.WithTimeout(context.Background(), preCompactCaptureLocalFallbackTimeout)
+		llmClient := llm.NewOllamaFromConfig(digestCtx, cfg)
+		_ = hooks.MaybeUpdateDigest(digestCtx, st, llmClient, in.SessionID, in.TranscriptPath, in.CWD)
+		cancel()
+	}
+
+	return runErr
 }
 
 // tryDaemonPromptSubmit devuelve true si el daemon respondió OK (ya escribió

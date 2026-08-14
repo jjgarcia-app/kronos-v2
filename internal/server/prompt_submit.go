@@ -2,11 +2,21 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/jjgarcia-app/kronos-v2/internal/hooks"
 )
+
+// digestUpdateTimeout acota el trabajo de actualizar el digest corriente de
+// la sesión (leer transcript + juzgar con el LLM local) — corre en una
+// goroutine desacoplada de la request HTTP que lo disparó (mismo patrón que
+// pre-compact-capture, ver pre_compact_capture.go), así que esto nunca
+// demora la respuesta real de UserPromptSubmit. El límite es solo para que
+// un Ollama colgado no deje goroutines huérfanas corriendo para siempre.
+const digestUpdateTimeout = 30 * time.Second
 
 // handlePromptSubmit procesa el hook UserPromptSubmit usando el store y
 // vector store YA ABIERTOS del daemon compartido, en vez de que cada
@@ -39,4 +49,18 @@ func (srv *Server) handlePromptSubmit(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(buf.Bytes())
+
+	// Digest corriente de la sesión: chequeo barato (sin tocar el LLM) antes
+	// de decidir si vale la pena lanzar la goroutine — IsDigestDue evita
+	// spawnear una goroutine + tocar el LLM client en CADA prompt cuando la
+	// gran mayoría de las veces todavía no corresponde actualizar.
+	if in.SessionID != "" && in.TranscriptPath != "" && hooks.IsDigestDue(r.Context(), srv.st, in.SessionID, in.CWD) {
+		st, llmClient := srv.st, srv.captureLLM
+		sessionID, transcriptPath, cwd := in.SessionID, in.TranscriptPath, in.CWD
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), digestUpdateTimeout)
+			defer cancel()
+			_ = hooks.MaybeUpdateDigest(ctx, st, llmClient, sessionID, transcriptPath, cwd)
+		}()
+	}
 }
