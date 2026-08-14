@@ -15,6 +15,7 @@ import (
 	"github.com/jjgarcia-app/kronos-v2/internal/config"
 	"github.com/jjgarcia-app/kronos-v2/internal/embeddings"
 	"github.com/jjgarcia-app/kronos-v2/internal/hooks"
+	"github.com/jjgarcia-app/kronos-v2/internal/llm"
 	"github.com/jjgarcia-app/kronos-v2/internal/platform"
 	"github.com/jjgarcia-app/kronos-v2/internal/store"
 )
@@ -188,13 +189,32 @@ const preCompactCaptureDaemonURL = "http://127.0.0.1:4317/hooks/pre-compact-capt
 // antes de lanzar la goroutine, ver internal/server/pre_compact_capture.go).
 const preCompactCaptureDispatchTimeout = 500 * time.Millisecond
 
+// preCompactCaptureLocalFallbackTimeout acota el fallback local (leer
+// transcript + juzgar con Ollama) cuando el daemon no respondió — a
+// diferencia del dispatch al daemon, este SÍ corre en este mismo proceso
+// antes de que termine, así que si no se acota puede demorar la
+// compactación de Claude Code indefinidamente si Ollama está colgado.
+// 15s: generoso para un modelo local chico (llama3.2:1b) sobre ~4000
+// caracteres de transcript, corto comparado con el costo real de perder la
+// captura en silencio.
+const preCompactCaptureLocalFallbackTimeout = 15 * time.Second
+
 // runPreCompactHook corre el aviso local de siempre (RunPreCompact, rápido,
-// nunca debe demorar la compactación de Claude Code) y AL LADO — sin
-// bloquear ni depender de su resultado — le avisa al daemon compartido para
-// que intente una captura pasiva del hallazgo vía LLM local. Si el daemon no
-// responde en preCompactCaptureDispatchTimeout (caído, ocupado), el aviso se
-// descarta en silencio: es una mejora best-effort, no una dependencia dura,
-// mismo contrato que runPromptSubmitHook.
+// nunca debe demorar la compactación de Claude Code) y AL LADO le avisa al
+// daemon compartido para que intente una captura pasiva del hallazgo vía LLM
+// local.
+//
+// Bug real encontrado en producción: si el daemon no respondía a tiempo
+// (reiniciando, ocupado — pasa seguido durante actualizaciones de kronos,
+// varias en la misma sesión de trabajo), la captura se descartaba en
+// silencio para siempre, sin reintento ni fallback — la sesión terminaba
+// compactada sin que quedara ningún registro de lo investigado, aunque el
+// mecanismo de captura pasiva existiera y funcionara. Ahora, si el dispatch
+// al daemon falla, este mismo proceso corre RunPreCompactCapture localmente
+// (mismo store ya abierto, LLM Ollama construido acá) antes de salir — más
+// lento que el camino feliz (daemon sano, ver preCompactCaptureDaemonURL),
+// pero nunca pierde la captura solo porque el daemon estaba ocupado en ese
+// instante.
 func runPreCompactHook(reason string) error {
 	data, err := io.ReadAll(os.Stdin)
 	if err != nil {
@@ -224,16 +244,21 @@ func runPreCompactHook(reason string) error {
 	defer st.Close()
 
 	runErr := hooks.RunPreCompact(context.Background(), in, st)
-	notifyPreCompactCapture(preCompactCaptureDaemonURL, in)
+
+	if !notifyPreCompactCapture(preCompactCaptureDaemonURL, in) {
+		runLocalPreCompactCaptureFallback(cfg, st, in)
+	}
+
 	return runErr
 }
 
-// notifyPreCompactCapture dispara el aviso fire-and-forget — nunca devuelve
-// error al caller, un daemon caído/lento no debe ensuciar la salida de
-// PreCompact ni bloquear un solo milisegundo de más.
-func notifyPreCompactCapture(url string, in hooks.Input) {
+// notifyPreCompactCapture dispara el aviso al daemon — devuelve true si el
+// daemon aceptó la request (202) antes de preCompactCaptureDispatchTimeout,
+// false ante cualquier falla (caído, ocupado, timeout), sin importar la
+// causa — el caller decide si vale la pena el fallback local.
+func notifyPreCompactCapture(url string, in hooks.Input) bool {
 	if in.SessionID == "" || in.TranscriptPath == "" {
-		return
+		return true // nada que capturar — no hace falta fallback tampoco
 	}
 	payload, err := json.Marshal(map[string]string{
 		"session_id":      in.SessionID,
@@ -241,11 +266,11 @@ func notifyPreCompactCapture(url string, in hooks.Input) {
 		"cwd":             in.CWD,
 	})
 	if err != nil {
-		return
+		return true // payload inválido — el fallback local fallaría igual, no insistir
 	}
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
-		return
+		return true
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if cfg, _ := config.Load(); cfg.APIToken != "" {
@@ -254,9 +279,23 @@ func notifyPreCompactCapture(url string, in hooks.Input) {
 	client := &http.Client{Timeout: preCompactCaptureDispatchTimeout}
 	resp, err := client.Do(req)
 	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == http.StatusAccepted
+}
+
+// runLocalPreCompactCaptureFallback replica lo que hace el daemon
+// (internal/server/pre_compact_capture.go) pero en este mismo proceso,
+// síncrono — solo se llama cuando el daemon no respondió.
+func runLocalPreCompactCaptureFallback(cfg config.Config, st store.Storer, in hooks.Input) {
+	if in.SessionID == "" || in.TranscriptPath == "" {
 		return
 	}
-	resp.Body.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), preCompactCaptureLocalFallbackTimeout)
+	defer cancel()
+	llmClient := llm.NewOllamaFromConfig(ctx, cfg)
+	_ = hooks.RunPreCompactCapture(ctx, st, llmClient, in.SessionID, in.TranscriptPath, in.CWD)
 }
 
 // parseReason extracts the reason value from remaining args.
