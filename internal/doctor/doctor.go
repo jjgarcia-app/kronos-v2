@@ -472,20 +472,101 @@ func fixDatabase(ctx context.Context, cfg config.Config, progress chan<- string)
 	return nil
 }
 
+// dockerCLITimeout acota cada comando docker individual (info/inspect/
+// start/run) — nada de esto debería tardar más que unos segundos en
+// condiciones normales; sin límite, un Docker Desktop colgado (no caído,
+// colgado) puede dejar `kronos doctor --fix` esperando indefinidamente.
+const dockerCLITimeout = 10 * time.Second
+
+// checkDockerAvailable distingue las dos causas reales por las que
+// cualquier comando docker puede fallar — antes ambas terminaban en el
+// mismo error crudo de "docker run", sin decir cuál era: el CLI de docker
+// no instalado (raro), vs. instalado pero el daemon/Docker Desktop no está
+// corriendo (el caso real que motivó este fix — Postgres Y Ollama caídos
+// juntos porque Docker Desktop no había arrancado, no porque cada
+// contenedor individualmente fallara).
+func checkDockerAvailable(ctx context.Context) error {
+	if _, err := exec.LookPath("docker"); err != nil {
+		return fmt.Errorf("docker no está instalado — instalá Docker Desktop: https://www.docker.com/products/docker-desktop")
+	}
+	ctx, cancel := context.WithTimeout(ctx, dockerCLITimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "docker", "info")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("docker desktop no está corriendo (docker info falló: %s) — arrancá Docker Desktop y reintentá", strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// dockerContainerRunning reporta si un contenedor existe y si está
+// corriendo — "existe" y "corre" son dos preguntas distintas a propósito:
+// determina si corresponde `docker start` (ya existe, solo hay que
+// levantarlo) o `docker run` (crearlo desde cero la primera vez). Antes
+// esto siempre usaba `docker run`, que falla con "el nombre ya está en
+// uso" si el contenedor ya existía de una corrida anterior — un error que
+// tapaba la causa real (Docker Desktop caído) con uno secundario y
+// confuso.
+func dockerContainerRunning(ctx context.Context, name string) (exists, running bool) {
+	ctx, cancel := context.WithTimeout(ctx, dockerCLITimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "docker", "inspect", "--format", "{{.State.Running}}", name)
+	out, err := cmd.Output()
+	if err != nil {
+		return false, false // no existe (o docker no responde — ya se chequeó antes)
+	}
+	return true, strings.TrimSpace(string(out)) == "true"
+}
+
+// dockerStartOrRun levanta un contenedor existente (docker start) o lo crea
+// si nunca existió (docker run con runArgs) — nunca crea uno nuevo cuando
+// ya hay uno parado con el mismo nombre.
+func dockerStartOrRun(ctx context.Context, name string, runArgs []string, progress chan<- string) error {
+	exists, running := dockerContainerRunning(ctx, name)
+	if running {
+		progress <- fmt.Sprintf("Contenedor %s ya estaba corriendo.", name)
+		return nil
+	}
+
+	runCtx, cancel := context.WithTimeout(ctx, dockerCLITimeout)
+	defer cancel()
+
+	if exists {
+		progress <- fmt.Sprintf("Contenedor %s existe pero está parado, iniciando (docker start)...", name)
+		out, err := exec.CommandContext(runCtx, "docker", "start", name).CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("docker start %s: %s: %w", name, strings.TrimSpace(string(out)), err)
+		}
+		progress <- fmt.Sprintf("Contenedor %s iniciado.", name)
+		return nil
+	}
+
+	out, err := exec.CommandContext(runCtx, "docker", runArgs...).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("docker run: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	progress <- fmt.Sprintf("Contenedor %s creado e iniciado.", name)
+	return nil
+}
+
 func fixPostgresDB(ctx context.Context, cfg config.Config, progress chan<- string) error {
+	if err := checkDockerAvailable(ctx); err != nil {
+		progress <- err.Error()
+		return err
+	}
 	progress <- "Iniciando PostgreSQL en Docker..."
-	cmd := exec.Command("docker", "run", "-d", "--name", "kronos-postgres",
+	err := dockerStartOrRun(ctx, "kronos-postgres", []string{
+		"run", "-d", "--name", "kronos-postgres",
 		"-e", "POSTGRES_PASSWORD=kronos",
 		"-e", "POSTGRES_DB=kronos",
 		"-p", "5432:5432",
-		"postgres:16-alpine")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		progress <- fmt.Sprintf("docker run: %s — %v", string(out), err)
-	} else {
-		progress <- "Contenedor kronos-postgres iniciado."
-		progress <- "DSN sugerido: postgres://postgres:kronos@localhost:5432/kronos"
-		progress <- "Configura con: kronos config set db.postgres_dsn postgres://postgres:kronos@localhost:5432/kronos"
+		"postgres:16-alpine",
+	}, progress)
+	if err != nil {
+		progress <- err.Error()
+		return err
 	}
+	progress <- "DSN sugerido: postgres://postgres:kronos@localhost:5432/kronos"
+	progress <- "Configura con: kronos config set db.postgres_dsn postgres://postgres:kronos@localhost:5432/kronos"
 	return nil
 }
 
@@ -496,13 +577,18 @@ func fixOllama(cfg config.Config, progress chan<- string) error {
 	}
 
 	if cfg.Embeddings.OllamaDocker {
+		ctx := context.Background()
+		if err := checkDockerAvailable(ctx); err != nil {
+			progress <- err.Error()
+			return err
+		}
 		progress <- "Iniciando Ollama en Docker..."
-		cmd := exec.Command("docker", "run", "-d", "--name", "kronos-ollama",
-			"-p", "11434:11434", "ollama/ollama")
-		if out, err := cmd.CombinedOutput(); err != nil {
-			progress <- fmt.Sprintf("docker run: %s — %v", string(out), err)
-		} else {
-			progress <- "Contenedor kronos-ollama iniciado."
+		if err := dockerStartOrRun(ctx, "kronos-ollama", []string{
+			"run", "-d", "--name", "kronos-ollama",
+			"-p", "11434:11434", "ollama/ollama",
+		}, progress); err != nil {
+			progress <- err.Error()
+			return err
 		}
 	} else if runtime.GOOS == "windows" {
 		progress <- "Descarga Ollama desde: https://ollama.com/download"
