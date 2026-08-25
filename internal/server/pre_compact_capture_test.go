@@ -126,11 +126,16 @@ func TestHandlePreCompactCapture_EndToEnd_SavesObservationAsync(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(obs) == 1 {
-			if obs[0].Title != "Hallazgo async de prueba" {
-				t.Errorf("Title = %q", obs[0].Title)
+		// La goroutine ahora también fuerza una actualización del digest
+		// (ver handlePreCompactCapture) — el stub de Ollama, sin discriminar
+		// por prompt, contesta el mismo JSON a ambas llamadas, así que un
+		// segundo observation (type=session, topic_key=session/s1) aparece
+		// además del hallazgo async. Se busca el hallazgo específico en vez
+		// de asumir len(obs)==1.
+		for _, o := range obs {
+			if o.Title == "Hallazgo async de prueba" {
+				return
 			}
-			return
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
