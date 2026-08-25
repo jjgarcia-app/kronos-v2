@@ -58,9 +58,16 @@ func IsDigestDue(ctx context.Context, st store.Storer, sessionID, cwd string) bo
 // sesión sigue activa — para que mem_search/mem_context encuentren en qué
 // se está trabajando sin depender de que el agente llame mem_save a mano.
 //
+// force salta el chequeo de digestUpdateInterval — usado desde PreCompact
+// (ver runPreCompactHook / handlePreCompactCapture): justo antes de que el
+// transcript completo desaparezca es el único momento donde vale la pena
+// pagar el round-trip al LLM aunque hayan pasado menos de 20min desde la
+// última actualización, para no perder en silencio el tramo final de
+// trabajo que todavía no se había resumido.
+//
 // Fail-open en cada paso: nunca debe interrumpir el hot path de
 // UserPromptSubmit por esto.
-func MaybeUpdateDigest(ctx context.Context, st store.Storer, llmClient *llm.Client, sessionID, transcriptPath, cwd string) error {
+func MaybeUpdateDigest(ctx context.Context, st store.Storer, llmClient *llm.Client, sessionID, transcriptPath, cwd string, force bool) error {
 	if llmClient == nil || sessionID == "" || transcriptPath == "" {
 		return nil
 	}
@@ -72,7 +79,7 @@ func MaybeUpdateDigest(ctx context.Context, st store.Storer, llmClient *llm.Clie
 	if err != nil {
 		return nil
 	}
-	if existing != nil && time.Since(existing.UpdatedAt) < digestUpdateInterval {
+	if !force && existing != nil && time.Since(existing.UpdatedAt) < digestUpdateInterval {
 		return nil // todavía no toca
 	}
 

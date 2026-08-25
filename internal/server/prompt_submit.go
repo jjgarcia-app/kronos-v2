@@ -64,7 +64,7 @@ func (srv *Server) handlePromptSubmit(w http.ResponseWriter, r *http.Request) {
 			// reintentar el ping a Ollama (ver Server.getCaptureLLM), ese
 			// costo no debe demorar nada del lado de la request original.
 			llmClient := srv.getCaptureLLM(ctx)
-			_ = hooks.MaybeUpdateDigest(ctx, st, llmClient, sessionID, transcriptPath, cwd)
+			_ = hooks.MaybeUpdateDigest(ctx, st, llmClient, sessionID, transcriptPath, cwd, false)
 		}()
 	}
 }

@@ -16,6 +16,12 @@ import (
 // HTTP que lo disparó. Así el hook de PreCompact nunca se demora esperando
 // esto, y la compactación de Claude Code no se retrasa un solo milisegundo
 // por esta feature.
+//
+// Además del juicio one-shot (RunPreCompactCapture), fuerza una
+// actualización del digest corriente de la sesión (MaybeUpdateDigest con
+// force=true) — sin esto, el tramo final de la conversación podía perderse
+// sin resumir si la compactación llegaba antes de que se cumplieran los
+// 20min normales de digestUpdateInterval.
 func (srv *Server) handlePreCompactCapture(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -46,5 +52,6 @@ func (srv *Server) handlePreCompactCapture(w http.ResponseWriter, r *http.Reques
 		// respuesta 202 de la request que disparó esto.
 		llmClient := srv.getCaptureLLM(ctx)
 		_ = hooks.RunPreCompactCapture(ctx, st, llmClient, in.SessionID, in.TranscriptPath, in.CWD)
+		_ = hooks.MaybeUpdateDigest(ctx, st, llmClient, in.SessionID, in.TranscriptPath, in.CWD, true)
 	}()
 }

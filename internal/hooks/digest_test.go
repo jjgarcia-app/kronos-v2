@@ -69,7 +69,7 @@ func TestMaybeUpdateDigest_NilLLMClient_NoOp(t *testing.T) {
 		`{"type":"user","message":{"role":"user","content":"investigando un bug real de verdad, con bastante texto para pasar el umbral mínimo del excerpt"}}`,
 	})
 
-	if err := hooks.MaybeUpdateDigest(ctx, st, nil, "s1", path, "/tmp/kronos-v2"); err != nil {
+	if err := hooks.MaybeUpdateDigest(ctx, st, nil, "s1", path, "/tmp/kronos-v2", false); err != nil {
 		t.Fatalf("no debería fallar con llmClient nil: %v", err)
 	}
 	obs, err := st.GetByTopicKey(ctx, "kronos-v2", "session/s1")
@@ -98,7 +98,7 @@ func TestMaybeUpdateDigest_FirstUpdate_CreatesDigest(t *testing.T) {
 	defer srv.Close()
 
 	llmClient := llm.NewClient(srv.URL, "llama3.2:1b")
-	if err := hooks.MaybeUpdateDigest(ctx, st, llmClient, "s1", path, "/tmp/kronos-v2"); err != nil {
+	if err := hooks.MaybeUpdateDigest(ctx, st, llmClient, "s1", path, "/tmp/kronos-v2", false); err != nil {
 		t.Fatalf("MaybeUpdateDigest: %v", err)
 	}
 
@@ -158,7 +158,7 @@ func TestMaybeUpdateDigest_ExtendsPreviousDigest_UpsertsSameRow(t *testing.T) {
 	defer srv.Close()
 
 	llmClient := llm.NewClient(srv.URL, "llama3.2:1b")
-	if err := hooks.MaybeUpdateDigest(ctx, st, llmClient, "s1", path, "/tmp/kronos-v2"); err != nil {
+	if err := hooks.MaybeUpdateDigest(ctx, st, llmClient, "s1", path, "/tmp/kronos-v2", false); err != nil {
 		t.Fatalf("MaybeUpdateDigest: %v", err)
 	}
 
@@ -207,11 +207,57 @@ func TestMaybeUpdateDigest_TooRecent_SkipsLLMCall(t *testing.T) {
 		`{"type":"user","message":{"role":"user","content":"texto de sobra para pasar el umbral mínimo del excerpt sin problema"}}`,
 	})
 	llmClient := llm.NewClient(srv.URL, "llama3.2:1b")
-	if err := hooks.MaybeUpdateDigest(ctx, st, llmClient, "s1", path, "/tmp/kronos-v2"); err != nil {
+	if err := hooks.MaybeUpdateDigest(ctx, st, llmClient, "s1", path, "/tmp/kronos-v2", false); err != nil {
 		t.Fatalf("MaybeUpdateDigest: %v", err)
 	}
 	if called {
 		t.Error("digest actualizado hace poco no debería haber llamado al LLM")
+	}
+}
+
+// TestMaybeUpdateDigest_Force_IgnoresInterval confirma el caso real que
+// motiva el parámetro force: PreCompact necesita que se actualice el
+// digest aunque hayan pasado menos de digestUpdateInterval desde la última
+// vez — es el único momento en que vale la pena el round-trip extra, porque
+// después de compactar el tramo sin resumir desaparece del transcript.
+func TestMaybeUpdateDigest_Force_IgnoresInterval(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	if _, err := st.SaveObservation(ctx, store.SaveParams{
+		Type: store.TypeSession, Title: "Resumen en curso de la sesión", Content: "- Ya arreglado esto",
+		Project: "kronos-v2", TopicKey: "session/s1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"response": `{"content":"- Ya arreglado esto\n- Encontrado otro bug justo antes de compactar"}`,
+		})
+	}))
+	defer srv.Close()
+
+	path := writeTestTranscript(t, []string{
+		`{"type":"user","message":{"role":"user","content":"encontré otro bug justo antes de compactar, en el módulo de exportación esta vez, tampoco es obvio a primera vista"}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":"era un problema de encoding en el CSV exportado — el fix fue forzar UTF-8 con BOM en el writer"}}`,
+	})
+	llmClient := llm.NewClient(srv.URL, "llama3.2:1b")
+	if err := hooks.MaybeUpdateDigest(ctx, st, llmClient, "s1", path, "/tmp/kronos-v2", true); err != nil {
+		t.Fatalf("MaybeUpdateDigest: %v", err)
+	}
+	if !called {
+		t.Error("force=true debería llamar al LLM aunque el digest sea reciente")
+	}
+
+	obs, err := st.GetByTopicKey(ctx, "kronos-v2", "session/s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(obs.Content, "justo antes de compactar") {
+		t.Errorf("Content no tiene la actualización forzada: %q", obs.Content)
 	}
 }
 
@@ -237,7 +283,7 @@ func TestMaybeUpdateDigest_LLMReturnsUnchanged_NoWrite(t *testing.T) {
 		`{"type":"user","message":{"role":"user","content":"charla intrascendente sin ningún avance real, solo para pasar el umbral mínimo"}}`,
 	})
 	llmClient := llm.NewClient(srv.URL, "llama3.2:1b")
-	if err := hooks.MaybeUpdateDigest(ctx, st, llmClient, "s1", path, "/tmp/kronos-v2"); err != nil {
+	if err := hooks.MaybeUpdateDigest(ctx, st, llmClient, "s1", path, "/tmp/kronos-v2", false); err != nil {
 		t.Fatalf("MaybeUpdateDigest: %v", err)
 	}
 
