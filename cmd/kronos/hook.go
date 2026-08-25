@@ -158,7 +158,7 @@ func runPromptSubmitHook(reason string) error {
 	if hooks.IsDigestDue(context.Background(), st, in.SessionID, in.CWD) {
 		digestCtx, cancel := context.WithTimeout(context.Background(), preCompactCaptureLocalFallbackTimeout)
 		llmClient := llm.NewOllamaFromConfig(digestCtx, cfg)
-		_ = hooks.MaybeUpdateDigest(digestCtx, st, llmClient, in.SessionID, in.TranscriptPath, in.CWD)
+		_ = hooks.MaybeUpdateDigest(digestCtx, st, llmClient, in.SessionID, in.TranscriptPath, in.CWD, false)
 		cancel()
 	}
 
@@ -301,7 +301,12 @@ func notifyPreCompactCapture(url string, in hooks.Input) bool {
 
 // runLocalPreCompactCaptureFallback replica lo que hace el daemon
 // (internal/server/pre_compact_capture.go) pero en este mismo proceso,
-// síncrono — solo se llama cuando el daemon no respondió.
+// síncrono — solo se llama cuando el daemon no respondió. Además del
+// juicio one-shot (RunPreCompactCapture), fuerza una actualización del
+// digest corriente de la sesión (force=true, ignora digestUpdateInterval)
+// — mismo motivo que en handlePreCompactCapture: justo antes de compactar
+// es el único momento donde vale la pena el round-trip extra al LLM aunque
+// todavía no toque por el umbral normal de 20min.
 func runLocalPreCompactCaptureFallback(cfg config.Config, st store.Storer, in hooks.Input) {
 	if in.SessionID == "" || in.TranscriptPath == "" {
 		return
@@ -310,6 +315,7 @@ func runLocalPreCompactCaptureFallback(cfg config.Config, st store.Storer, in ho
 	defer cancel()
 	llmClient := llm.NewOllamaFromConfig(ctx, cfg)
 	_ = hooks.RunPreCompactCapture(ctx, st, llmClient, in.SessionID, in.TranscriptPath, in.CWD)
+	_ = hooks.MaybeUpdateDigest(ctx, st, llmClient, in.SessionID, in.TranscriptPath, in.CWD, true)
 }
 
 // parseReason extracts the reason value from remaining args.
