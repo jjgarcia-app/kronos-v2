@@ -171,28 +171,88 @@ func TestRunSessionStart_EmptySessionID_NoSessionIDLine(t *testing.T) {
 	}
 }
 
-func TestRunSessionStart_NormalStart_NoObsContent(t *testing.T) {
+// TestRunSessionStart_NormalStart_InjectsRecentObs confirma el fix del bug
+// real encontrado en vivo el 2026-09-03: antes, un arranque normal (resume/
+// startup/clear — cualquier reason distinto de "compact") no inyectaba
+// ningún contenido real, solo el aviso genérico de "llamá mem_search" — la
+// propia sesión de trabajo de kronos-v2 llevaba 20 días sin que su digest se
+// mostrara en ningún resume por esta razón exacta. Ahora un arranque normal
+// también inyecta contenido real, igual que post-compactación.
+func TestRunSessionStart_NormalStart_InjectsRecentObs(t *testing.T) {
+	setupTempDataDir(t)
 	st := newTestStore(t)
 	ctx := context.Background()
 
+	// project.Detect(cwd) es lo que RunSessionStart usa de verdad para
+	// resolver el nombre del proyecto — no coincide con un literal
+	// "kronos-v2" en toda plataforma (en CI Linux/macOS, un path estilo
+	// Windows resuelve distinto), así que se resuelve una vez y se reusa acá
+	// y en el input.
+	cwd := t.TempDir()
+	projName := project.Detect(cwd).Name
+
 	st.SaveObservation(ctx, store.SaveParams{
 		Type:    store.TypeDecision,
-		Title:   "secret content observation",
-		Content: "this content must NOT appear in normal start output",
-		Project: "kronos-v2",
+		Title:   "observación real de arranque normal",
+		Content: "esto SÍ debe aparecer en un arranque normal, no solo post-compactación",
+		Project: projName,
 	})
 
 	in := hooks.Input{
-		SessionID: "sess-no-content",
-		CWD:       "C:\\Users\\Jerry\\kronos-v2",
+		SessionID: "sess-with-content",
+		CWD:       cwd,
 	}
 
 	out := captureStdout(t, func() {
 		hooks.RunSessionStart(ctx, in, st)
 	})
 
-	if strings.Contains(out, "this content must NOT appear") {
-		t.Errorf("observation content leaked into normal start output: %q", out)
+	if !strings.Contains(out, "esto SÍ debe aparecer") {
+		t.Errorf("un arranque normal debería inyectar observaciones recientes, igual que post-compactación: %q", out)
+	}
+}
+
+// TestRunSessionStart_NormalStart_PrioritizesOwnSessionDigest confirma que,
+// si esta sesión ya tiene un digest corriente (ver internal/hooks/digest.go),
+// se muestra ese digest — es el hilo de continuidad real de ESTA
+// conversación, más útil que la observación más reciente de cualquier otra
+// sesión del proyecto.
+func TestRunSessionStart_NormalStart_PrioritizesOwnSessionDigest(t *testing.T) {
+	setupTempDataDir(t)
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	cwd := t.TempDir()
+	projName := project.Detect(cwd).Name
+
+	if _, err := st.CreateSession(ctx, "sess-own-digest", projName, cwd); err != nil {
+		t.Fatal(err)
+	}
+
+	// Observación reciente de OTRA sesión — no debería ganarle al digest propio.
+	st.SaveObservation(ctx, store.SaveParams{
+		Type: store.TypeDecision, Title: "obs de otra sesión", Content: "contenido de otra sesión",
+		Project: projName,
+	})
+	if _, err := st.SaveObservation(ctx, store.SaveParams{
+		Type: store.TypeSession, Title: "Resumen en curso de la sesión",
+		Content: "digest propio de esta sesión, debe salir primero", Project: projName,
+		SessionID: "sess-own-digest", TopicKey: "session/sess-own-digest",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	in := hooks.Input{
+		SessionID: "sess-own-digest",
+		CWD:       cwd,
+	}
+
+	out := captureStdout(t, func() {
+		hooks.RunSessionStart(ctx, in, st)
+	})
+
+	if !strings.Contains(out, "digest propio de esta sesión") {
+		t.Errorf("debería inyectar el digest de la sesión propia: %q", out)
 	}
 }
 
@@ -216,7 +276,12 @@ func TestRunSessionStart_NormalStart_ZeroObs(t *testing.T) {
 	}
 }
 
-func TestRunSessionStart_NormalStart_PersistsEmptyIDs(t *testing.T) {
+// TestRunSessionStart_NormalStart_PersistsEmptyIDs_WhenNothingToInject
+// confirma que, sin observaciones ni checkpoint, el arranque normal sigue
+// persistiendo el baseline vacío de siempre (sin esto, RunPromptSubmit no
+// tendría con qué comparar para deduplicar la primera búsqueda real).
+func TestRunSessionStart_NormalStart_PersistsEmptyIDs_WhenNothingToInject(t *testing.T) {
+	setupTempDataDir(t)
 	st := newTestStore(t)
 	ctx := context.Background()
 
@@ -237,7 +302,44 @@ func TestRunSessionStart_NormalStart_PersistsEmptyIDs(t *testing.T) {
 		t.Error("expected empty slice, got nil")
 	}
 	if len(ids) != 0 {
-		t.Errorf("expected 0 ids after normal start, got %d", len(ids))
+		t.Errorf("expected 0 ids when there's nothing to inject, got %d", len(ids))
+	}
+}
+
+// TestRunSessionStart_NormalStart_PersistsInjectedIDs confirma que, cuando SÍ
+// hay contenido real para inyectar, los IDs quedan persistidos — mismo
+// contrato que ya tenía post-compactación (RunPromptSubmit los usa para no
+// repetir lo que ya se mostró al arrancar).
+func TestRunSessionStart_NormalStart_PersistsInjectedIDs(t *testing.T) {
+	setupTempDataDir(t)
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	cwd := t.TempDir()
+	projName := project.Detect(cwd).Name
+
+	if _, err := st.SaveObservation(ctx, store.SaveParams{
+		Type: store.TypeDecision, Title: "obs a persistir", Content: "contenido cualquiera",
+		Project: projName,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	in := hooks.Input{
+		SessionID: "sess-persist-real",
+		CWD:       cwd,
+	}
+
+	captureStdout(t, func() {
+		hooks.RunSessionStart(ctx, in, st)
+	})
+
+	ids, err := st.LoadInjectedIDs(ctx, "sess-persist-real")
+	if err != nil {
+		t.Fatalf("LoadInjectedIDs: %v", err)
+	}
+	if len(ids) != 1 {
+		t.Errorf("expected 1 injected id, got %d", len(ids))
 	}
 }
 
