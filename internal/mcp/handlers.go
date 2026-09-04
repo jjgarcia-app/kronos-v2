@@ -18,26 +18,43 @@ import (
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 )
 
-// resolveProject devuelve el project explícito del request, o lo autodetecta
-// vía project.DetectFull usando el parámetro opcional "directory" si se omite
-// "project". Antes esto era una promesa vacía en el docstring de las tools —
-// el detector nunca se invocaba desde acá.
-func resolveProject(req mcpgo.CallToolRequest) (string, error) {
+// resolveProject devuelve el project explícito del request. Si se omite,
+// intenta "directory" (autodetección real contra un path dado), después
+// "session_id" (la sesión ya quedó atada a un project real en SessionStart —
+// GetSession lo devuelve exacto, sin adivinar). NUNCA cae a autodetectar
+// contra el cwd del propio proceso sin ningún dato del caller: en la
+// arquitectura de daemon único compartido (ver internal/mcp/server.go) ese
+// cwd es el de quien arrancó el daemon, no el de la sesión que está
+// llamando — usarlo como fallback silencioso mezcla observaciones entre
+// proyectos sin que nadie se entere.
+//
+// Bug real encontrado en vivo 2026-09-04: un mem_save sobre un proyecto
+// completamente distinto (ATISA) quedó archivado bajo "kronos-v2" porque el
+// caller no pasó "project" ni "directory" mientras el daemon compartido
+// corría desde este repo — project.DetectFull("") caía a os.Getwd() del
+// daemon, no de la sesión real.
+func resolveProject(ctx context.Context, st store.Storer, req mcpgo.CallToolRequest) (string, error) {
 	if p := str(req, "project"); p != "" {
 		return p, nil
 	}
-	dr := project.DetectFull(str(req, "directory"))
-	if dr.Error != nil || dr.Project == "" {
-		return "", fmt.Errorf(`project no especificado y no se pudo autodetectar — pasá "project" explícito o "directory" con el path del repo`)
+	if dir := str(req, "directory"); dir != "" {
+		if dr := project.DetectFull(dir); dr.Error == nil && dr.Project != "" {
+			return dr.Project, nil
+		}
 	}
-	return dr.Project, nil
+	if sessionID := str(req, "session_id"); sessionID != "" {
+		if sess, err := st.GetSession(ctx, sessionID); err == nil && sess != nil && sess.Project != "" {
+			return sess.Project, nil
+		}
+	}
+	return "", fmt.Errorf(`project no especificado y no se pudo autodetectar — pasá "project" explícito, "directory" con el path del repo, o "session_id" de una sesión ya iniciada`)
 }
 
 func (s *Server) handleMemSave(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
 	title := str(req, "title")
 	content := secrets.Redact(str(req, "content"))
 	typ := store.ObservationType(strOr(req, "type", "discovery"))
-	proj, err := resolveProject(req)
+	proj, err := resolveProject(ctx, s.store, req)
 	if err != nil {
 		return fail(err), nil
 	}
@@ -433,7 +450,7 @@ func (s *Server) handleMemCheckpoint(ctx context.Context, req mcpgo.CallToolRequ
 		return fail(fmt.Errorf("dataDir no configurado en el servidor")), nil
 	}
 
-	proj, err := resolveProject(req)
+	proj, err := resolveProject(ctx, s.store, req)
 	if err != nil {
 		return fail(err), nil
 	}
