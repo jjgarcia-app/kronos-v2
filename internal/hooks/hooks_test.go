@@ -183,16 +183,24 @@ func TestRunSessionStart_NormalStart_InjectsRecentObs(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
 
+	// project.Detect(cwd) es lo que RunSessionStart usa de verdad para
+	// resolver el nombre del proyecto — no coincide con un literal
+	// "kronos-v2" en toda plataforma (en CI Linux/macOS, un path estilo
+	// Windows resuelve distinto), así que se resuelve una vez y se reusa acá
+	// y en el input.
+	cwd := t.TempDir()
+	projName := project.Detect(cwd).Name
+
 	st.SaveObservation(ctx, store.SaveParams{
 		Type:    store.TypeDecision,
 		Title:   "observación real de arranque normal",
 		Content: "esto SÍ debe aparecer en un arranque normal, no solo post-compactación",
-		Project: "kronos-v2",
+		Project: projName,
 	})
 
 	in := hooks.Input{
 		SessionID: "sess-with-content",
-		CWD:       "C:\\Users\\Jerry\\kronos-v2",
+		CWD:       cwd,
 	}
 
 	out := captureStdout(t, func() {
@@ -214,18 +222,21 @@ func TestRunSessionStart_NormalStart_PrioritizesOwnSessionDigest(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
 
-	if _, err := st.CreateSession(ctx, "sess-own-digest", "kronos-v2", "C:\\Users\\Jerry\\kronos-v2"); err != nil {
+	cwd := t.TempDir()
+	projName := project.Detect(cwd).Name
+
+	if _, err := st.CreateSession(ctx, "sess-own-digest", projName, cwd); err != nil {
 		t.Fatal(err)
 	}
 
 	// Observación reciente de OTRA sesión — no debería ganarle al digest propio.
 	st.SaveObservation(ctx, store.SaveParams{
 		Type: store.TypeDecision, Title: "obs de otra sesión", Content: "contenido de otra sesión",
-		Project: "kronos-v2",
+		Project: projName,
 	})
 	if _, err := st.SaveObservation(ctx, store.SaveParams{
 		Type: store.TypeSession, Title: "Resumen en curso de la sesión",
-		Content: "digest propio de esta sesión, debe salir primero", Project: "kronos-v2",
+		Content: "digest propio de esta sesión, debe salir primero", Project: projName,
 		SessionID: "sess-own-digest", TopicKey: "session/sess-own-digest",
 	}); err != nil {
 		t.Fatal(err)
@@ -233,7 +244,7 @@ func TestRunSessionStart_NormalStart_PrioritizesOwnSessionDigest(t *testing.T) {
 
 	in := hooks.Input{
 		SessionID: "sess-own-digest",
-		CWD:       "C:\\Users\\Jerry\\kronos-v2",
+		CWD:       cwd,
 	}
 
 	out := captureStdout(t, func() {
@@ -304,16 +315,19 @@ func TestRunSessionStart_NormalStart_PersistsInjectedIDs(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
 
+	cwd := t.TempDir()
+	projName := project.Detect(cwd).Name
+
 	if _, err := st.SaveObservation(ctx, store.SaveParams{
 		Type: store.TypeDecision, Title: "obs a persistir", Content: "contenido cualquiera",
-		Project: "kronos-v2",
+		Project: projName,
 	}); err != nil {
 		t.Fatal(err)
 	}
 
 	in := hooks.Input{
 		SessionID: "sess-persist-real",
-		CWD:       "C:\\Users\\Jerry\\kronos-v2",
+		CWD:       cwd,
 	}
 
 	captureStdout(t, func() {
