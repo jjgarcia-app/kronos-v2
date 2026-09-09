@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -67,9 +68,10 @@ func (s *retryState) reset() {
 //   - Users can also trigger a manual sync via `kronos sync`.
 type DualStore struct {
 	primary    *Store
-	buffer     *Store  // SQLite emergency fallback
-	primaryDSN string  // used to reconnect when primary is nil/down
-	down       bool    // true when primary is unreachable
+	buffer     *Store    // SQLite emergency fallback
+	primaryDSN string    // used to reconnect when primary is nil/down
+	down       bool      // true when primary is unreachable
+	downSince  time.Time // when down was last set — gates the read-path retry below
 	mu         sync.RWMutex
 	queue      *syncQueue // lives in the buffer DB
 	cancel     context.CancelFunc
@@ -116,6 +118,7 @@ func NewDualFromDSN(buffer *Store, pgDSN string) (*DualStore, error) {
 		buffer:     buffer,
 		primaryDSN: pgDSN,
 		down:       primary == nil,
+		downSince:  time.Now(),
 		queue:      q,
 		cancel:     cancel,
 	}
@@ -123,21 +126,58 @@ func NewDualFromDSN(buffer *Store, pgDSN string) (*DualStore, error) {
 	return d, nil
 }
 
+// primaryRetryTTL bounds how long a transient primary failure is trusted
+// before isPrimaryDown() attempts a fresh reconnect on its own, instead of
+// waiting for syncLoop's staged backoff (which starts at 60s and can widen
+// to 60min). Without this, a single transient error on ANY DualStore method
+// — including a read — flips `down` for the whole process, and every read
+// until the next syncLoop tick silently falls back to the local buffer,
+// which never received rows that were written while primary was healthy:
+// mem_get_observation/mem_context return false "not found" for data that
+// exists fine in primary. Reproduced live 2026-09-09 (kronos memory
+// hooks/git-branch-guard-path — mem_get_observation failed right after
+// mem_save, succeeded ~1min later once syncLoop's first retry ran).
+const primaryRetryTTL = 5 * time.Second
+
 func (d *DualStore) isPrimaryDown() bool {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-	return d.down
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if !d.down {
+		return false
+	}
+	if time.Since(d.downSince) < primaryRetryTTL {
+		return true
+	}
+	// Down flag is stale enough to be worth a cheap retry — Postgres may
+	// have recovered already and syncLoop's own tick could still be minutes
+	// away. A failed attempt just re-arms the TTL below.
+	conn, err := NewPostgres(d.primaryDSN)
+	if err != nil {
+		d.downSince = time.Now()
+		return true
+	}
+	fmt.Fprintln(os.Stderr, "info: dual-store: primary restablecido (retry desde read path)")
+	d.primary = conn
+	d.down = false
+	return false
 }
 
 func (d *DualStore) markDown() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if !d.down {
+		fmt.Fprintln(os.Stderr, "warn: dual-store: primary caído, usando buffer local hasta reconectar")
+	}
 	d.down = true
+	d.downSince = time.Now()
 }
 
 func (d *DualStore) markUp(p *Store) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if d.down {
+		fmt.Fprintln(os.Stderr, "info: dual-store: primary restablecido (sync loop)")
+	}
 	d.primary = p
 	d.down = false
 }
