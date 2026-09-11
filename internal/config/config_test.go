@@ -153,6 +153,46 @@ func TestLoad_PartialCoreSection_KeepsDefaults(t *testing.T) {
 	}
 }
 
+// TestLoad_CoreAliases_BudgetAndItemChars cubre los alias de config: el brief
+// de la ronda 4 pedía "budget_chars"/"item_chars" y la implementación conservó
+// los nombres históricos "chars_limit"/"max_item_chars". Se aceptan los cuatro
+// (mismos campos) para que ninguna config.json quede mintiendo.
+func TestLoad_CoreAliases_BudgetAndItemChars(t *testing.T) {
+	setTempConfigDir(t)
+	path, err := config.ConfigPath()
+	if err != nil {
+		t.Fatalf("ConfigPath: %v", err)
+	}
+
+	cases := []struct {
+		name      string
+		body      string
+		wantChars int
+		wantItem  int
+	}{
+		{"alias nuevos", `{"core":{"budget_chars":1500,"item_chars":90}}`, 1500, 90},
+		{"nombres historicos", `{"core":{"chars_limit":1800,"max_item_chars":95}}`, 1800, 95},
+		{"mezcla", `{"core":{"budget_chars":1700,"max_item_chars":100}}`, 1700, 100},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.WriteFile(path, []byte(tc.body), 0644); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+			cfg, err := config.Load()
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if cfg.Core.CharsLimit != tc.wantChars {
+				t.Errorf("CharsLimit = %d, quería %d", cfg.Core.CharsLimit, tc.wantChars)
+			}
+			if cfg.Core.MaxItemChars != tc.wantItem {
+				t.Errorf("MaxItemChars = %d, quería %d", cfg.Core.MaxItemChars, tc.wantItem)
+			}
+		})
+	}
+}
+
 func TestSave_Load_Roundtrip(t *testing.T) {
 	setTempConfigDir(t)
 
@@ -272,6 +312,8 @@ func TestSet_ValidFields(t *testing.T) {
 		{"core.project_min_chars", "400"},
 		{"core.max_per_type", "2"},
 		{"core.max_item_chars", "90"},
+		{"core.budget_chars", "1500"},
+		{"core.item_chars", "90"},
 		{"core.stale_days", "30"},
 		{"gate.enabled", "false"},
 		{"gate.block", "true"},

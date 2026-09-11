@@ -4,17 +4,17 @@ import "github.com/charmbracelet/lipgloss"
 
 // Rosé Pine dark palette
 var (
-	colorSurface  = lipgloss.Color("#1f1d2e")
-	colorOverlay  = lipgloss.Color("#26233a")
-	colorMuted    = lipgloss.Color("#6e6a86")
-	colorSubtext  = lipgloss.Color("#908caa")
-	colorText     = lipgloss.Color("#e0def4")
-	colorLove     = lipgloss.Color("#eb6f92")
-	colorGold     = lipgloss.Color("#f6c177")
-	colorRose     = lipgloss.Color("#ebbcba")
-	colorPine     = lipgloss.Color("#31748f")
-	colorFoam     = lipgloss.Color("#9ccfd8")
-	colorIris     = lipgloss.Color("#c4a7e7")
+	colorSurface = lipgloss.Color("#1f1d2e")
+	colorOverlay = lipgloss.Color("#26233a")
+	colorMuted   = lipgloss.Color("#6e6a86")
+	colorSubtext = lipgloss.Color("#908caa")
+	colorText    = lipgloss.Color("#e0def4")
+	colorLove    = lipgloss.Color("#eb6f92")
+	colorGold    = lipgloss.Color("#f6c177")
+	colorRose    = lipgloss.Color("#ebbcba")
+	colorPine    = lipgloss.Color("#31748f")
+	colorFoam    = lipgloss.Color("#9ccfd8")
+	colorIris    = lipgloss.Color("#c4a7e7")
 )
 
 var (

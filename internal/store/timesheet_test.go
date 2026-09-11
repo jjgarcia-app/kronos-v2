@@ -22,8 +22,8 @@ func TestActiveMinutes_DiscardsGapsOver30Min(t *testing.T) {
 	base := time.Date(2026, 8, 5, 9, 0, 0, 0, time.UTC)
 	events := []time.Time{
 		base,
-		base.Add(10 * time.Minute),  // +10min, cuenta
-		base.Add(2 * time.Hour),     // +110min, gap > 30min, se descarta
+		base.Add(10 * time.Minute),            // +10min, cuenta
+		base.Add(2 * time.Hour),               // +110min, gap > 30min, se descarta
 		base.Add(2*time.Hour + 5*time.Minute), // +5min, cuenta
 	}
 	if got := activeMinutes(events); got != 15 {

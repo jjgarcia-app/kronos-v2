@@ -62,23 +62,23 @@ type Relation struct {
 	DeletedAt              *string
 
 	// anotaciones enriquecidas (no en DB)
-	SourceIntID    int64
-	SourceTitle    string
-	SourceProject  string
-	TargetIntID    int64
-	TargetTitle    string
-	TargetProject  string
+	SourceIntID   int64
+	SourceTitle   string
+	SourceProject string
+	TargetIntID   int64
+	TargetTitle   string
+	TargetProject string
 }
 
 // Candidate es un resultado de FindCandidates: observación potencialmente conflictiva.
 type Candidate struct {
-	ID           int64
-	SyncID       string
-	Title        string
-	Type         ObservationType
-	TopicKey     string
-	Score        float64 // BM25 (negativo en SQLite — más cercano a 0 = mejor)
-	JudgmentID   int64   // ID en memory_relations si ya se insertó
+	ID         int64
+	SyncID     string
+	Title      string
+	Type       ObservationType
+	TopicKey   string
+	Score      float64 // BM25 (negativo en SQLite — más cercano a 0 = mejor)
+	JudgmentID int64   // ID en memory_relations si ya se insertó
 }
 
 // CandidateOptions controla la búsqueda de candidatos.
@@ -100,15 +100,15 @@ type CandidateOptions struct {
 
 // JudgeRelationParams parámetros para mem_judge.
 type JudgeRelationParams struct {
-	JudgmentID     int64
-	Relation       string
-	Reason         string
-	Evidence       string
-	Confidence     float64
-	MarkedByActor  string
-	MarkedByKind   string
-	MarkedByModel  string
-	SessionID      string
+	JudgmentID    int64
+	Relation      string
+	Reason        string
+	Evidence      string
+	Confidence    float64
+	MarkedByActor string
+	MarkedByKind  string
+	MarkedByModel string
+	SessionID     string
 }
 
 // FindCandidates busca observaciones potencialmente conflictivas con savedID
@@ -369,12 +369,12 @@ func (s *Store) ListRelations(ctx context.Context, project, status string, limit
 
 // RelationStats estadísticas de conflictos por proyecto.
 type RelationStats struct {
-	Project         string
-	Total           int
-	Pending         int
-	Judged          int
-	Orphaned        int
-	ByRelation      map[string]int
+	Project    string
+	Total      int
+	Pending    int
+	Judged     int
+	Orphaned   int
+	ByRelation map[string]int
 }
 
 // GetRelationStats retorna estadísticas de relaciones para un proyecto.

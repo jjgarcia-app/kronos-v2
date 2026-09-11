@@ -52,6 +52,8 @@ func ResetGatedTools() {
 //	KRONOS_PRETOOL_GATE  — "off" disables entirely (default: on)
 //	KRONOS_GATE_BLOCK    — "1"/"true"/"yes" → exit 2 (default: warn, exit 0)
 //	KRONOS_GATE_TOOLS    — comma-separated tool names (default: "Edit,Write,Bash")
+//	KRONOS_GATE_SATISFIED_BY_INJECTION — "1"/"true"/"yes" → una sesión ya
+//	                       informada por la inyección no fuerza una búsqueda
 //
 // Medido en benchmark 2026-09-11: el modo bloqueo agregó 57s (117s -> 174s)
 // a una sesión de bugfix — costo real, no gratis. Pero bloquear tiene sentido
@@ -183,9 +185,14 @@ func resolveMinObservations(cfg config.Config) int {
 	return 5
 }
 
-// satisfiedByInjection resuelve gate.satisfied_by_injection. Sin env var
-// dedicada (a diferencia de enabled/block/tools) — no hay un caso real hoy
-// de necesitar pisarla sin tocar config.json.
+// satisfiedByInjection resuelve gate.satisfied_by_injection:
+// KRONOS_GATE_SATISFIED_BY_INJECTION gana si está seteada, con los mismos
+// valores que los otros knobs del gate ("1"/"true"/"yes" → true), así se puede
+// apagar desde el entorno para probar el camino de bloqueo sin tocar
+// config.json. Sin la env, decide la config (default true).
 func satisfiedByInjection(cfg config.Config) bool {
+	if v, ok := os.LookupEnv("KRONOS_GATE_SATISFIED_BY_INJECTION"); ok {
+		return v == "1" || v == "true" || v == "yes"
+	}
 	return cfg.Gate.SatisfiedByInjection
 }
