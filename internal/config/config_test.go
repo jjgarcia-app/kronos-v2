@@ -47,6 +47,12 @@ func TestDefault_HasExpectedValues(t *testing.T) {
 	if !cfg.Core.IncludeCheckpoint {
 		t.Error("default core.include_checkpoint should be true")
 	}
+	if cfg.Core.MaxGlobalChars != 800 {
+		t.Errorf("default core.max_global_chars = %d, want 800", cfg.Core.MaxGlobalChars)
+	}
+	if cfg.Core.ProjectMinChars != 600 {
+		t.Errorf("default core.project_min_chars = %d, want 600", cfg.Core.ProjectMinChars)
+	}
 }
 
 func TestLoad_PartialCoreSection_KeepsDefaults(t *testing.T) {
@@ -71,6 +77,12 @@ func TestLoad_PartialCoreSection_KeepsDefaults(t *testing.T) {
 	}
 	if cfg.Core.MaxItems != 12 {
 		t.Errorf("core.max_items ausente debería conservar el default 12, got %d", cfg.Core.MaxItems)
+	}
+	if cfg.Core.MaxGlobalChars != 800 {
+		t.Errorf("core.max_global_chars ausente debería conservar el default 800, got %d", cfg.Core.MaxGlobalChars)
+	}
+	if cfg.Core.ProjectMinChars != 600 {
+		t.Errorf("core.project_min_chars ausente debería conservar el default 600, got %d", cfg.Core.ProjectMinChars)
 	}
 }
 
@@ -98,6 +110,61 @@ func TestSave_Load_Roundtrip(t *testing.T) {
 	}
 	if loaded.Memory.MaxSearchResults != 42 {
 		t.Errorf("loaded max_search_results = %d, want 42", loaded.Memory.MaxSearchResults)
+	}
+}
+
+func TestLoad_NoRelationsSection_KeepsDefaults(t *testing.T) {
+	setTempConfigDir(t)
+	path, err := config.ConfigPath()
+	if err != nil {
+		t.Fatalf("ConfigPath: %v", err)
+	}
+	// Simula un config.json de una versión anterior a relations: la sección
+	// no existe en absoluto en el archivo.
+	if err := os.WriteFile(path, []byte(`{"db":{"backend":"sqlite"}}`), 0644); err != nil {
+		t.Fatalf("write config sin relations: %v", err)
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Relations.BM25Floor != -6.0 {
+		t.Errorf("relations.bm25_floor ausente debería conservar el default -6.0, got %v", cfg.Relations.BM25Floor)
+	}
+	if cfg.Relations.MinSharedTokens != 2 {
+		t.Errorf("relations.min_shared_tokens ausente debería conservar el default 2, got %d", cfg.Relations.MinSharedTokens)
+	}
+	if !cfg.Relations.RequireSameType {
+		t.Error("relations.require_same_type ausente debería conservar el default true")
+	}
+	if cfg.Relations.CandidatesLimit != 3 {
+		t.Errorf("relations.candidates_limit ausente debería conservar el default 3, got %d", cfg.Relations.CandidatesLimit)
+	}
+}
+
+func TestLoad_PartialRelationsSection_KeepsOtherDefaults(t *testing.T) {
+	setTempConfigDir(t)
+	path, err := config.ConfigPath()
+	if err != nil {
+		t.Fatalf("ConfigPath: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(`{"relations":{"min_shared_tokens":3}}`), 0644); err != nil {
+		t.Fatalf("write config parcial: %v", err)
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Relations.MinSharedTokens != 3 {
+		t.Errorf("relations.min_shared_tokens explícito debería respetarse, got %d", cfg.Relations.MinSharedTokens)
+	}
+	if cfg.Relations.BM25Floor != -6.0 {
+		t.Errorf("relations.bm25_floor ausente debería conservar el default -6.0, got %v", cfg.Relations.BM25Floor)
+	}
+	if !cfg.Relations.RequireSameType {
+		t.Error("relations.require_same_type ausente debería conservar el default true")
 	}
 }
 
@@ -132,6 +199,8 @@ func TestSet_ValidFields(t *testing.T) {
 		{"core.chars_limit", "1500"},
 		{"core.max_items", "8"},
 		{"core.include_checkpoint", "false"},
+		{"core.max_global_chars", "500"},
+		{"core.project_min_chars", "400"},
 	}
 	for _, c := range cases {
 		if err := cfg.Set(c.key, c.val); err != nil {
@@ -167,6 +236,12 @@ func TestSet_ValidFields(t *testing.T) {
 	}
 	if cfg.Core.IncludeCheckpoint {
 		t.Error("core.include_checkpoint should be false")
+	}
+	if cfg.Core.MaxGlobalChars != 500 {
+		t.Errorf("core.max_global_chars not set: got %d", cfg.Core.MaxGlobalChars)
+	}
+	if cfg.Core.ProjectMinChars != 400 {
+		t.Errorf("core.project_min_chars not set: got %d", cfg.Core.ProjectMinChars)
 	}
 }
 
