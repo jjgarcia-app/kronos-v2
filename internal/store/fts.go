@@ -74,6 +74,17 @@ func (s *Store) searchSQLite(ctx context.Context, p SearchParams) ([]*SearchResu
 	return results, sqlRows.Err()
 }
 
+// websearch_to_tsquery (no plainto_tsquery) a propósito: plainto_tsquery
+// ANDea todos los términos sin excepción — medido en la ronda 2 del
+// benchmark, el mismo problema que motivó sanitizeFTSQuery del lado SQLite
+// ("alfresco aspect remove" con AND implícito exige los tres términos en la
+// misma observación, 0 filas). websearch_to_tsquery entiende "OR" (mayúscula,
+// igual que FTS5 del lado SQLite — ver sanitizeFTSQuery) como operador y
+// "frases entre comillas" como frase exacta, así que la misma query armada
+// por runRecall (términos entre comillas unidos por " OR ") funciona igual en
+// los dos backends sin ramas especiales por driver. Para texto plano sin OR
+// ni comillas (el resto de los callers de Search) el comportamiento es
+// idéntico al de plainto_tsquery: todos los términos AND.
 func (s *Store) searchPostgres(ctx context.Context, p SearchParams) ([]*SearchResult, error) {
 	var sqlRows *sql.Rows
 	var err error
@@ -84,9 +95,9 @@ func (s *Store) searchPostgres(ctx context.Context, p SearchParams) ([]*SearchRe
 			       COALESCE(tool_name,''), project, scope, topic_key, normalized_hash,
 			       revision_count, duplicate_count, created_at, updated_at, deleted_at,
 			       ts_rank(to_tsvector('simple', title || ' ' || content),
-			               plainto_tsquery('simple', $1)) as rank
+			               websearch_to_tsquery('simple', $1)) as rank
 			FROM observations
-			WHERE to_tsvector('simple', title || ' ' || content) @@ plainto_tsquery('simple', $1)
+			WHERE to_tsvector('simple', title || ' ' || content) @@ websearch_to_tsquery('simple', $1)
 			  AND (project = $2 OR scope = 'global')
 			  AND deleted_at IS NULL
 			ORDER BY rank DESC
@@ -99,9 +110,9 @@ func (s *Store) searchPostgres(ctx context.Context, p SearchParams) ([]*SearchRe
 			       COALESCE(tool_name,''), project, scope, topic_key, normalized_hash,
 			       revision_count, duplicate_count, created_at, updated_at, deleted_at,
 			       ts_rank(to_tsvector('simple', title || ' ' || content),
-			               plainto_tsquery('simple', $1)) as rank
+			               websearch_to_tsquery('simple', $1)) as rank
 			FROM observations
-			WHERE to_tsvector('simple', title || ' ' || content) @@ plainto_tsquery('simple', $1)
+			WHERE to_tsvector('simple', title || ' ' || content) @@ websearch_to_tsquery('simple', $1)
 			  AND deleted_at IS NULL
 			ORDER BY rank DESC
 			LIMIT $2`,
