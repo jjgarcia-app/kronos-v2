@@ -92,12 +92,26 @@ type CoreConfig struct {
 	CharsLimit        int  `json:"chars_limit"`
 	MaxItems          int  `json:"max_items"`
 	IncludeCheckpoint bool `json:"include_checkpoint"`
-	// MaxGlobalChars: presupuesto máximo, en chars, para observaciones
+	// GlobalsMaxChars: presupuesto máximo, en chars, para observaciones
 	// scope=global dentro del bloque core (se renderizan comprimidas: tipo +
 	// título, sin "Qué: ..."). Medido en benchmark 2026-09-11: sin este tope,
 	// 9 observaciones globales sin comprimir ocupaban ~1890/2000 chars —
-	// el bloque entero, y eran todas de OTRO proyecto.
-	MaxGlobalChars int `json:"max_global_chars"`
+	// el bloque entero, y eran todas de OTRO proyecto. Default 600 (~30% del
+	// presupuesto total), bajado de 800 tras medir que incluso comprimidas
+	// las globales seguían comiéndose la mitad del bloque en kronos-v2.
+	GlobalsMaxChars int `json:"globals_max_chars"`
+	// GlobalsMaxItems: tope máximo de CANTIDAD de observaciones globales,
+	// independiente de GlobalsMaxChars — sin esto, muchas globales cortas
+	// podían seguir monopolizando la lista de items (core.max_items) aunque
+	// entraran cómodas en chars. Default 4.
+	GlobalsMaxItems int `json:"globals_max_items"`
+	// RelevanceFilter: si true (default), una observación global solo entra
+	// si su proyecto de origen es el actual o comparte pertinencia real con
+	// él (ver internal/hooks/core_block.go, classifyGlobalRelevance).
+	// Medido 2026-09-11 (proyecto kronos-v2): sin este filtro, 6-7 de 12
+	// items inyectados eran globales de OTRO proyecto (ATISA) sin relación
+	// con lo que se estaba trabajando.
+	RelevanceFilter bool `json:"relevance_filter"`
 	// ProjectMinChars: reserva mínima, en chars, para contenido del
 	// proyecto actual — limita cuánto de lo que sobra puede gastar la
 	// sección global antes de dejarle lugar al proyecto (ver
@@ -230,6 +244,17 @@ type GateConfig struct {
 	// proyecto con 0-4 observaciones esa búsqueda forzada es puro trámite,
 	// no hay nada que mem_search pueda encontrar. Default 5.
 	MinObservations int `json:"min_observations"`
+	// SatisfiedByInjection: si true (default), una sesion donde kronos YA
+	// inyecto memoria sin que el agente pidiera nada -- el bloque core trajo
+	// al menos un item del proyecto en SessionStart, o algun recall de
+	// UserPromptSubmit inyecto al menos un item (ver
+	// internal/hooks/session_start.go, sess.InjectedObservationIDs) -- cuenta
+	// como "sesion informada" y el gate no bloquea, aunque nunca haya
+	// llamado mem_search. Medido 2026-09-11: con el bloque core y el recall
+	// por relevancia ya activos, exigir ademas una busqueda explicita antes
+	// del primer Edit/Write es redundante casi siempre -- la sesion gasta un
+	// turno buscando algo que kronos ya le mostro.
+	SatisfiedByInjection bool `json:"satisfied_by_injection"`
 }
 
 type Config struct {
@@ -286,7 +311,9 @@ func Default() Config {
 			CharsLimit:        2000,
 			MaxItems:          12,
 			IncludeCheckpoint: true,
-			MaxGlobalChars:    800,
+			GlobalsMaxChars:   600,
+			GlobalsMaxItems:   4,
+			RelevanceFilter:   true,
 			ProjectMinChars:   600,
 			MaxPerType:        3,
 			MaxItemChars:      110,
@@ -335,10 +362,11 @@ func Default() Config {
 			CandidatesLimit: 3,
 		},
 		Gate: GateConfig{
-			Enabled:         true,
-			Block:           false,
-			Tools:           []string{"Edit", "Write", "Bash"},
-			MinObservations: 5,
+			Enabled:              true,
+			Block:                false,
+			Tools:                []string{"Edit", "Write", "Bash"},
+			MinObservations:      5,
+			SatisfiedByInjection: true,
 		},
 	}
 }
@@ -601,12 +629,20 @@ func (c *Config) Set(key, value string) error {
 			c.Core.MaxItems = n
 		case "include_checkpoint":
 			c.Core.IncludeCheckpoint = parseBool(value)
-		case "max_global_chars":
+		case "globals_max_chars":
 			n, err := strconv.Atoi(value)
 			if err != nil {
 				return fmt.Errorf("invalid int: %s", value)
 			}
-			c.Core.MaxGlobalChars = n
+			c.Core.GlobalsMaxChars = n
+		case "globals_max_items":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return fmt.Errorf("invalid int: %s", value)
+			}
+			c.Core.GlobalsMaxItems = n
+		case "relevance_filter":
+			c.Core.RelevanceFilter = parseBool(value)
 		case "project_min_chars":
 			n, err := strconv.Atoi(value)
 			if err != nil {
@@ -755,6 +791,8 @@ func (c *Config) Set(key, value string) error {
 				return fmt.Errorf("invalid int: %s", value)
 			}
 			c.Gate.MinObservations = n
+		case "satisfied_by_injection":
+			c.Gate.SatisfiedByInjection = parseBool(value)
 		default:
 			return fmt.Errorf("unknown gate field: %s", field)
 		}

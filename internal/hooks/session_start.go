@@ -84,7 +84,7 @@ const maxContinuityItems = 3
 // between RunSessionStart's normal path and RunPostCompaction — both leave
 // the agent with no usable transcript unless kronos hands it something here.
 func injectContinuity(ctx context.Context, st store.Storer, projName, sessionID string) {
-	printCoreBlock(ctx, st, projName)
+	coreProjectIDs := printCoreBlock(ctx, st, projName)
 
 	if dataDir, err := platform.DataDir(); err == nil {
 		if cp, err := checkpoint.Load(dataDir, projName); err == nil && cp != nil {
@@ -125,6 +125,20 @@ func injectContinuity(ctx context.Context, st store.Storer, projName, sessionID 
 		fmt.Println(intentWarning)
 	}
 
+	// coreProjectIDs se agregan recién acá, DESPUÉS de que digest/pickRestoreObs
+	// ya decidieron qué mostrar como continuidad — así no le sacan lugar a esas
+	// líneas (que dedupean contra injectedIDs, ver containsID arriba) ni
+	// cambian cuántas se imprimen. Solo importan para lo que persiste esta
+	// función: el gate de pre-tool-use (gate.satisfied_by_injection, ver
+	// pre_tool_use.go) lee sess.InjectedObservationIDs para saber que esta
+	// sesión ya recibió memoria del proyecto vía el bloque core, sin que el
+	// agente tuviera que llamar mem_search.
+	for _, id := range coreProjectIDs {
+		if !containsID(injectedIDs, id) {
+			injectedIDs = append(injectedIDs, id)
+		}
+	}
+
 	_ = st.PersistInjectedIDs(ctx, sessionID, injectedIDs)
 }
 
@@ -142,30 +156,37 @@ func printContinuityLine(title string, typ store.ObservationType, content string
 }
 
 // printCoreBlock imprime el bloque siempre-presente (ver core_block.go)
-// antes de los items sueltos de injectContinuity. Carga la config con
-// config.Load() en cada llamada — barato (un archivo chico local) y evita
-// que un config.json editado a mano por Jerry requiera reiniciar nada más
-// que la próxima sesión. Best-effort total: config rota, store caído o
-// cfg.Core.Enabled=false simplemente no imprimen nada, nunca fallan el hook.
-func printCoreBlock(ctx context.Context, st store.Storer, projName string) {
+// antes de los items sueltos de injectContinuity, y devuelve los IDs de los
+// items de PROYECTO que incluyó (ver CoreBlockMeta) — injectContinuity los
+// usa para que el gate de pre-tool-use sepa que esta sesión ya recibió
+// memoria del proyecto (gate.satisfied_by_injection, ver pre_tool_use.go).
+// Carga la config con config.Load() en cada llamada — barato (un archivo
+// chico local) y evita que un config.json editado a mano por Jerry requiera
+// reiniciar nada más que la próxima sesión. Best-effort total: config rota,
+// store caído o cfg.Core.Enabled=false simplemente no imprimen nada, nunca
+// fallan el hook.
+func printCoreBlock(ctx context.Context, st store.Storer, projName string) []string {
 	cfg, _ := config.Load()
 	if !cfg.Core.Enabled {
-		return
+		return nil
 	}
-	block, err := BuildCoreBlock(ctx, st, projName, CoreBlockOptions{
+	block, meta, err := BuildCoreBlockWithMeta(ctx, st, projName, CoreBlockOptions{
 		CharsLimit:        cfg.Core.CharsLimit,
 		MaxItems:          cfg.Core.MaxItems,
 		IncludeCheckpoint: cfg.Core.IncludeCheckpoint,
-		MaxGlobalChars:    cfg.Core.MaxGlobalChars,
+		GlobalsMaxChars:   cfg.Core.GlobalsMaxChars,
+		GlobalsMaxItems:   cfg.Core.GlobalsMaxItems,
+		RelevanceFilter:   cfg.Core.RelevanceFilter,
 		ProjectMinChars:   cfg.Core.ProjectMinChars,
 		MaxPerType:        cfg.Core.MaxPerType,
 		MaxItemChars:      cfg.Core.MaxItemChars,
 		StaleDays:         cfg.Core.StaleDays,
 	})
 	if err != nil || block == "" {
-		return
+		return nil
 	}
 	fmt.Println(block)
+	return meta.ProjectItemIDs
 }
 
 func containsID(ids []string, id string) bool {
@@ -220,4 +241,3 @@ func localStoreOf(st store.Storer) *store.Store {
 	}
 	return nil
 }
-
