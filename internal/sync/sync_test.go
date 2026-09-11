@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	kronsync "github.com/jjgarcia-app/kronos-v2/internal/sync"
 	"github.com/jjgarcia-app/kronos-v2/internal/store"
+	kronsync "github.com/jjgarcia-app/kronos-v2/internal/sync"
 )
 
 func newTestStore(t *testing.T) *store.Store {

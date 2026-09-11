@@ -7,10 +7,10 @@ import (
 
 // Activity trackea el estado de actividad de una sesión para el nudge inteligente.
 type Activity struct {
-	mu                 sync.Mutex
-	sessions           map[string]*sessionActivity
-	nudgeActions       int           // nudge si significant actions >= este valor
-	nudgeFallbackMins  time.Duration // nudge por tiempo si no hay actividad significativa
+	mu                sync.Mutex
+	sessions          map[string]*sessionActivity
+	nudgeActions      int           // nudge si significant actions >= este valor
+	nudgeFallbackMins time.Duration // nudge por tiempo si no hay actividad significativa
 }
 
 type sessionActivity struct {

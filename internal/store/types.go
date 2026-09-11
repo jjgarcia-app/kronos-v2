@@ -94,7 +94,7 @@ type UpdateParams struct {
 type SearchParams struct {
 	Query   string
 	Project string
-	Scope   Scope  // si vacío, busca en project + global
+	Scope   Scope // si vacío, busca en project + global
 	Limit   int
 }
 

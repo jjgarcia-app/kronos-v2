@@ -77,7 +77,6 @@ func (s *Server) SetRelationsConfig(c config.RelationsConfig) *Server {
 	return s
 }
 
-
 // ServeStdio arranca el servidor MCP sobre stdin/stdout (modo Claude Code).
 func (s *Server) ServeStdio() error {
 	return server.ServeStdio(s.mcp)

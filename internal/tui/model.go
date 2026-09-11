@@ -32,7 +32,7 @@ const (
 	ScreenDoctorFix
 	ScreenConfig
 	ScreenOllama
-	ScreenLLM        // nueva
+	ScreenLLM // nueva
 	ScreenExport
 	ScreenSetup
 )
@@ -156,9 +156,9 @@ type Model struct {
 	ollamaModels []string
 
 	// llm config editing
-	llmFields   []configField
-	llmEditing  bool
-	llmStatus   string // "" | "testing" | "ok" | "fail: ..."
+	llmFields  []configField
+	llmEditing bool
+	llmStatus  string // "" | "testing" | "ok" | "fail: ..."
 
 	// export
 	exportOutput string
