@@ -134,4 +134,17 @@ var postgresMigrations = []string{
 	// v30: heartbeat de actividad por sesión — ver v44 en schema.go (SQLite).
 	`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS last_activity_at TEXT`,
 	`UPDATE sessions SET last_activity_at = started_at WHERE last_activity_at IS NULL`,
+
+	// v37: índice GIN sobre el tsvector que usa la búsqueda. Sin esto,
+	// searchPostgres hacía un Seq Scan calculando to_tsvector() fila por fila:
+	// medido con EXPLAIN ANALYZE sobre la base real (896 observaciones) daba
+	// 255 ms de ejecución para 3 resultados, y sumado a la latencia del
+	// port-forward de Docker el camino de búsqueda de los hooks —que corre con
+	// presupuesto corto— expiraba con "postgres search: context deadline
+	// exceeded". Ese error marcaba el primary como caído y degradaba las
+	// lecturas al buffer local (memoria congelada), o sea que la causa del
+	// síntoma "no recuerda" también estaba acá. El índice trigram existente
+	// (idx_observations_trgm) no sirve para esta query: filtra por
+	// @@ plainto_tsquery, no por LIKE.
+	`CREATE INDEX IF NOT EXISTS idx_observations_tsv ON observations USING GIN (to_tsvector('simple', title || ' ' || content))`,
 }
