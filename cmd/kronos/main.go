@@ -33,6 +33,8 @@ func run(args []string) error {
 		return runSetup(args[1:])
 	case "export":
 		return runExport(args[1:])
+	case "vault":
+		return runVault(args[1:])
 	case "doctor":
 		return runDoctor(args[1:])
 	case "tui":
@@ -53,6 +55,6 @@ func run(args []string) error {
 		fmt.Printf("kronos %s\n", version)
 		return nil
 	default:
-		return fmt.Errorf("unknown command %q — use: init | serve | mcp [--tools=PROFILE] | hook | setup | export | doctor | tui | config | sync [--export|--import] | rules | gc | backup [--list|--restore] | service <install|uninstall|start|stop|restart|status> | version", args[0])
+		return fmt.Errorf("unknown command %q — use: init | serve | mcp [--tools=PROFILE] | hook | setup | export | vault import | doctor | tui | config | sync [--export|--import] | rules | gc | backup [--list|--restore] | service <install|uninstall|start|stop|restart|status> | version", args[0])
 	}
 }
