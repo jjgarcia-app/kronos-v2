@@ -82,17 +82,17 @@ func TestBuildCoreBlock_RespectsCharsBudget(t *testing.T) {
 	if len(block) > limit {
 		t.Errorf("bloque de %d chars supera el límite de %d", len(block), limit)
 	}
-	if !strings.Contains(block, "recortado por presupuesto") {
-		t.Errorf("esperaba aviso de recorte, bloque:\n%s", block)
+	if !strings.Contains(block, "omitidos:") {
+		t.Errorf("esperaba el reporte honesto de omitidos, bloque:\n%s", block)
 	}
 }
 
 // (b) la prioridad se respeta: preferencia del proyecto y observación global
 // entran, y se cae lo menos prioritario (relleno reciente del proyecto, que
-// desde el reparto de presupuesto de core.max_global_chars/project_min_chars
+// desde el reparto de presupuesto de core.globals_max_chars/project_min_chars
 // pasó a ser el ÚLTIMO paso de llenado, no el primero). MaxItems: 2 fuerza el
 // corte independientemente de la aritmética de chars — así el test no
-// depende de los defaults de MaxGlobalChars/ProjectMinChars.
+// depende de los defaults de GlobalsMaxChars/ProjectMinChars.
 func TestBuildCoreBlock_PrioritizesGlobalAndPreference(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
@@ -122,8 +122,8 @@ func TestBuildCoreBlock_PrioritizesGlobalAndPreference(t *testing.T) {
 	if strings.Contains(block, "Relleno reciente") {
 		t.Errorf("esperaba que el relleno de menor prioridad quedara afuera, bloque:\n%s", block)
 	}
-	if !strings.Contains(block, "recortado por presupuesto") {
-		t.Errorf("esperaba aviso de recorte, bloque:\n%s", block)
+	if !strings.Contains(block, "omitidos:") || !strings.Contains(block, "por presupuesto") {
+		t.Errorf("esperaba el reporte honesto de omitidos por presupuesto, bloque:\n%s", block)
 	}
 }
 
@@ -132,7 +132,7 @@ func TestBuildCoreBlock_PrioritizesGlobalAndPreference(t *testing.T) {
 // globales primero y el proyecto salía por injectContinuity, que solo da un
 // preview de 80 chars (ver benchmark citado en core_block.go). Estos tests
 // cubren el nuevo orden: preferencias/decisiones del proyecto, checkpoint,
-// globales comprimidas hasta max_global_chars, y por último relleno.
+// globales comprimidas hasta globals_max_chars, y por último relleno.
 
 // (a) con muchas globales largas + varias decisiones del proyecto, el
 // bloque incluye al menos un item del proyecto y no deja que las globales
@@ -194,8 +194,8 @@ func TestBuildCoreBlock_CheckpointAlwaysIncluded(t *testing.T) {
 	}
 }
 
-// (c) las globales no superan MaxGlobalChars, sin importar cuántas haya.
-func TestBuildCoreBlock_GlobalsRespectMaxGlobalChars(t *testing.T) {
+// (c) las globales no superan GlobalsMaxChars, sin importar cuántas haya.
+func TestBuildCoreBlock_GlobalsRespectGlobalsMaxChars(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
 
@@ -206,7 +206,7 @@ func TestBuildCoreBlock_GlobalsRespectMaxGlobalChars(t *testing.T) {
 	}
 
 	maxGlobal := 300
-	block, err := hooks.BuildCoreBlock(ctx, st, "proyecto-x", hooks.CoreBlockOptions{MaxGlobalChars: maxGlobal, MaxItems: 50})
+	block, err := hooks.BuildCoreBlock(ctx, st, "proyecto-x", hooks.CoreBlockOptions{GlobalsMaxChars: maxGlobal, GlobalsMaxItems: 50, MaxItems: 50, MaxPerType: 50})
 	if err != nil {
 		t.Fatalf("BuildCoreBlock: %v", err)
 	}
@@ -218,11 +218,39 @@ func TestBuildCoreBlock_GlobalsRespectMaxGlobalChars(t *testing.T) {
 		}
 	}
 	if globalChars > maxGlobal {
-		t.Errorf("las globales usaron %d chars, supera MaxGlobalChars=%d, bloque:\n%s", globalChars, maxGlobal, block)
+		t.Errorf("las globales usaron %d chars, supera GlobalsMaxChars=%d, bloque:\n%s", globalChars, maxGlobal, block)
 	}
 }
 
-// (d) el total nunca supera CharsLimit, incluso con MaxGlobalChars y
+// (c.2) el tope de CANTIDAD (GlobalsMaxItems) rige independiente de cuántos
+// chars ocupen las globales — muchas globales cortas no deben monopolizar
+// la lista de items solo porque entran cómodas en GlobalsMaxChars.
+func TestBuildCoreBlock_GlobalsMaxItems_CapsCount(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	for i := 0; i < 20; i++ {
+		saveObs(t, st, store.TypePattern, store.ScopeGlobal, "proyecto-x",
+			fmt.Sprintf("Global corta sobre %s", fillerWord(i)), "contenido corto")
+	}
+
+	block, err := hooks.BuildCoreBlock(ctx, st, "proyecto-x", hooks.CoreBlockOptions{
+		GlobalsMaxChars: 5000, GlobalsMaxItems: 3, MaxItems: 50, MaxPerType: 50,
+	})
+	if err != nil {
+		t.Fatalf("BuildCoreBlock: %v", err)
+	}
+
+	entered := strings.Count(block, "- [pattern]")
+	if entered != 3 {
+		t.Errorf("esperaba exactamente 3 globales con GlobalsMaxItems=3, entraron %d, bloque:\n%s", entered, block)
+	}
+	if !strings.Contains(block, "omitidos:") || !strings.Contains(block, "globales (presupuesto)") {
+		t.Errorf("esperaba el reporte de omitidos por presupuesto de globales, bloque:\n%s", block)
+	}
+}
+
+// (d) el total nunca supera CharsLimit, incluso con GlobalsMaxChars y
 // ProjectMinChars generosos combinados.
 func TestBuildCoreBlock_TotalNeverExceedsCharsLimit(t *testing.T) {
 	st := newTestStore(t)
@@ -241,7 +269,7 @@ func TestBuildCoreBlock_TotalNeverExceedsCharsLimit(t *testing.T) {
 	block, err := hooks.BuildCoreBlock(ctx, st, "proyecto-x", hooks.CoreBlockOptions{
 		CharsLimit:      limit,
 		MaxItems:        50,
-		MaxGlobalChars:  800,
+		GlobalsMaxChars: 800,
 		ProjectMinChars: 800,
 	})
 	if err != nil {
@@ -447,6 +475,288 @@ func TestBuildCoreBlock_DenseFormat_RespectsMaxItemChars(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("esperaba una línea [decision] en el bloque:\n%s", block)
+	}
+}
+
+// Tarea 4 — filtro de pertinencia de globales (core.relevance_filter). Caso
+// real medido (proyecto kronos-v2, 2026-09-11): 6-7 de 12 items inyectados
+// eran globales de OTRO proyecto (ATISA) sin relación con lo que se estaba
+// trabajando — ver comentario de mediciones en core_block.go.
+
+// (a) una global cuyo proyecto de ORIGEN (o.Project — no el proyecto que se
+// está consultando) es distinto del actual, sin pertinencia positiva, queda
+// afuera cuando RelevanceFilter está activo.
+func TestBuildCoreBlock_RelevanceFilter_OtherOriginExcluded(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	saveObs(t, st, store.TypePreference, store.ScopeGlobal, "otro-proyecto",
+		"Usar siempre pnpm nunca npm", "seguridad supply chain en despliegues de otro-proyecto")
+
+	block, err := hooks.BuildCoreBlock(ctx, st, "proyecto-x", hooks.CoreBlockOptions{RelevanceFilter: true})
+	if err != nil {
+		t.Fatalf("BuildCoreBlock: %v", err)
+	}
+	if strings.Contains(block, "Usar siempre pnpm") {
+		t.Errorf("esperaba que la global de otro proyecto de origen quedara afuera, bloque:\n%s", block)
+	}
+	if !strings.Contains(block, "omitidos:") || !strings.Contains(block, "poco pertinentes") {
+		t.Errorf("esperaba el reporte de omitidos por pertinencia, bloque:\n%s", block)
+	}
+}
+
+// (b) una global cuyo proyecto de origen ES el actual entra siempre, aun con
+// el filtro activo.
+func TestBuildCoreBlock_RelevanceFilter_SameOriginIncluded(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	saveObs(t, st, store.TypePattern, store.ScopeGlobal, "proyecto-x",
+		"Patron propio del proyecto", "este patron nació en proyecto-x")
+
+	block, err := hooks.BuildCoreBlock(ctx, st, "proyecto-x", hooks.CoreBlockOptions{RelevanceFilter: true})
+	if err != nil {
+		t.Fatalf("BuildCoreBlock: %v", err)
+	}
+	if !strings.Contains(block, "Patron propio del proyecto") {
+		t.Errorf("esperaba que la global del mismo proyecto de origen entrara, bloque:\n%s", block)
+	}
+}
+
+// (c) rescate por pertinencia positiva: una global de OTRO proyecto de
+// origen entra igual si su título comparte >=2 tokens significativos con
+// los títulos de observaciones del proyecto actual (fuera del propio
+// nombre del proyecto — ver comentario de mediciones en core_block.go sobre
+// por qué el nombre del proyecto se excluye del cómputo).
+func TestBuildCoreBlock_RelevanceFilter_PositiveOverlapRescues(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	saveObs(t, st, store.TypeDecision, store.ScopeProject, "proyecto-x",
+		"Migracion completa de autenticacion biometrica", "se completó la migración del módulo biométrico")
+	saveObs(t, st, store.TypePattern, store.ScopeGlobal, "otro-proyecto",
+		"Guia de migracion biometrica para nuevos clientes", "aplica el mismo patrón de migración biométrica")
+
+	block, err := hooks.BuildCoreBlock(ctx, st, "proyecto-x", hooks.CoreBlockOptions{RelevanceFilter: true})
+	if err != nil {
+		t.Fatalf("BuildCoreBlock: %v", err)
+	}
+	if !strings.Contains(block, "Guia de migracion biometrica") {
+		t.Errorf("esperaba que la pertinencia positiva (2+ tokens compartidos) rescatara la global, bloque:\n%s", block)
+	}
+}
+
+// (d) el nombre del propio proyecto NO cuenta para el rescate de pertinencia
+// positiva — caso real medido: kronos-v2 es el proyecto del propio
+// asistente de memoria, así que casi cualquier observación (propia o
+// ajena) menciona "kronos"; sin excluir ese token, una global de OTRO
+// proyecto que solo comparte el nombre del proyecto + UN término técnico
+// común se rescataría igual, anulando el filtro.
+func TestBuildCoreBlock_RelevanceFilter_ProjectNameTokenExcludedFromRescue(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	saveObs(t, st, store.TypeArchitecture, store.ScopeProject, "kronos-v2",
+		"Busqueda contra Postgres optimizada", "se agregó índice GIN para acelerar la búsqueda")
+	saveObs(t, st, store.TypeConfig, store.ScopeGlobal, "otro-proyecto",
+		"Migrado kronos de SQLite a Postgres en Docker", "instalación propia de otro-proyecto, nada que ver con este")
+
+	block, err := hooks.BuildCoreBlock(ctx, st, "kronos-v2", hooks.CoreBlockOptions{RelevanceFilter: true})
+	if err != nil {
+		t.Fatalf("BuildCoreBlock: %v", err)
+	}
+	if strings.Contains(block, "Migrado kronos de SQLite") {
+		t.Errorf("compartir solo el nombre del proyecto (\"kronos\") + un término técnico no debería alcanzar para rescatar, bloque:\n%s", block)
+	}
+}
+
+// backdateObservationCreatedAt fuerza created_at al pasado — usado para que
+// una observación quede FUERA de relevanceRecentObsLimit sin depender de
+// timestamps reales en un test rápido.
+func backdateObservationCreatedAt(t *testing.T, st store.Storer, id int64, ts time.Time) {
+	t.Helper()
+	s, ok := st.(*store.Store)
+	if !ok {
+		t.Fatalf("backdateObservationCreatedAt necesita *store.Store")
+	}
+	if _, err := s.DB().Exec(`UPDATE observations SET created_at = ? WHERE id = ?`,
+		ts.UTC().Format(time.RFC3339), id); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// (d.2) caso real medido (proyecto kronos-v2, 2026-09-11): con TODO el
+// historial del proyecto como vocabulario, una nota real de ATISA
+// ("SIEMPRE probar en pruebas antes de producción...") compartía 5 tokens
+// contra títulos de kronos-v2 acumulados en meses — vocabulario técnico
+// genérico, no pertinencia real. Acotar projectVocab a lo más reciente
+// (relevanceRecentObsLimit) es lo que evita el rescate: vocabulario que solo
+// aparece en observaciones VIEJAS del proyecto no debe rescatar una global
+// ajena.
+func TestBuildCoreBlock_RelevanceFilter_OldVocabDoesNotRescue(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	// Una observación vieja (fuera de relevanceRecentObsLimit) que comparte
+	// vocabulario con la global ajena.
+	old := saveObs(t, st, store.TypeDiscovery, store.ScopeProject, "proyecto-x",
+		"Resultado de pruebas contra produccion", "hallazgo antiguo, ya no relevante")
+	backdateObservationCreatedAt(t, st, old.ID, time.Now().Add(-90*24*time.Hour))
+
+	// Suficientes observaciones RECIENTES (sin ese vocabulario) para que la
+	// vieja quede fuera de relevanceRecentObsLimit.
+	for i := 0; i < 10; i++ {
+		saveObs(t, st, store.TypeDiscovery, store.ScopeProject, "proyecto-x",
+			fmt.Sprintf("Hallazgo reciente %s", fillerWord(i)), "contenido sin relación")
+	}
+
+	saveObs(t, st, store.TypePreference, store.ScopeGlobal, "otro-proyecto",
+		"Siempre probar en pruebas antes de produccion", "sin excepción, para cualquier proyecto")
+
+	block, err := hooks.BuildCoreBlock(ctx, st, "proyecto-x", hooks.CoreBlockOptions{
+		RelevanceFilter: true, MaxItems: 50, MaxPerType: 50,
+	})
+	if err != nil {
+		t.Fatalf("BuildCoreBlock: %v", err)
+	}
+	if strings.Contains(block, "Siempre probar en pruebas") {
+		t.Errorf("vocabulario compartido solo con una observación VIEJA no debería rescatar la global, bloque:\n%s", block)
+	}
+}
+
+// (e) RelevanceFilter: false dispensa el filtro por completo — mismo
+// comportamiento que antes de esta curaduría, para callers que arman
+// CoreBlockOptions{} sin pensar en pertinencia (ej. tests existentes,
+// internal/obsidian/export.go).
+func TestBuildCoreBlock_RelevanceFilter_Disabled_IncludesEverything(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	saveObs(t, st, store.TypePreference, store.ScopeGlobal, "otro-proyecto",
+		"Preferencia sin ninguna relacion", "contenido totalmente ajeno a proyecto-x")
+
+	block, err := hooks.BuildCoreBlock(ctx, st, "proyecto-x", hooks.CoreBlockOptions{RelevanceFilter: false})
+	if err != nil {
+		t.Fatalf("BuildCoreBlock: %v", err)
+	}
+	if !strings.Contains(block, "Preferencia sin ninguna relacion") {
+		t.Errorf("con RelevanceFilter=false la global debería entrar igual, bloque:\n%s", block)
+	}
+}
+
+// El checkpoint entra SIEMPRE, incluso compitiendo con MaxItems=1 y varios
+// items de proyecto de alta prioridad — "siempre entra" no cede ante la
+// competencia por presupuesto/cantidad.
+func TestBuildCoreBlock_CheckpointEntersDespiteMaxItemsCompetition(t *testing.T) {
+	dataDir := setupTempDataDir(t)
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	if err := checkpoint.Save(dataDir, "proyecto-x", checkpoint.State{
+		Task: "tarea en curso", NextStep: "siguiente paso", Project: "proyecto-x",
+	}); err != nil {
+		t.Fatalf("checkpoint.Save: %v", err)
+	}
+	for i := 0; i < 5; i++ {
+		saveObs(t, st, store.TypePreference, store.ScopeProject, "proyecto-x",
+			fmt.Sprintf("Preferencia %s", fillerWord(i)), "contenido cualquiera")
+	}
+
+	block, err := hooks.BuildCoreBlock(ctx, st, "proyecto-x", hooks.CoreBlockOptions{IncludeCheckpoint: true, MaxItems: 1})
+	if err != nil {
+		t.Fatalf("BuildCoreBlock: %v", err)
+	}
+	if !strings.Contains(block, "> tarea en curso | siguiente: siguiente paso") {
+		t.Errorf("el checkpoint debería entrar SIEMPRE, incluso con MaxItems=1 y preferencias compitiendo, bloque:\n%s", block)
+	}
+}
+
+// El recorte por MaxItemChars nunca corta una palabra a la mitad — retrocede
+// hasta el último espacio antes de agregar "...". Se compara la línea
+// recortada contra la línea SIN recortar (MaxItemChars grande): la recortada
+// debe ser un prefijo exacto de la completa, y el carácter que sigue a ese
+// prefijo en la línea completa debe ser un espacio (o no existir) — nunca
+// una letra a mitad de palabra.
+func TestBuildCoreBlock_Truncation_NeverCutsWordMidway(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	words := []string{"palabraunodiez", "palabradosdiez", "palabratresdiez", "palabracuatrodiez", "palabracincodiez"}
+	saveObs(t, st, store.TypeDiscovery, store.ScopeProject, "proyecto-x", "T", strings.Join(words, " "))
+
+	findLine := func(block string) string {
+		for _, l := range strings.Split(block, "\n") {
+			if strings.HasPrefix(l, "- [discovery]") {
+				return l
+			}
+		}
+		return ""
+	}
+
+	fullBlock, err := hooks.BuildCoreBlock(ctx, st, "proyecto-x", hooks.CoreBlockOptions{MaxItemChars: 500})
+	if err != nil {
+		t.Fatalf("BuildCoreBlock (sin recorte): %v", err)
+	}
+	fullLine := findLine(fullBlock)
+	if fullLine == "" || strings.HasSuffix(fullLine, "...") {
+		t.Fatalf("esperaba la línea completa sin recortar, bloque:\n%s", fullBlock)
+	}
+
+	block, err := hooks.BuildCoreBlock(ctx, st, "proyecto-x", hooks.CoreBlockOptions{MaxItemChars: 45})
+	if err != nil {
+		t.Fatalf("BuildCoreBlock: %v", err)
+	}
+	line := findLine(block)
+	if line == "" {
+		t.Fatalf("esperaba una línea [discovery] en el bloque:\n%s", block)
+	}
+	if !strings.HasSuffix(line, "...") {
+		t.Fatalf("esperaba que la línea recortada terminara en '...': %q", line)
+	}
+	trimmed := strings.TrimSuffix(line, "...")
+	if !strings.HasPrefix(fullLine, trimmed) {
+		t.Fatalf("la línea recortada %q no es un prefijo de la línea completa %q", trimmed, fullLine)
+	}
+	if len(fullLine) > len(trimmed) && fullLine[len(trimmed)] != ' ' {
+		t.Errorf("se cortó a mitad de palabra: después del prefijo recortado %q sigue %q (no un espacio)", trimmed, string(fullLine[len(trimmed)]))
+	}
+}
+
+// Reporte honesto combinando varias clases de omisión en el mismo bloque:
+// globales poco pertinentes, globales por presupuesto y proyecto por
+// presupuesto conviven en la misma cláusula "omitidos: ...".
+func TestBuildCoreBlock_HonestOmissionReport_MultipleClasses(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	saveObs(t, st, store.TypePreference, store.ScopeGlobal, "otro-proyecto",
+		"Preferencia irrelevante de otro proyecto", "sin relación con proyecto-x")
+	for i := 0; i < 6; i++ {
+		saveObs(t, st, store.TypePattern, store.ScopeGlobal, "proyecto-x",
+			fmt.Sprintf("Patron propio %s", fillerWord(i)), "contenido")
+	}
+	for i := 0; i < 10; i++ {
+		saveObs(t, st, store.TypeDiscovery, store.ScopeProject, "proyecto-x",
+			fmt.Sprintf("Hallazgo %s", fillerWord(i+10)), "contenido de relleno")
+	}
+
+	block, err := hooks.BuildCoreBlock(ctx, st, "proyecto-x", hooks.CoreBlockOptions{
+		RelevanceFilter: true, GlobalsMaxItems: 2, MaxItems: 4,
+	})
+	if err != nil {
+		t.Fatalf("BuildCoreBlock: %v", err)
+	}
+	if strings.Contains(block, "recortado por presupuesto") {
+		t.Errorf("el footer genérico anterior no debería aparecer más, bloque:\n%s", block)
+	}
+	if !strings.Contains(block, "omitidos:") {
+		t.Fatalf("esperaba la cláusula de omitidos, bloque:\n%s", block)
+	}
+	if !strings.Contains(block, "poco pertinentes") {
+		t.Errorf("esperaba omitidos por pertinencia, bloque:\n%s", block)
+	}
+	if !strings.Contains(block, "por presupuesto") {
+		t.Errorf("esperaba omitidos por presupuesto, bloque:\n%s", block)
 	}
 }
 

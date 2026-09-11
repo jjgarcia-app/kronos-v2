@@ -2041,6 +2041,151 @@ func TestRunPreToolUse_DBUnavailable_FailOpen(t *testing.T) {
 	}
 }
 
+// --- RunPreToolUse: gate.satisfied_by_injection ---
+
+// TestRunPreToolUse_SatisfiedByInjection_CoreBlockItems_NoBlock cubre (a):
+// una sesión cuyo InjectedObservationIDs ya trae IDs (simulando que
+// SessionStart, vía el bloque core, ya inyectó items de PROYECTO — ver
+// printCoreBlock/injectContinuity en session_start.go) no bloquea, aunque
+// nunca haya llamado mem_search.
+func TestRunPreToolUse_SatisfiedByInjection_CoreBlockItems_NoBlock(t *testing.T) {
+	t.Setenv("KRONOS_GATE_BLOCK", "1")
+	hooks.ResetGatedTools()
+	st := newTestStore(t)
+	ctx := context.Background()
+	seedObservations(t, st, "proyecto-injected", 5)
+	st.CreateSession(ctx, "sess-gate-injected", "proyecto-injected", "/tmp")
+
+	obs, err := st.SaveObservation(ctx, store.SaveParams{
+		Type: store.TypeDecision, Title: "decision ya inyectada por el core block",
+		Content: "esto simula un item de proyecto que el bloque core ya mostró en SessionStart",
+		Project: "proyecto-injected",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PersistInjectedIDs(ctx, "sess-gate-injected", []string{fmt.Sprintf("%d", obs.ID)}); err != nil {
+		t.Fatal(err)
+	}
+
+	var exitCode *int
+	hooks.SetExitFn(func(code int) { exitCode = &code })
+	defer hooks.SetExitFn(nil)
+
+	in := hooks.Input{SessionID: "sess-gate-injected", ToolName: "Edit", CWD: gateCWD(t, "proyecto-injected")}
+	stderr := captureStderr(t, func() {
+		hooks.RunPreToolUse(ctx, in, st)
+	})
+
+	if strings.Contains(stderr, "[kronos]") {
+		t.Errorf("sesión ya informada por el bloque core no debería disparar el warning, got: %q", stderr)
+	}
+	if exitCode != nil {
+		t.Errorf("exitFn no debería llamarse: la sesión ya recibió memoria inyectada, got code %d", *exitCode)
+	}
+}
+
+// TestRunPreToolUse_NoInjection_NoSearch_Blocks cubre (b): una sesión sin
+// InjectedObservationIDs (bloque core vacío o desactivado) y sin
+// mem_search — sigue bloqueando en modo bloqueo, igual que antes de
+// satisfied_by_injection.
+func TestRunPreToolUse_NoInjection_NoSearch_Blocks(t *testing.T) {
+	t.Setenv("KRONOS_GATE_BLOCK", "1")
+	hooks.ResetGatedTools()
+	st := newTestStore(t)
+	ctx := context.Background()
+	seedObservations(t, st, "proyecto-noinjection", 5)
+	st.CreateSession(ctx, "sess-gate-noinjection", "proyecto-noinjection", "/tmp")
+
+	var exitCode *int
+	hooks.SetExitFn(func(code int) { exitCode = &code })
+	defer hooks.SetExitFn(nil)
+
+	in := hooks.Input{SessionID: "sess-gate-noinjection", ToolName: "Edit", CWD: gateCWD(t, "proyecto-noinjection")}
+	captureStderr(t, func() {
+		hooks.RunPreToolUse(ctx, in, st)
+	})
+
+	if exitCode == nil {
+		t.Error("sin inyección ni búsqueda, el gate debería bloquear")
+	} else if *exitCode != 2 {
+		t.Errorf("exitFn called with code %d, want 2", *exitCode)
+	}
+}
+
+// TestRunPreToolUse_FewObservations_SkipsEvenIfSatisfiedByInjectionDisabled
+// cubre (c): gate.min_observations sigue ganando primero — un proyecto con
+// pocas observaciones no bloquea, incluso con satisfied_by_injection=false
+// (ninguna de las dos señales debería importar todavía).
+func TestRunPreToolUse_FewObservations_SkipsEvenIfSatisfiedByInjectionDisabled(t *testing.T) {
+	setupTempConfigDir(t)
+	cfg := config.Default()
+	cfg.Gate.SatisfiedByInjection = false
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("cfg.Save: %v", err)
+	}
+	t.Setenv("KRONOS_GATE_BLOCK", "1")
+	hooks.ResetGatedTools()
+
+	st := newTestStore(t)
+	ctx := context.Background()
+	seedObservations(t, st, "proyecto-chico-satisfecho", 3)
+	st.CreateSession(ctx, "sess-gate-few-satisfied-off", "proyecto-chico-satisfecho", "/tmp")
+
+	var exitCode *int
+	hooks.SetExitFn(func(code int) { exitCode = &code })
+	defer hooks.SetExitFn(nil)
+
+	in := hooks.Input{SessionID: "sess-gate-few-satisfied-off", ToolName: "Edit", CWD: gateCWD(t, "proyecto-chico-satisfecho")}
+	stderr := captureStderr(t, func() {
+		hooks.RunPreToolUse(ctx, in, st)
+	})
+
+	if strings.Contains(stderr, "[kronos]") {
+		t.Errorf("proyecto con 3 observaciones no debería disparar el gate, got: %q", stderr)
+	}
+	if exitCode != nil {
+		t.Errorf("exitFn no debería llamarse con 3 observaciones (< min_observations), aunque satisfied_by_injection=false, got code %d", *exitCode)
+	}
+}
+
+// TestRunPreToolUse_SatisfiedByInjection_Disabled_StillBlocks verifica que
+// gate.satisfied_by_injection=false vuelve al comportamiento anterior: una
+// sesión con IDs inyectados pero sin mem_search bloquea igual.
+func TestRunPreToolUse_SatisfiedByInjection_Disabled_StillBlocks(t *testing.T) {
+	setupTempConfigDir(t)
+	cfg := config.Default()
+	cfg.Gate.SatisfiedByInjection = false
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("cfg.Save: %v", err)
+	}
+	t.Setenv("KRONOS_GATE_BLOCK", "1")
+	hooks.ResetGatedTools()
+
+	st := newTestStore(t)
+	ctx := context.Background()
+	seedObservations(t, st, "proyecto-satisfied-off", 5)
+	st.CreateSession(ctx, "sess-gate-satisfied-off", "proyecto-satisfied-off", "/tmp")
+	if err := st.PersistInjectedIDs(ctx, "sess-gate-satisfied-off", []string{"1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	var exitCode *int
+	hooks.SetExitFn(func(code int) { exitCode = &code })
+	defer hooks.SetExitFn(nil)
+
+	in := hooks.Input{SessionID: "sess-gate-satisfied-off", ToolName: "Edit", CWD: gateCWD(t, "proyecto-satisfied-off")}
+	captureStderr(t, func() {
+		hooks.RunPreToolUse(ctx, in, st)
+	})
+
+	if exitCode == nil {
+		t.Error("con satisfied_by_injection=false, la inyección no debería alcanzar para saltar el gate")
+	} else if *exitCode != 2 {
+		t.Errorf("exitFn called with code %d, want 2", *exitCode)
+	}
+}
+
 // --- PreCompact ---
 
 func TestRunPreCompact_PrintsWarning(t *testing.T) {
