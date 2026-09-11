@@ -288,7 +288,9 @@ func findChildRepos(cwd string) ([]string, []string) {
 func pickMostLikely(paths []string) int {
 	best := 0
 	var bestTime int64 = -1
-	deadline := time.Now().Add(500 * time.Millisecond)
+	// Tope global: con gitCmdTimeout=1s por comando, 1.5s alcanza para evaluar
+	// 2 candidatos y no cuelga el arranque cuando hay muchos repos hermanos.
+	deadline := time.Now().Add(1500 * time.Millisecond)
 	for i, p := range paths {
 		if time.Now().After(deadline) {
 			break
@@ -309,7 +311,21 @@ func pickMostLikely(paths []string) int {
 	return best
 }
 
-// gitCmd ejecuta un comando git con timeout de 200ms.
+// gitCmdTimeout es el presupuesto por comando git (ver gitCmd). 200ms resultó
+// insuficiente en máquinas cargadas y hacía que la detección de proyecto cayera
+// al fallback silencioso.
+const gitCmdTimeout = 1000 * time.Millisecond
+
+// gitCmd ejecuta un comando git con timeout acotado.
+//
+// 200ms era demasiado ajustado para una máquina cargada: medido el 2026-09-11
+// con 6 sesiones en paralelo, un `git log -1` local en un repo temporal superó
+// ese presupuesto, el candidato se ignoró, y la detección cayó al fallback
+// (el primer repo encontrado) — o sea el proyecto de la sesión se atribuía al
+// repo equivocado y las observaciones se guardaban en el proyecto incorrecto.
+// Sube a 1s por comando (manteniendo el tope global de la selección, ver
+// pickMostLikely): en el peor caso solo agrega latencia al arranque cuando hay
+// varios repos hermanos, y a cambio deja de mentir sobre qué proyecto es.
 func gitCmd(cwd string, args ...string) string {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = cwd
@@ -324,7 +340,7 @@ func gitCmd(cwd string, args ...string) string {
 	select {
 	case out := <-done:
 		return strings.TrimSpace(string(out))
-	case <-time.After(200 * time.Millisecond):
+	case <-time.After(gitCmdTimeout):
 		if cmd.Process != nil {
 			_ = cmd.Process.Kill()
 		}
