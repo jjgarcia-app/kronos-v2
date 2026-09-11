@@ -89,7 +89,14 @@ func (s *Store) SaveObservation(ctx context.Context, p SaveParams) (*Observation
 		if err != nil {
 			return nil, fmt.Errorf("insert observation: %w", err)
 		}
-		return s.GetObservation(ctx, id)
+		obs, err := s.GetObservation(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		if obs == nil {
+			return nil, fmt.Errorf("insert observation: id %d insertado pero no se pudo releer", id)
+		}
+		return obs, nil
 	}
 
 	res, err := s.exec(ctx,
@@ -108,9 +115,35 @@ func (s *Store) SaveObservation(ctx context.Context, p SaveParams) (*Observation
 		return nil, fmt.Errorf("insert observation lastid: %w", err)
 	}
 	if id == 0 {
-		return s.GetObservationBySyncID(ctx, syncID)
+		obs, err := s.GetObservationBySyncID(ctx, syncID)
+		if err != nil {
+			return nil, err
+		}
+		if obs == nil {
+			return nil, fmt.Errorf("insert observation: sync_id %s insertado pero no se pudo releer", syncID)
+		}
+		return obs, nil
 	}
-	return s.GetObservation(ctx, id)
+	obs, err := s.GetObservation(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if obs == nil {
+		// Reintento único por sync_id: con SQLite y pool de conexiones, la fila
+		// recién insertada puede no ser visible todavía desde otra conexión bajo
+		// carga (visto en la suite completa: LastInsertId devolvía un id que no
+		// se releía). Antes esto salía como (nil, nil) y el llamador reventaba
+		// con un nil pointer — se vio como panic en un test, pero en producción
+		// el mismo camino guarda observaciones desde los hooks.
+		obs, err = s.GetObservationBySyncID(ctx, syncID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if obs == nil {
+		return nil, fmt.Errorf("insert observation: id %d insertado pero no se pudo releer", id)
+	}
+	return obs, nil
 }
 
 // GetByTopicKey busca una observación por su topic_key dentro de un

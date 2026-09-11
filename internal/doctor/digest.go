@@ -86,6 +86,19 @@ func llmProviderStatus(cfg config.Config) string {
 
 	detail := fmt.Sprintf("LLM captura automática: proveedor=%s, modelo=%s", provider, model)
 
+	// El guardián de carga solo aplica a los backends que generan con CPU de
+	// esta máquina (Ollama). Con un proveedor remoto (claude-cli) no se saltea
+	// nada, así que decir "SALTEANDO" ahí sería mentir sobre lo que va a pasar.
+	if provider != "ollama" {
+		if _, load1, cpus, available := llm.LoadGuardStatus(cfg.LLM.MaxLoadPerCPU); available {
+			detail += fmt.Sprintf(" | guardián de carga: no aplica a %s (solo protege al modelo local; load1=%.2f / %d CPUs)",
+				provider, load1, cpus)
+		} else {
+			detail += " | guardián de carga: desactivado"
+		}
+		return detail
+	}
+
 	if skipping, load1, cpus, available := llm.LoadGuardStatus(cfg.LLM.MaxLoadPerCPU); available {
 		if skipping {
 			detail += fmt.Sprintf(" | guardián de carga: SALTEANDO llamadas (load1=%.2f / %d CPUs > umbral %g)",
