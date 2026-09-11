@@ -47,8 +47,14 @@ func TestDefault_HasExpectedValues(t *testing.T) {
 	if !cfg.Core.IncludeCheckpoint {
 		t.Error("default core.include_checkpoint should be true")
 	}
-	if cfg.Core.MaxGlobalChars != 800 {
-		t.Errorf("default core.max_global_chars = %d, want 800", cfg.Core.MaxGlobalChars)
+	if cfg.Core.GlobalsMaxChars != 600 {
+		t.Errorf("default core.globals_max_chars = %d, want 600", cfg.Core.GlobalsMaxChars)
+	}
+	if cfg.Core.GlobalsMaxItems != 4 {
+		t.Errorf("default core.globals_max_items = %d, want 4", cfg.Core.GlobalsMaxItems)
+	}
+	if !cfg.Core.RelevanceFilter {
+		t.Error("default core.relevance_filter should be true")
 	}
 	if cfg.Core.ProjectMinChars != 600 {
 		t.Errorf("default core.project_min_chars = %d, want 600", cfg.Core.ProjectMinChars)
@@ -73,6 +79,9 @@ func TestDefault_HasExpectedValues(t *testing.T) {
 	}
 	if cfg.Gate.MinObservations != 5 {
 		t.Errorf("default gate.min_observations = %d, want 5", cfg.Gate.MinObservations)
+	}
+	if !cfg.Gate.SatisfiedByInjection {
+		t.Error("default gate.satisfied_by_injection should be true")
 	}
 }
 
@@ -127,8 +136,8 @@ func TestLoad_PartialCoreSection_KeepsDefaults(t *testing.T) {
 	if cfg.Core.MaxItems != 12 {
 		t.Errorf("core.max_items ausente debería conservar el default 12, got %d", cfg.Core.MaxItems)
 	}
-	if cfg.Core.MaxGlobalChars != 800 {
-		t.Errorf("core.max_global_chars ausente debería conservar el default 800, got %d", cfg.Core.MaxGlobalChars)
+	if cfg.Core.GlobalsMaxChars != 600 {
+		t.Errorf("core.globals_max_chars ausente debería conservar el default 600, got %d", cfg.Core.GlobalsMaxChars)
 	}
 	if cfg.Core.ProjectMinChars != 600 {
 		t.Errorf("core.project_min_chars ausente debería conservar el default 600, got %d", cfg.Core.ProjectMinChars)
@@ -257,7 +266,9 @@ func TestSet_ValidFields(t *testing.T) {
 		{"core.chars_limit", "1500"},
 		{"core.max_items", "8"},
 		{"core.include_checkpoint", "false"},
-		{"core.max_global_chars", "500"},
+		{"core.globals_max_chars", "500"},
+		{"core.globals_max_items", "2"},
+		{"core.relevance_filter", "false"},
 		{"core.project_min_chars", "400"},
 		{"core.max_per_type", "2"},
 		{"core.max_item_chars", "90"},
@@ -266,6 +277,7 @@ func TestSet_ValidFields(t *testing.T) {
 		{"gate.block", "true"},
 		{"gate.tools", "Edit, Bash"},
 		{"gate.min_observations", "3"},
+		{"gate.satisfied_by_injection", "false"},
 	}
 	for _, c := range cases {
 		if err := cfg.Set(c.key, c.val); err != nil {
@@ -302,8 +314,14 @@ func TestSet_ValidFields(t *testing.T) {
 	if cfg.Core.IncludeCheckpoint {
 		t.Error("core.include_checkpoint should be false")
 	}
-	if cfg.Core.MaxGlobalChars != 500 {
-		t.Errorf("core.max_global_chars not set: got %d", cfg.Core.MaxGlobalChars)
+	if cfg.Core.GlobalsMaxChars != 500 {
+		t.Errorf("core.globals_max_chars not set: got %d", cfg.Core.GlobalsMaxChars)
+	}
+	if cfg.Core.GlobalsMaxItems != 2 {
+		t.Errorf("core.globals_max_items not set: got %d", cfg.Core.GlobalsMaxItems)
+	}
+	if cfg.Core.RelevanceFilter {
+		t.Error("core.relevance_filter should be false")
 	}
 	if cfg.Core.ProjectMinChars != 400 {
 		t.Errorf("core.project_min_chars not set: got %d", cfg.Core.ProjectMinChars)
@@ -328,6 +346,9 @@ func TestSet_ValidFields(t *testing.T) {
 	}
 	if cfg.Gate.MinObservations != 3 {
 		t.Errorf("gate.min_observations not set: got %d", cfg.Gate.MinObservations)
+	}
+	if cfg.Gate.SatisfiedByInjection {
+		t.Error("gate.satisfied_by_injection should be false")
 	}
 }
 

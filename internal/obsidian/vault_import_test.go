@@ -2,6 +2,7 @@ package obsidian_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -397,4 +398,100 @@ func TestImportVault_ProjectFilter(t *testing.T) {
 			t.Error("--project kronos-v2 no debería haber tocado una observación de atisa")
 		}
 	}
+}
+
+// (h) tras aplicar una edición manual, el frontmatter del archivo queda al día
+// (revision y kronos_hash), así la nota no miente sobre su propia versión y la
+// segunda pasada es un no-op.
+func TestImportVault_RefreshesFrontmatterOnApply(t *testing.T) {
+	st := newTestStore(t)
+	seedObservations(t, st)
+	outDir := t.TempDir()
+	ctx := context.Background()
+
+	if err := obsidian.Export(ctx, st, outDir, ""); err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+
+	path := findGeneratedFile(t, outDir, "SQLite FTS5 para búsqueda")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := string(raw)
+	if !strings.Contains(before, "kronos_hash: ") {
+		t.Fatalf("el archivo exportado no tiene kronos_hash en el frontmatter:\n%s", before)
+	}
+	oldHash := frontmatterValue(before, "kronos_hash")
+	if oldHash == "" {
+		t.Fatal("no pude leer el kronos_hash previo")
+	}
+
+	edited := strings.Replace(before, "FTS5 con unicode61 maneja español correctamente.",
+		"FTS5 con unicode61 maneja español correctamente. Nota escrita a mano.", 1)
+	if edited == before {
+		t.Fatal("el reemplazo no encontró el contenido esperado")
+	}
+	if err := os.WriteFile(path, []byte(edited), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	stats, err := obsidian.ImportVault(ctx, st, outDir, obsidian.ImportOptions{Apply: true})
+	if err != nil {
+		t.Fatalf("ImportVault: %v", err)
+	}
+	if len(stats.Updates) != 1 {
+		t.Fatalf("Updates = %d, quería 1", len(stats.Updates))
+	}
+
+	var target *store.Observation
+	all, err := st.ListAll(ctx, "kronos-v2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, o := range all {
+		if strings.Contains(o.Title, "SQLite FTS5") {
+			target = o
+		}
+	}
+	if target == nil {
+		t.Fatal("no encontré la observación de origen")
+	}
+
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(after)
+	if !strings.Contains(got, "Nota escrita a mano.") {
+		t.Error("la edición manual se perdió al refrescar el frontmatter")
+	}
+	wantRev := fmt.Sprintf("revision: %d", target.RevisionCount)
+	if !strings.Contains(got, wantRev) {
+		t.Errorf("el frontmatter no refleja la revisión de la base (%q):\n%s", wantRev, got)
+	}
+	if h := frontmatterValue(got, "kronos_hash"); h == "" || h == oldHash {
+		t.Errorf("kronos_hash no se actualizó (antes %q, ahora %q)", oldHash, h)
+	}
+
+	// Segunda pasada: ya no hay nada que importar.
+	stats2, err := obsidian.ImportVault(ctx, st, outDir, obsidian.ImportOptions{Apply: true})
+	if err != nil {
+		t.Fatalf("segunda ImportVault: %v", err)
+	}
+	if len(stats2.Updates) != 0 || len(stats2.Conflicts) != 0 {
+		t.Errorf("segunda pasada: %d actualizadas, %d conflictos — esperaba 0 y 0",
+			len(stats2.Updates), len(stats2.Conflicts))
+	}
+}
+
+// frontmatterValue devuelve el valor de una clave del frontmatter YAML (vacío
+// si no está).
+func frontmatterValue(file, key string) string {
+	for _, line := range strings.Split(file, "\n") {
+		if strings.HasPrefix(line, key+":") {
+			return strings.TrimSpace(strings.TrimPrefix(line, key+":"))
+		}
+	}
+	return ""
 }
