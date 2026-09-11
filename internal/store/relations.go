@@ -305,7 +305,13 @@ func (s *Store) ListRelations(ctx context.Context, project, status string, limit
 
 	args = append(args, limit, offset)
 
-	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`
+	// s.query (no s.db.QueryContext) — aplica rebind de "?" a "$N" para
+	// Postgres. Sin esto, ListRelations contra un primary Postgres real
+	// siempre fallaba con syntax error (pgx no acepta "?"), lo que en
+	// DualStore.ListRelations se traduce en un markDown espurio y caída
+	// permanente al buffer — exactamente el bug que hacía que mem_doctor
+	// mostrara los conteos del buffer SQLite en vez del primary real.
+	rows, err := s.query(ctx, fmt.Sprintf(`
 		SELECT r.id, r.sync_id, r.source_id, r.target_id, r.relation, r.judgment_status,
 		       COALESCE(r.reason,''), COALESCE(r.confidence,0), COALESCE(r.marked_by_actor,''),
 		       COALESCE(r.marked_by_kind,''), r.created_at, r.updated_at,

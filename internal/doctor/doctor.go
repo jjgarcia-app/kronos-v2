@@ -48,6 +48,7 @@ func Run(ctx context.Context, cfg config.Config) Report {
 
 	r.Checks = append(r.Checks, checkConfigFile())
 	r.Checks = append(r.Checks, checkDatabase(ctx, cfg))
+	r.Checks = append(r.Checks, checkObservations(ctx, cfg))
 	r.Checks = append(r.Checks, checkOllama(ctx, cfg))
 	r.Checks = append(r.Checks, checkEmbeddingModel(ctx, cfg))
 	r.Checks = append(r.Checks, checkClaudeHooks())
@@ -432,6 +433,56 @@ func checkSyncQueue(ctx context.Context) Check {
 		Status:       StatusWarn,
 		FixAvailable: false,
 	}
+}
+
+// checkObservations reporta conteos reales de observaciones/sesiones y
+// relaciones pendientes de juzgar — leyendo primary-first cuando el backend
+// es Postgres, con el mismo DualStore que usa el daemon en producción (ver
+// cmd/kronos/serve.go, cmd/kronos/sync.go). Antes `mem_doctor` (el tool MCP,
+// no este comando) leía SIEMPRE el buffer SQLite local sin importar el
+// estado del primary — 849 obs / 3 relaciones pendientes del buffer, cuando
+// Postgres (el primary real) tenía 880 obs y memory_relations vacía.
+func checkObservations(ctx context.Context, cfg config.Config) Check {
+	dbPath, err := platform.DBPath()
+	if err != nil {
+		return Check{Name: "Observaciones", Detail: "no se pudo resolver la ruta del buffer local", Status: StatusWarn}
+	}
+	if cfg.DB.SQLitePath != "" {
+		dbPath = cfg.DB.SQLitePath
+	}
+	buffer, err := store.New(dbPath)
+	if err != nil {
+		return Check{Name: "Observaciones", Detail: "no se pudo abrir DB local", Status: StatusWarn}
+	}
+
+	var st store.Storer = buffer
+	if cfg.DB.Backend == "postgres" && cfg.DB.PostgresDSN != "" {
+		dual, err := store.NewDualFromDSN(buffer, cfg.DB.PostgresDSN)
+		if err != nil {
+			buffer.Close()
+			return Check{Name: "Observaciones", Detail: fmt.Sprintf("no se pudo abrir dual store: %v", err), Status: StatusWarn}
+		}
+		defer dual.Close() // cierra también el buffer subyacente
+		st = dual
+	} else {
+		defer buffer.Close()
+	}
+
+	stats, err := st.Stats(ctx)
+	if err != nil {
+		return Check{Name: "Observaciones", Detail: fmt.Sprintf("error leyendo stats: %v", err), Status: StatusWarn}
+	}
+	detail := fmt.Sprintf("%d obs, %d sesiones, %d proyectos", stats.TotalObservations, stats.TotalSessions, len(stats.Projects))
+
+	if rels, err := st.ListRelations(ctx, "", store.JudgmentPending, 1000, 0); err == nil {
+		if len(rels) > 0 {
+			detail += fmt.Sprintf(" | %d relaciones pendientes (usar mem_judge)", len(rels))
+		} else {
+			detail += " | sin relaciones pendientes"
+		}
+	}
+
+	return Check{Name: "Observaciones", Detail: detail, Status: StatusOK}
 }
 
 // --- fix implementations ---

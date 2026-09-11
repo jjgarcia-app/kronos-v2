@@ -635,6 +635,28 @@ func (d *DualStore) IncrementSearchCount(ctx context.Context, sessionID string) 
 	return nil
 }
 
+// ListRelations expone primary-first el listado de relaciones — usado por
+// mem_doctor (internal/mcp/handlers.go) y por el aviso de backlog de
+// SessionStart (internal/hooks/session_start.go). Antes ambos alcanzaban el
+// buffer SQLite local a mano vía LocalStore()/localStoreOf(), sin importar
+// si el primary estaba sano: mem_doctor reportaba 849 obs/3 relaciones
+// pendientes leídas del buffer mientras mem_stats (ya primary-first) mostraba
+// 880 obs reales, y el primary ni siquiera tenía filas en memory_relations.
+// FindCandidates (que crea las filas pending) solo corre en SQLite — en un
+// backend Postgres sano esto normalmente devuelve vacío, que es lo correcto:
+// refleja el estado real del primary en vez de mentir con datos viejos del
+// buffer que nadie más puede limpiar.
+func (d *DualStore) ListRelations(ctx context.Context, project, status string, limit, offset int) ([]Relation, error) {
+	if !d.isPrimaryDown() {
+		rels, err := d.primary.ListRelations(ctx, project, status, limit, offset)
+		if err == nil {
+			return rels, nil
+		}
+		d.markDown(err)
+	}
+	return d.buffer.ListRelations(ctx, project, status, limit, offset)
+}
+
 // LocalStore retorna el Store SQLite local (buffer).
 // Usar para operaciones que siempre deben ejecutarse en local: conflictos, sync, checkpoints.
 func (d *DualStore) LocalStore() *Store {
