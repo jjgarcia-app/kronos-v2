@@ -55,6 +55,19 @@ hook() { # hook <evento> <payload-json>
 
 ms_now() { date +%s%3N; }
 
+# limpiarSesionesSinteticas marca como borradas (deleted_at, reversible) las
+# sesiones que este script crea para probar los hooks — si no, la verificación
+# ensucia las estadísticas del usuario con ~5 sesiones por corrida. Best-effort:
+# si no hay psql o no se puede leer el DSN, se saltea sin hacer ruido.
+limpiarSesionesSinteticas() {
+  command -v psql >/dev/null 2>&1 || return 0
+  local dsn
+  dsn="$("$BIN" config show 2>/dev/null | sed -n 's/.*"postgres_dsn": *"\([^"]*\)".*/\1/p' | head -1)"
+  [ -z "$dsn" ] && return 0
+  psql "$dsn" -q -c "update sessions set deleted_at = to_char(now() at time zone 'utc','YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') where id like 'verify-%' and deleted_at is null" >/dev/null 2>&1 || true
+}
+trap limpiarSesionesSinteticas EXIT
+
 echo "verificación de memoria — $(date '+%Y-%m-%d %H:%M')"
 echo "binario:  $BIN ($("$BIN" version 2>/dev/null))"
 echo "proyecto: $PROYECTO  ($REPO)"
@@ -199,6 +212,7 @@ fi
 # --------------------------------------------------------------------- resumen
 head_ "resumen"
 echo "  PASS: $PASS   FAIL: $FAIL   SKIP: $SKIP"
+echo "  (las sesiones sintéticas de esta corrida quedaron marcadas como borradas en la base)"
 if [ "$FAIL" -gt 0 ]; then
   echo "  → hay fallos, revisá el detalle de arriba"
   exit 1
