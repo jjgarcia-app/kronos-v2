@@ -221,8 +221,24 @@ func importFile(ctx context.Context, st store.Storer, path string, opts ImportOp
 	if titleChanged {
 		params.Title = &newTitle
 	}
-	_, err = st.UpdateObservation(ctx, params)
-	return err
+	updated, err := st.UpdateObservation(ctx, params)
+	if err != nil {
+		return err
+	}
+
+	// El archivo que acabamos de importar ya no representa "el export viejo":
+	// la base tiene ahora exactamente su contenido. Reescribimos el archivo con
+	// el render canónico (frontmatter fresco: revision y kronos_hash) pero el
+	// cuerpo queda igual al que escribió el usuario, porque el cuerpo que
+	// escribió es justamente lo que acabamos de guardar. Sin esto la nota
+	// seguía diciendo "Rev: 1" cuando la base decía 2 y el kronos_hash del
+	// frontmatter quedaba apuntando al contenido anterior.
+	if updated != nil {
+		if err := os.WriteFile(path, []byte(observationBuilder(updated)(contentHash(updated.Content))), 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // extractGeneratedParts separa, de un archivo en el formato actual de
