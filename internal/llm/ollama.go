@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -19,10 +21,22 @@ import (
 // fail-open call sites already do.
 var errBreakerOpen = errors.New("llm breaker abierto — no se intenta la llamada")
 
+// errLoadTooHigh es lo que generate() devuelve cuando el guardián de carga
+// (ver loadguard.go) decide no intentar la llamada — mismo contrato
+// fail-open que errBreakerOpen: los tres métodos de generación lo propagan
+// como un error más, y los call sites ya tratan cualquier error como "no
+// hay resultado, seguir sin esto".
+var errLoadTooHigh = errors.New("llm: carga de la máquina por encima del umbral configurado — se saltea la llamada")
+
 const (
 	DefaultModel   = "llama3.2"
 	DefaultBase    = "http://localhost:11434"
 	defaultTimeout = 45 * time.Second
+
+	// loadGuardLogThrottle limita el log de "salteando por carga" a una vez
+	// cada tanto en vez de una vez por prompt — con la máquina saturada esto
+	// se dispararía en casi cada llamada, y no aporta nada verlo repetido.
+	loadGuardLogThrottle = 10 * time.Minute
 )
 
 // JudgeResult is the structured judgment returned by the LLM.
@@ -32,17 +46,46 @@ type JudgeResult struct {
 	Confidence float64 `json:"confidence"`
 }
 
-// Client is a minimal Ollama HTTP client for generative judgment.
+// generateBackend hace la llamada de generación real — implementado por
+// ollamaBackend (HTTP contra /api/generate) y claudeCLIBackend (subproceso
+// `claude -p`, ver claude_cli.go). Client no sabe ni le importa cuál de los
+// dos tiene: arma el prompt, respeta el cortacircuitos y el guardián de
+// carga, y delega el "conseguime texto crudo" acá.
+type generateBackend interface {
+	generate(ctx context.Context, prompt string, numPredict int) (string, error)
+}
+
+// pinger es un backend que puede verificar su propia disponibilidad antes de
+// comprometerse a usarlo (ollamaBackend). claudeCLIBackend no lo implementa
+// — no hay un ping barato equivalente para `claude -p`, así que Client.Ping
+// es un no-op en ese caso (se considera disponible hasta la primera llamada
+// real, que el cortacircuitos protege igual que a Ollama).
+type pinger interface {
+	ping(ctx context.Context) error
+}
+
+// Client es un cliente de generación LLM — históricamente solo Ollama, ahora
+// también claude-cli (ver NewClaudeCLIFromConfig) detrás del mismo backend
+// intercambiable, para que digest.go / pre_compact_capture.go no tengan que
+// conocer la diferencia.
 type Client struct {
-	base    string
 	model   string
-	http    *http.Client
 	breaker *Breaker
+	backend generateBackend
+
+	// maxLoadPerCPU es el umbral del guardián de carga (llm.max_load_per_cpu,
+	// ver loadguard.go) — 0 lo desactiva, que es el default para un Client
+	// armado con NewClient/New directamente (tests, usos fuera de
+	// NewOllamaFromConfig/NewClaudeCLIFromConfig).
+	maxLoadPerCPU float64
+
+	loadGuardMu       sync.Mutex
+	loadGuardLoggedAt time.Time
 }
 
 // SetBreaker conecta un cortacircuitos al cliente — las tres llamadas de
 // generación (JudgeRelation, ExtractFinding, UpdateDigest) lo consultan
-// antes de pegarle a Ollama y le reportan el resultado. nil (default de
+// antes de pegarle al backend y le reportan el resultado. nil (default de
 // NewClient) deja al cliente sin cortacircuitos, igual que antes.
 func (c *Client) SetBreaker(b *Breaker) {
 	c.breaker = b
@@ -53,7 +96,9 @@ func New() *Client {
 	return NewClient(DefaultBase, DefaultModel)
 }
 
-// NewClient creates a Client with explicit base URL and model.
+// NewClient creates a Client with explicit base URL and model, using the
+// Ollama HTTP backend — comportamiento sin cambios respecto de antes del
+// soporte para claude-cli (ver NewClaudeCLIFromConfig para el otro backend).
 func NewClient(base, model string) *Client {
 	if base == "" {
 		base = DefaultBase
@@ -62,20 +107,69 @@ func NewClient(base, model string) *Client {
 		model = DefaultModel
 	}
 	return &Client{
-		base:  base,
 		model: model,
-		http:  &http.Client{Timeout: defaultTimeout},
+		backend: &ollamaBackend{
+			base:  base,
+			model: model,
+			http:  &http.Client{Timeout: defaultTimeout},
+		},
 	}
 }
 
-// Ping verifies the Ollama server is reachable and the model is available.
-// Returns nil on success.
+// Ping verifica que el backend esté disponible — solo tiene efecto real para
+// el backend de Ollama (chequea /api/tags); claude-cli no tiene un
+// equivalente barato, así que se considera disponible sin chequeo previo.
 func (c *Client) Ping(ctx context.Context) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+"/api/tags", nil)
+	if p, ok := c.backend.(pinger); ok {
+		return p.ping(ctx)
+	}
+	return nil
+}
+
+// checkLoadGuard es el guardián de carga (ver loadguard.go) que los tres
+// métodos de generación consultan ANTES de comprometer el cortacircuitos —
+// deliberadamente separado de él y chequeado antes de que se registre el
+// defer que llama RecordFailure/RecordSuccess: un salteo por carga alta no
+// es un fallo del backend (Ollama o claude-cli), así que no debe contar
+// como uno ni acercar el cortacircuitos a abrirse. Aplica por igual a
+// cualquier backend de generación.
+func (c *Client) checkLoadGuard() error {
+	if over, load1, cpus := loadOverThreshold(c.maxLoadPerCPU); over {
+		c.logLoadSkipOnce(load1, cpus)
+		return errLoadTooHigh
+	}
+	return nil
+}
+
+// logLoadSkipOnce loguea en debug que se salteó una llamada por carga alta —
+// a lo sumo una vez cada loadGuardLogThrottle, para no llenar los logs de la
+// misma línea en cada prompt mientras la máquina sigue saturada.
+func (c *Client) logLoadSkipOnce(load1 float64, cpus int) {
+	c.loadGuardMu.Lock()
+	defer c.loadGuardMu.Unlock()
+	now := time.Now()
+	if now.Sub(c.loadGuardLoggedAt) < loadGuardLogThrottle {
+		return
+	}
+	c.loadGuardLoggedAt = now
+	slog.Debug("llm: carga de la máquina por encima del umbral, salteando llamada de generación",
+		"load1", load1, "cpus", cpus, "max_load_per_cpu", c.maxLoadPerCPU)
+}
+
+// ollamaBackend implementa generateBackend contra la API HTTP de Ollama
+// (/api/generate, format:"json" para forzar salida parseable).
+type ollamaBackend struct {
+	base  string
+	model string
+	http  *http.Client
+}
+
+func (b *ollamaBackend) ping(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, b.base+"/api/tags", nil)
 	if err != nil {
 		return err
 	}
-	resp, err := c.http.Do(req)
+	resp, err := b.http.Do(req)
 	if err != nil {
 		return fmt.Errorf("ollama unreachable: %w", err)
 	}
@@ -86,14 +180,62 @@ func (c *Client) Ping(ctx context.Context) error {
 	return nil
 }
 
+func (b *ollamaBackend) generate(ctx context.Context, prompt string, numPredict int) (string, error) {
+	payload, err := json.Marshal(map[string]any{
+		"model":  b.model,
+		"prompt": prompt,
+		"stream": false,
+		"format": "json",
+		"options": map[string]any{
+			"temperature": 0.1,
+			"num_predict": numPredict,
+		},
+	})
+	if err != nil {
+		return "", err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, b.base+"/api/generate", bytes.NewReader(payload))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := b.http.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("ollama unavailable: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("ollama returned status %d", resp.StatusCode)
+	}
+
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("read ollama response: %w", err)
+	}
+
+	var outer struct {
+		Response string `json:"response"`
+	}
+	if err := json.Unmarshal(raw, &outer); err != nil {
+		return "", fmt.Errorf("parse ollama wrapper: %w", err)
+	}
+	return outer.Response, nil
+}
+
 // JudgeRelation asks the LLM to classify the semantic relationship between
 // two observations that have already been screened by cosine similarity.
 // Returns nil (no error) when Ollama is unavailable — callers should fall back gracefully.
 func (c *Client) JudgeRelation(ctx context.Context, aTitle, aContent, bTitle, bContent string, similarity float32) (result *JudgeResult, err error) {
+	if c.breaker != nil && !c.breaker.Allow() {
+		return nil, errBreakerOpen
+	}
+	if err := c.checkLoadGuard(); err != nil {
+		return nil, err
+	}
 	if c.breaker != nil {
-		if !c.breaker.Allow() {
-			return nil, errBreakerOpen
-		}
 		defer func() {
 			if err != nil {
 				c.breaker.RecordFailure(err)
@@ -105,50 +247,13 @@ func (c *Client) JudgeRelation(ctx context.Context, aTitle, aContent, bTitle, bC
 
 	prompt := buildJudgePrompt(aTitle, aContent, bTitle, bContent, similarity)
 
-	payload, err := json.Marshal(map[string]any{
-		"model":  c.model,
-		"prompt": prompt,
-		"stream": false,
-		"format": "json",
-		"options": map[string]any{
-			"temperature": 0.1,
-			"num_predict": 200,
-		},
-	})
+	raw, err := c.backend.generate(ctx, prompt, 200)
 	if err != nil {
 		return nil, err
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+"/api/generate", bytes.NewReader(payload))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("ollama unavailable: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("ollama returned status %d", resp.StatusCode)
-	}
-
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read ollama response: %w", err)
-	}
-
-	var outer struct {
-		Response string `json:"response"`
-	}
-	if err := json.Unmarshal(raw, &outer); err != nil {
-		return nil, fmt.Errorf("parse ollama wrapper: %w", err)
 	}
 
 	var jr JudgeResult
-	if err := json.Unmarshal([]byte(outer.Response), &jr); err != nil {
+	if err := json.Unmarshal([]byte(extractJSONObject(raw)), &jr); err != nil {
 		return nil, fmt.Errorf("parse llm judgment: %w", err)
 	}
 
@@ -183,10 +288,13 @@ type Finding struct {
 // the model finds nothing, same fail-open contract as JudgeRelation: callers
 // treat both "Ollama unavailable" and "nothing found" as "skip, don't save".
 func (c *Client) ExtractFinding(ctx context.Context, excerpt string) (finding *Finding, err error) {
+	if c.breaker != nil && !c.breaker.Allow() {
+		return nil, errBreakerOpen
+	}
+	if err := c.checkLoadGuard(); err != nil {
+		return nil, err
+	}
 	if c.breaker != nil {
-		if !c.breaker.Allow() {
-			return nil, errBreakerOpen
-		}
 		defer func() {
 			if err != nil {
 				c.breaker.RecordFailure(err)
@@ -198,50 +306,13 @@ func (c *Client) ExtractFinding(ctx context.Context, excerpt string) (finding *F
 
 	prompt := buildExtractPrompt(excerpt)
 
-	payload, err := json.Marshal(map[string]any{
-		"model":  c.model,
-		"prompt": prompt,
-		"stream": false,
-		"format": "json",
-		"options": map[string]any{
-			"temperature": 0.1,
-			"num_predict": 400,
-		},
-	})
+	raw, err := c.backend.generate(ctx, prompt, 400)
 	if err != nil {
 		return nil, err
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+"/api/generate", bytes.NewReader(payload))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("ollama unavailable: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("ollama returned status %d", resp.StatusCode)
-	}
-
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read ollama response: %w", err)
-	}
-
-	var outer struct {
-		Response string `json:"response"`
-	}
-	if err := json.Unmarshal(raw, &outer); err != nil {
-		return nil, fmt.Errorf("parse ollama wrapper: %w", err)
 	}
 
 	var f Finding
-	if err := json.Unmarshal([]byte(outer.Response), &f); err != nil {
+	if err := json.Unmarshal([]byte(extractJSONObject(raw)), &f); err != nil {
 		return nil, fmt.Errorf("parse llm finding: %w", err)
 	}
 	if !f.Found {
@@ -271,10 +342,13 @@ type DigestUpdate struct {
 // Returns (nil, nil) on any failure or empty response — same fail-open
 // contract as ExtractFinding/JudgeRelation.
 func (c *Client) UpdateDigest(ctx context.Context, previousDigest, excerpt string) (update *DigestUpdate, err error) {
+	if c.breaker != nil && !c.breaker.Allow() {
+		return nil, errBreakerOpen
+	}
+	if err := c.checkLoadGuard(); err != nil {
+		return nil, err
+	}
 	if c.breaker != nil {
-		if !c.breaker.Allow() {
-			return nil, errBreakerOpen
-		}
 		defer func() {
 			if err != nil {
 				c.breaker.RecordFailure(err)
@@ -286,50 +360,13 @@ func (c *Client) UpdateDigest(ctx context.Context, previousDigest, excerpt strin
 
 	prompt := buildDigestPrompt(previousDigest, excerpt)
 
-	payload, err := json.Marshal(map[string]any{
-		"model":  c.model,
-		"prompt": prompt,
-		"stream": false,
-		"format": "json",
-		"options": map[string]any{
-			"temperature": 0.1,
-			"num_predict": 600,
-		},
-	})
+	raw, err := c.backend.generate(ctx, prompt, 600)
 	if err != nil {
 		return nil, err
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+"/api/generate", bytes.NewReader(payload))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("ollama unavailable: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("ollama returned status %d", resp.StatusCode)
-	}
-
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read ollama response: %w", err)
-	}
-
-	var outer struct {
-		Response string `json:"response"`
-	}
-	if err := json.Unmarshal(raw, &outer); err != nil {
-		return nil, fmt.Errorf("parse ollama wrapper: %w", err)
 	}
 
 	var d DigestUpdate
-	if err := json.Unmarshal([]byte(outer.Response), &d); err != nil {
+	if err := json.Unmarshal([]byte(extractJSONObject(raw)), &d); err != nil {
 		return nil, fmt.Errorf("parse llm digest: %w", err)
 	}
 	if strings.TrimSpace(d.Content) == "" {
@@ -418,4 +455,20 @@ func truncate(s string, max int) string {
 		return s
 	}
 	return s[:max] + "..."
+}
+
+// extractJSONObject recorta texto alrededor del primer '{' y el último '}' —
+// Ollama con format:"json" ya devuelve JSON exacto, pero claude-cli con
+// --output-format text puede envolver la respuesta en fences de markdown o
+// alguna frase pese a que el prompt pide "solo JSON"; esto la deja parseable
+// en ambos casos sin bifurcar el código de los tres métodos de generación.
+func extractJSONObject(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if i := strings.Index(raw, "{"); i > 0 {
+		raw = raw[i:]
+	}
+	if i := strings.LastIndex(raw, "}"); i >= 0 && i < len(raw)-1 {
+		raw = raw[:i+1]
+	}
+	return raw
 }
