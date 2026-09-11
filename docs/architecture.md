@@ -117,9 +117,15 @@ Fix: `SessionStart` imprime el `session_id` real explícito al arrancar, y el me
 go build ./...
 go vet ./...
 go test ./...
+scripts/verify-memory.sh     # verifica el canal de memoria de punta a punta (ver docs/verificacion-memoria.md)
 kronos setup          # instala los hooks en Claude Code
 kronos doctor         # verifica config/DB/Ollama
 kronos serve --daemon-mode   # levanta el daemon a mano (normalmente lo hace el proxy solo)
 ```
+
+La verificación de la memoria (bloque core, recall, gate y vault de ida y
+vuelta, con la línea base medida por ronda) está documentada en
+[`docs/verificacion-memoria.md`](verificacion-memoria.md) y se corre con
+`scripts/verify-memory.sh`.
 
 `kronos.toml` / `.kronos/config.json` controlan el nombre de proyecto explícito por repo. `~/.config/kronos/config.json` (o el equivalente por SO, ver `internal/platform`) controla backend de DB, Ollama, nudge, etc.
