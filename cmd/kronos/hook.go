@@ -328,7 +328,7 @@ func runLocalPreCompactCaptureFallback(cfg config.Config, st store.Storer, in ho
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), preCompactCaptureLocalFallbackTimeout)
 	defer cancel()
-	llmClient := llm.NewOllamaFromConfig(ctx, cfg)
+	llmClient := llm.NewGenerationClientFromConfig(ctx, cfg)
 	_ = hooks.RunPreCompactCapture(ctx, st, llmClient, in.SessionID, in.TranscriptPath, in.CWD)
 	_ = hooks.MaybeUpdateDigest(ctx, st, cfg, llmClient, in.SessionID, in.TranscriptPath, in.CWD, true)
 }
