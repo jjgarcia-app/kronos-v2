@@ -179,6 +179,18 @@ kronos doctor
 [OK] MCP:             Claude Code conectado — 20 tools
 ```
 
+Para verificar el canal de memoria de punta a punta (que el bloque core llegue
+pertinente, que el recall traiga lo conversacional, que el gate no estorbe y
+que el vault permita ida y vuelta), hay un script que corre las cuatro cosas
+contra el binario real:
+
+```bash
+scripts/verify-memory.sh
+```
+
+Sale 0 si todo pasó. El detalle de qué mide cada chequeo y la línea base medida
+están en [`docs/verificacion-memoria.md`](docs/verificacion-memoria.md).
+
 ---
 
 ## Configuración
