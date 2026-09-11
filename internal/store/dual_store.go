@@ -320,7 +320,12 @@ func (d *DualStore) RecordToolUse(ctx context.Context, sessionID, project, toolN
 	}
 	if !d.isPrimaryDown() {
 		if err := d.primary.RecordToolUse(ctx, sessionID, project, toolName); err != nil {
-			d.markDown(err)
+			// Mismo caso que SavePrompt: un FK de tool_usage.session_id no es
+			// una falla de conexión y no debe degradar el primary a 5 s de
+			// lecturas desde el buffer.
+			if !isFKError(err) {
+				d.markDown(err)
+			}
 		} else {
 			return nil
 		}
@@ -339,7 +344,18 @@ func (d *DualStore) SavePrompt(ctx context.Context, sessionID, project, content 
 	}
 	if !d.isPrimaryDown() {
 		if err := d.primary.SavePrompt(ctx, sessionID, project, content); err != nil {
-			d.markDown(err)
+			// Un error de integridad referencial (la sesión todavía no existe
+			// en el primary — típicamente porque se creó en el buffer durante
+			// una caída, o porque el hook corrió sin SessionStart) NO es una
+			// falla de conexión. Marcarlo como caída degradaba TODAS las
+			// lecturas al buffer durante 5 s por cada prompt de una sesión
+			// desincronizada: medido en producción el 2026-09-11 03:07, era una
+			// de las causas del parpadeo y de que la memoria devolviera datos
+			// congelados. Se registra, se escribe en el buffer, y el primary
+			// sigue sano para leer.
+			if !isFKError(err) {
+				d.markDown(err)
+			}
 		} else {
 			return nil
 		}
