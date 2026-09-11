@@ -126,7 +126,7 @@ func (s *Store) FindCandidates(ctx context.Context, savedObs *Observation, opts 
 		return nil, nil
 	}
 
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.query(ctx, `
 		SELECT o.id, o.sync_id, o.title, o.type, o.topic_key, bm25(observations_fts) as rank
 		FROM observations_fts
 		JOIN observations o ON observations_fts.rowid = o.id
@@ -211,7 +211,8 @@ func (s *Store) JudgeRelation(ctx context.Context, p JudgeRelationParams) (*Rela
 	}
 
 	ts := now()
-	_, err = s.db.ExecContext(ctx, `
+	// s.exec (no s.db.ExecContext) — aplica rebind de "?" a "$N" para Postgres.
+	_, err = s.exec(ctx, `
 		UPDATE memory_relations
 		SET relation = ?, reason = ?, evidence = ?, confidence = ?,
 		    judgment_status = 'judged',
@@ -251,7 +252,7 @@ func (s *Store) JudgeBySemantic(ctx context.Context, sourceID, targetID, relatio
 	}
 
 	if existing != nil {
-		_, err = s.db.ExecContext(ctx, `
+		_, err = s.exec(ctx, `
 			UPDATE memory_relations
 			SET relation = ?, confidence = ?, reason = ?,
 			    judgment_status = 'judged',
@@ -268,7 +269,7 @@ func (s *Store) JudgeBySemantic(ctx context.Context, sourceID, targetID, relatio
 
 	// insert nuevo
 	syncID := newSyncID()
-	_, err = s.db.ExecContext(ctx, `
+	_, err = s.exec(ctx, `
 		INSERT INTO memory_relations
 			(sync_id, source_id, target_id, relation, confidence, reason,
 			 judgment_status, marked_by_kind, marked_by_actor, marked_by_model,
@@ -361,7 +362,9 @@ func (s *Store) GetRelationStats(ctx context.Context, project string) (*Relation
 		ByRelation: make(map[string]int),
 	}
 
-	rows, err := s.db.QueryContext(ctx, `
+	// s.query (no s.db.QueryContext) — mismo motivo que ListRelations más
+	// abajo: sin rebind, "?" rompe contra Postgres con syntax error.
+	rows, err := s.query(ctx, `
 		SELECT r.judgment_status, r.relation, COUNT(*) as n
 		FROM memory_relations r
 		LEFT JOIN observations src ON src.sync_id = r.source_id
@@ -411,7 +414,7 @@ func (s *Store) insertRelationPending(ctx context.Context, sourceID, targetID st
 }
 
 func (s *Store) relationExists(ctx context.Context, sourceID, targetID string) (bool, error) {
-	row := s.db.QueryRowContext(ctx, `
+	row := s.queryRow(ctx, `
 		SELECT COUNT(*) FROM memory_relations
 		WHERE deleted_at IS NULL
 		  AND ((source_id = ? AND target_id = ?) OR (source_id = ? AND target_id = ?))`,
@@ -423,7 +426,7 @@ func (s *Store) relationExists(ctx context.Context, sourceID, targetID string) (
 }
 
 func (s *Store) findRelationBetween(ctx context.Context, sourceID, targetID string) (*Relation, error) {
-	row := s.db.QueryRowContext(ctx, `
+	row := s.queryRow(ctx, `
 		SELECT id, sync_id FROM memory_relations
 		WHERE deleted_at IS NULL
 		  AND ((source_id = ? AND target_id = ?) OR (source_id = ? AND target_id = ?))
@@ -442,7 +445,7 @@ func (s *Store) findRelationBetween(ctx context.Context, sourceID, targetID stri
 }
 
 func (s *Store) getRelationByID(ctx context.Context, id int64) (*Relation, error) {
-	row := s.db.QueryRowContext(ctx, `
+	row := s.queryRow(ctx, `
 		SELECT id, sync_id, source_id, target_id, relation, judgment_status,
 		       COALESCE(reason,''), COALESCE(evidence,''), COALESCE(confidence,0),
 		       COALESCE(marked_by_actor,''), COALESCE(marked_by_kind,''), COALESCE(marked_by_model,''),
