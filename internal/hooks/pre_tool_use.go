@@ -92,6 +92,20 @@ func RunPreToolUse(ctx context.Context, in Input, st store.Storer) error {
 	if sess.SearchCount > 0 {
 		return nil // gate satisfied
 	}
+	// gate.satisfied_by_injection (default true): si kronos ya inyectó
+	// memoria en esta sesión sin que el agente pidiera nada — el bloque core
+	// trajo al menos un item del proyecto en SessionStart, o algún recall de
+	// UserPromptSubmit inyectó al menos un item — sess.InjectedObservationIDs
+	// (misma columna que usa el dedup de recall, ver session_start.go /
+	// prompt_submit.go) no está vacía y la sesión ya está informada. Medido
+	// 2026-09-11: con el bloque core y el recall por relevancia activos,
+	// exigir además una búsqueda explícita es casi siempre redundante — la
+	// sesión gasta un turno buscando algo que ya se le mostró.
+	if satisfiedByInjection(cfg) && len(sess.InjectedObservationIDs) > 0 {
+		slog.Debug("gate: sesión ya recibió memoria inyectada (core block o recall), no bloquea",
+			"project", proj, "session_id", in.SessionID, "injected_count", len(sess.InjectedObservationIDs))
+		return nil
+	}
 	// El session_id se incluye literal en el mensaje — mem_search no recibe
 	// el session_id real de Claude Code por protocolo MCP y tiene que
 	// inferirlo (archivo current_session_<proyecto>.txt o "sesión activa
@@ -167,4 +181,11 @@ func resolveMinObservations(cfg config.Config) int {
 		return cfg.Gate.MinObservations
 	}
 	return 5
+}
+
+// satisfiedByInjection resuelve gate.satisfied_by_injection. Sin env var
+// dedicada (a diferencia de enabled/block/tools) — no hay un caso real hoy
+// de necesitar pisarla sin tocar config.json.
+func satisfiedByInjection(cfg config.Config) bool {
+	return cfg.Gate.SatisfiedByInjection
 }
