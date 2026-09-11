@@ -20,9 +20,65 @@ import (
 const nudgeEveryN = 15
 
 // recallTimeoutFallback se usa solo si config.Recall.TimeoutMs viene en 0 —
-// no debería pasar (config.Default() ya pone 800ms), pero un config.json
+// no debería pasar (config.Default() ya pone 1500ms), pero un config.json
 // editado a mano no puede dejar el hook sin límite de tiempo.
-const recallTimeoutFallback = 800 * time.Millisecond
+const recallTimeoutFallback = 1500 * time.Millisecond
+
+// trivialPromptPatterns son saludos/charla que no ameritan gastar ni FTS ni
+// un embedding — caso real medido: "hola qué hora es" trajo ruido (una
+// preferencia sobre "che") en vez de nada, porque tanto FTS como el camino
+// vectorial encuentran SIEMPRE el match menos malo cuando no hay nada
+// relevante que decir. La lista es corta y explícita a propósito: mejor
+// dejar pasar algún saludo raro a FTS/vector que armar un clasificador para
+// esto.
+var trivialPromptPatterns = []string{
+	"hola", "hi", "hey", "gracias", "thanks", "thank you",
+	"ok", "okay", "dale", "listo", "buenas",
+	"buenos días", "buenas tardes", "buenas noches",
+	"qué hora es", "que hora es", "cómo estás", "como estas",
+}
+
+// minUsefulWords es el piso de palabras totales por debajo del cual un
+// prompt no tiene señal suficiente como para justificar una búsqueda (ej. una
+// sola palabra suelta como "dale" o "sqlite"). A propósito NO es 4: consultas
+// técnicas cortas reales — "postgres driver" (2 palabras), "alfresco aspect
+// remove" (3 palabras), ambas de las mediciones que motivan este cambio (ver
+// RecallConfig) — son señal legítima y deben buscar, no filtrarse por
+// longitud. El piso solo atrapa prompts de una sola palabra; todo lo demás se
+// filtra por trivialPromptPatterns, no por conteo.
+const minUsefulWords = 2
+
+// isTrivialPrompt decide si el prompt es charla/saludo sin señal real de
+// búsqueda. Dos chequeos independientes, cualquiera alcanza:
+//  1. alguna palabra completa del prompt (no substring — "token" no debe
+//     matchear el patrón "ok") coincide con un patrón de una sola palabra de
+//     trivialPromptPatterns, o el prompt contiene literalmente una de las
+//     frases completas (patrones con espacio, ej. "qué hora es").
+//  2. tiene menos de minUsefulWords palabras en total.
+func isTrivialPrompt(prompt string) bool {
+	p := strings.ToLower(strings.TrimSpace(prompt))
+	if p == "" {
+		return true
+	}
+
+	words := strings.Fields(p)
+	wordSet := make(map[string]bool, len(words))
+	for _, w := range words {
+		wordSet[strings.Trim(w, ".,!¡¿?")] = true
+	}
+
+	for _, pat := range trivialPromptPatterns {
+		if strings.Contains(pat, " ") {
+			if strings.Contains(p, pat) {
+				return true
+			}
+		} else if wordSet[pat] {
+			return true
+		}
+	}
+
+	return len(words) < minUsefulWords
+}
 
 // RunPromptSubmit handles the UserPromptSubmit hook.
 // Saves the prompt, then performs dual-strategy vector+FTS search and emits
@@ -87,6 +143,12 @@ type recallItem struct {
 // veces sobre 9.470 prompts (0,63%): la recuperación no puede depender de que
 // el agente se acuerde de buscar.
 //
+// Estrategia FTS-first: FTS5 responde en milisegundos y es determinístico, así
+// que corre siempre primero. El camino vectorial (embeddings vía Ollama, 800ms
+// a 6s medidos en esta máquina) solo se intenta si FTS no encontró nada — y
+// con el presupuesto de timeout_ms como techo duro, nunca más. Ver
+// config.RecallConfig para el detalle de las mediciones que motivan esto.
+//
 // Fail-open total (recover propio): un panic acá nunca debe tirar abajo
 // UserPromptSubmit — en el peor caso, el usuario se queda sin el bloque de
 // relevancia para este prompt puntual.
@@ -103,6 +165,12 @@ func runRecall(ctx context.Context, in Input, st store.Storer, vs *embeddings.Ve
 		return
 	}
 
+	// Charla/saludo sin señal real de búsqueda (caso real medido: "hola qué
+	// hora es" trajo ruido) — ni FTS ni embeddings valen la pena acá.
+	if isTrivialPrompt(in.Prompt) {
+		return
+	}
+
 	timeout := time.Duration(rc.TimeoutMs) * time.Millisecond
 	if timeout <= 0 {
 		timeout = recallTimeoutFallback
@@ -114,6 +182,10 @@ func runRecall(ctx context.Context, in Input, st store.Storer, vs *embeddings.Ve
 	if k <= 0 {
 		k = 3
 	}
+	minFTSResults := rc.MinFTSResults
+	if minFTSResults <= 0 {
+		minFTSResults = 1
+	}
 
 	injectedIDs, _ := st.LoadInjectedIDs(ctx, in.SessionID)
 	injectedSet := make(map[string]bool, len(injectedIDs))
@@ -122,19 +194,58 @@ func runRecall(ctx context.Context, in Input, st store.Storer, vs *embeddings.Ve
 	}
 
 	var items []recallItem
+	// picked acumula IDs ya elegidos en ESTE prompt (además de injectedSet,
+	// ya inyectados en prompts anteriores de la sesión) — evita que la misma
+	// observación se cuente dos veces si matchea tanto por FTS como por
+	// vector (solo relevante con min_fts_results > 1, el default 1 nunca
+	// llega a correr ambas estrategias sobre la misma observación).
+	picked := make(map[string]bool, k)
 
-	// Estrategia 1: búsqueda vectorial (embeddings ya existentes en
-	// internal/embeddings — Ollama con nomic-embed-text). vs.Similar es
-	// nil-safe: si el provider no está disponible, vs viene nil desde el
-	// caller y esto simplemente no aporta resultados.
-	if vs != nil {
+	// Estrategia 1 (siempre primero): FTS5 sobre las observaciones existentes
+	// — sin red, sin LLM, responde en milisegundos. Search ya cubre proyecto +
+	// global cuando Scope viene vacío (ver store.SearchParams). FallbackFTS
+	// gatea si este camino corre en absoluto (default true; false solo para
+	// aislar el camino vectorial en pruebas).
+	if rc.FallbackFTS {
+		ftsRes, err := st.Search(ctx2, store.SearchParams{
+			Query:   in.Prompt,
+			Project: projName,
+			Limit:   k,
+		})
+		if err != nil {
+			slog.Debug("runRecall: FTS error", "err", err)
+		}
+		for _, r := range ftsRes {
+			id := strconv.FormatInt(r.ID, 10)
+			if injectedSet[id] || picked[id] {
+				continue
+			}
+			items = append(items, recallItem{id: id, title: r.Title, typ: string(r.Type), content: r.Content})
+			picked[id] = true
+			if len(items) >= k {
+				break
+			}
+		}
+	}
+
+	// Estrategia 2 (solo si FTS no alcanzó el mínimo): búsqueda vectorial
+	// oportunista (embeddings ya existentes en internal/embeddings — Ollama
+	// con nomic-embed-text). vs.Similar es nil-safe: si el provider no está
+	// disponible, vs viene nil desde el caller y esto simplemente no aporta
+	// resultados. El presupuesto de ctx2 (timeout_ms) es el único límite: si
+	// se agota acá, se sigue con lo que ya dio FTS (o nada) sin bloquear más.
+	if len(items) < minFTSResults && rc.VectorOnFTSMiss && vs != nil {
 		sims, err := vs.Similar(ctx2, in.Prompt, k, 0, float32(rc.MinSimilarity))
 		if err != nil {
-			slog.Debug("runRecall: vector search error", "err", err)
+			if ctx2.Err() != nil {
+				slog.Debug("runRecall: presupuesto de timeout agotado en el camino vectorial", "timeout_ms", rc.TimeoutMs)
+			} else {
+				slog.Debug("runRecall: vector search error", "err", err)
+			}
 		}
 		for _, s := range sims {
 			id := strconv.FormatInt(s.ObsID, 10)
-			if injectedSet[id] {
+			if injectedSet[id] || picked[id] {
 				continue
 			}
 			obs, err := st.GetObservation(ctx2, s.ObsID)
@@ -142,31 +253,7 @@ func runRecall(ctx context.Context, in Input, st store.Storer, vs *embeddings.Ve
 				continue
 			}
 			items = append(items, recallItem{id: id, title: obs.Title, typ: string(obs.Type), content: obs.Content})
-			if len(items) >= k {
-				break
-			}
-		}
-	}
-
-	// Estrategia 2: fallback FTS5 (store.Search) — si Ollama no responde, el
-	// vector store no está disponible, o la búsqueda vectorial no encontró
-	// nada por encima del umbral. Search ya cubre proyecto + global cuando
-	// Scope viene vacío (ver store.SearchParams).
-	if len(items) == 0 && rc.FallbackFTS {
-		ftsRes, err := st.Search(ctx2, store.SearchParams{
-			Query:   in.Prompt,
-			Project: projName,
-			Limit:   k,
-		})
-		if err != nil {
-			slog.Debug("runRecall: FTS fallback error", "err", err)
-		}
-		for _, r := range ftsRes {
-			id := strconv.FormatInt(r.ID, 10)
-			if injectedSet[id] {
-				continue
-			}
-			items = append(items, recallItem{id: id, title: r.Title, typ: string(r.Type), content: r.Content})
+			picked[id] = true
 			if len(items) >= k {
 				break
 			}

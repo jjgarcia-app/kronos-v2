@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -723,7 +724,7 @@ func TestRunPromptSubmit_Timeout_ExitsClean(t *testing.T) {
 	realSt.PersistInjectedIDs(ctx, "sess-timeout", []string{})
 
 	// Wrap con un Search que bloquea 3s — el timeout de config.Recall (default
-	// 800ms) tiene que cortarlo bastante antes. Usar os.Getwd() como CWD
+	// 1500ms) tiene que cortarlo bastante antes. Usar os.Getwd() como CWD
 	// asegura que project.Detect resuelva rápido vía git remote, así que la
 	// única demora real es el corte por el deadline de ctx2 en runRecall.
 	st := &slowSearchStore{Storer: realSt}
@@ -744,8 +745,8 @@ func TestRunPromptSubmit_Timeout_ExitsClean(t *testing.T) {
 		if err != nil {
 			t.Errorf("RunPromptSubmit returned error: %v", err)
 		}
-	case <-time.After(1500 * time.Millisecond):
-		t.Error("RunPromptSubmit did not return within 1500ms — el timeout de config.Recall (800ms) no se aplicó")
+	case <-time.After(2500 * time.Millisecond):
+		t.Error("RunPromptSubmit did not return within 2500ms — el timeout de config.Recall (1500ms) no se aplicó")
 	}
 }
 
@@ -868,7 +869,7 @@ func TestRunPromptSubmit_HighSimilarity_InjectsRespectingCharsLimit(t *testing.T
 }
 
 // TestRunPromptSubmit_LowSimilarity_NoInjection cubre el caso donde la
-// similitud vectorial queda por debajo de min_similarity (0.72 default) —
+// similitud vectorial queda por debajo de min_similarity (0.62 default) —
 // con fallback_fts desactivado para aislar el camino vectorial, no debe
 // inyectarse nada.
 func TestRunPromptSubmit_LowSimilarity_NoInjection(t *testing.T) {
@@ -949,6 +950,281 @@ func TestRunPromptSubmit_RecallDisabled_NoInjection(t *testing.T) {
 
 	if out != "" {
 		t.Errorf("recall.enabled=false debería dejar la salida sin cambios (vacía acá): %q", out)
+	}
+}
+
+// --- Estrategia FTS-first (recalibración de recall) ---
+
+// countingEmbedFn envuelve un embeddings.EmbeddingFunc y cuenta cuántas veces
+// se invocó — permite verificar, sin tocar Ollama, si el camino vectorial
+// llegó a dispararse o no.
+type countingEmbedFn struct {
+	mu    sync.Mutex
+	calls int
+	inner embeddings.EmbeddingFunc
+}
+
+func (c *countingEmbedFn) fn(ctx context.Context, text string) ([]float32, error) {
+	c.mu.Lock()
+	c.calls++
+	c.mu.Unlock()
+	return c.inner(ctx, text)
+}
+
+func (c *countingEmbedFn) count() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.calls
+}
+
+// searchCountingStore envuelve un *store.Store real y cuenta cuántas veces se
+// llamó Search — permite verificar que un prompt trivial no gasta ni FTS.
+type searchCountingStore struct {
+	*store.Store
+	mu    sync.Mutex
+	calls int
+}
+
+func (s *searchCountingStore) Search(ctx context.Context, p store.SearchParams) ([]*store.SearchResult, error) {
+	s.mu.Lock()
+	s.calls++
+	s.mu.Unlock()
+	return s.Store.Search(ctx, p)
+}
+
+func (s *searchCountingStore) count() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
+}
+
+// TestRunPromptSubmit_FTSHit_NeverCallsEmbeddings cubre (a) de la
+// recalibración: con FTS devolviendo al menos min_fts_results, el camino
+// vectorial NUNCA se invoca — la razón de ser de FTS-first es no pagar el
+// round-trip de Ollama (800ms-6s medidos en esta máquina) cuando FTS ya
+// resolvió el prompt en milisegundos.
+func TestRunPromptSubmit_FTSHit_NeverCallsEmbeddings(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	cwd, _ := os.Getwd()
+
+	st.CreateSession(ctx, "sess-fts-hit", "kronos-v2", cwd)
+	st.PersistInjectedIDs(ctx, "sess-fts-hit", []string{})
+
+	st.SaveObservation(ctx, store.SaveParams{
+		Type:    store.TypeDecision,
+		Title:   "sqlite store architecture",
+		Content: "We chose SQLite because it is embedded and needs no network roundtrip.",
+		Project: "kronos-v2",
+	})
+
+	counting := &countingEmbedFn{inner: fixedVectorEmbedFn(nil)}
+	vs, err := embeddings.NewInMemory(counting.fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	in := hooks.Input{SessionID: "sess-fts-hit", CWD: cwd, Prompt: "sqlite store"}
+
+	out := captureStdout(t, func() {
+		if err := hooks.RunPromptSubmit(ctx, in, st, vs, os.Stdout); err != nil {
+			t.Fatalf("RunPromptSubmit: %v", err)
+		}
+	})
+
+	if !strings.Contains(out, "[kronos:relevante]") {
+		t.Fatalf("esperaba bloque de relevancia vía FTS, salida: %q", out)
+	}
+	if got := counting.count(); got != 0 {
+		t.Errorf("FTS con resultados no debería llamar al embedding — se llamó %d veces", got)
+	}
+}
+
+// TestRunPromptSubmit_FTSMiss_VectorAboveThreshold_Injects cubre (b): sin
+// nada que matchee por FTS, el camino vectorial oportunista se intenta y, con
+// similitud por encima de min_similarity, inyecta.
+func TestRunPromptSubmit_FTSMiss_VectorAboveThreshold_Injects(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	cwd, _ := os.Getwd()
+
+	st.CreateSession(ctx, "sess-vector-hit", "kronos-v2", cwd)
+	st.PersistInjectedIDs(ctx, "sess-vector-hit", []string{})
+
+	prompt := "zzzunmatchedqueryzzz por FTS"
+	obsText := "contenido totalmente distinto en las palabras, matchea solo por vector"
+	obs, _ := st.SaveObservation(ctx, store.SaveParams{Type: store.TypeDiscovery, Title: "obs solo vector", Content: obsText, Project: "kronos-v2"})
+
+	vs, err := embeddings.NewInMemory(fixedVectorEmbedFn(map[string][]float32{
+		prompt:  {1, 0},
+		obsText: {1, 0}, // mismo vector → similitud coseno 1.0
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := vs.Index(ctx, obs.ID, obs.Content); err != nil {
+		t.Fatal(err)
+	}
+
+	in := hooks.Input{SessionID: "sess-vector-hit", CWD: cwd, Prompt: prompt}
+
+	out := captureStdout(t, func() {
+		if err := hooks.RunPromptSubmit(ctx, in, st, vs, os.Stdout); err != nil {
+			t.Fatalf("RunPromptSubmit: %v", err)
+		}
+	})
+
+	if !strings.Contains(out, "[kronos:relevante]") {
+		t.Errorf("FTS vacío + similitud alta debería inyectar vía vector, salida: %q", out)
+	}
+}
+
+// TestRunPromptSubmit_FTSMiss_VectorBelowThreshold_NoInjection cubre (c): sin
+// FTS y con similitud vectorial por debajo de min_similarity (0.62 default),
+// no debe inyectarse nada.
+func TestRunPromptSubmit_FTSMiss_VectorBelowThreshold_NoInjection(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	cwd, _ := os.Getwd()
+
+	st.CreateSession(ctx, "sess-vector-low", "kronos-v2", cwd)
+	st.PersistInjectedIDs(ctx, "sess-vector-low", []string{})
+
+	prompt := "zzzunmatchedqueryzzz por FTS"
+	obsText := "contenido ortogonal, no matchea ni por FTS ni por vector"
+	obs, _ := st.SaveObservation(ctx, store.SaveParams{Type: store.TypeDiscovery, Title: "obs no relacionada", Content: obsText, Project: "kronos-v2"})
+
+	vs, err := embeddings.NewInMemory(fixedVectorEmbedFn(map[string][]float32{
+		prompt:  {0, 1},
+		obsText: {1, 0}, // ortogonal → similitud coseno 0.0
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := vs.Index(ctx, obs.ID, obs.Content); err != nil {
+		t.Fatal(err)
+	}
+
+	in := hooks.Input{SessionID: "sess-vector-low", CWD: cwd, Prompt: prompt}
+
+	out := captureStdout(t, func() {
+		if err := hooks.RunPromptSubmit(ctx, in, st, vs, os.Stdout); err != nil {
+			t.Fatalf("RunPromptSubmit: %v", err)
+		}
+	})
+
+	if strings.Contains(out, "[kronos:relevante]") {
+		t.Errorf("similitud por debajo del umbral no debería inyectar nada: %q", out)
+	}
+}
+
+// TestRunPromptSubmit_TrivialPrompt_NoSearchAtAll cubre (d): un prompt
+// trivial (charla/saludo) no debe gastar ni FTS ni embeddings — caso real
+// medido: "hola qué hora es" trajo ruido en vez de nada.
+func TestRunPromptSubmit_TrivialPrompt_NoSearchAtAll(t *testing.T) {
+	base := newTestStore(t)
+	st := &searchCountingStore{Store: base}
+	ctx := context.Background()
+	cwd, _ := os.Getwd()
+
+	st.CreateSession(ctx, "sess-trivial", "kronos-v2", cwd)
+	st.PersistInjectedIDs(ctx, "sess-trivial", []string{})
+
+	counting := &countingEmbedFn{inner: fixedVectorEmbedFn(nil)}
+	vs, err := embeddings.NewInMemory(counting.fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	in := hooks.Input{SessionID: "sess-trivial", CWD: cwd, Prompt: "hola qué hora es"}
+
+	out := captureStdout(t, func() {
+		if err := hooks.RunPromptSubmit(ctx, in, st, vs, os.Stdout); err != nil {
+			t.Fatalf("RunPromptSubmit: %v", err)
+		}
+	})
+
+	if strings.Contains(out, "[kronos:relevante]") {
+		t.Errorf("prompt trivial no debería inyectar nada: %q", out)
+	}
+	if got := st.count(); got != 0 {
+		t.Errorf("prompt trivial no debería llamar a Search — se llamó %d veces", got)
+	}
+	if got := counting.count(); got != 0 {
+		t.Errorf("prompt trivial no debería llamar al embedding — se llamó %d veces", got)
+	}
+}
+
+// sleepingEmbedFnForQuery simula un provider (Ollama) colgado — pero solo
+// para queryText (el prompt que dispara runRecall). Indexar el documento de
+// prueba con el mismo EmbeddingFunc (chromem usa una única función para
+// indexar y consultar) necesita resolver rápido, si no el propio setup del
+// test se cuelga 5s antes de llegar siquiera a RunPromptSubmit — solo el
+// texto de la consulta real debe demorarse, igual que un round-trip lento a
+// Ollama. Respeta la cancelación de ctx, igual que un client HTTP real con
+// contexto (ver slowSearchStore, mismo patrón).
+func sleepingEmbedFnForQuery(queryText string) embeddings.EmbeddingFunc {
+	return func(ctx context.Context, text string) ([]float32, error) {
+		if text != queryText {
+			return []float32{1, 0}, nil
+		}
+		select {
+		case <-time.After(5 * time.Second):
+			return []float32{1, 0}, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+}
+
+// TestRunPromptSubmit_VectorTimeout_RespectsBudget cubre (e): si el camino
+// vectorial se cuelga, RunPromptSubmit no debe bloquear más allá del
+// presupuesto de timeout_ms — se corta y sigue sin injectar (FTS ya dio
+// vacío) ni devolver error.
+func TestRunPromptSubmit_VectorTimeout_RespectsBudget(t *testing.T) {
+	setupTempConfigDir(t)
+	cfg := config.Default()
+	cfg.Recall.TimeoutMs = 300
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("cfg.Save: %v", err)
+	}
+
+	st := newTestStore(t)
+	ctx := context.Background()
+	cwd, _ := os.Getwd()
+
+	st.CreateSession(ctx, "sess-vector-timeout", "kronos-v2", cwd)
+	st.PersistInjectedIDs(ctx, "sess-vector-timeout", []string{})
+
+	obs, _ := st.SaveObservation(ctx, store.SaveParams{Type: store.TypeDiscovery, Title: "obs cualquiera", Content: "contenido cualquiera para indexar", Project: "kronos-v2"})
+
+	prompt := "zzzunmatchedqueryzzz sin fts"
+	vs, err := embeddings.NewInMemory(sleepingEmbedFnForQuery(prompt))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := vs.Index(ctx, obs.ID, obs.Content); err != nil {
+		t.Fatal(err)
+	}
+
+	in := hooks.Input{SessionID: "sess-vector-timeout", CWD: cwd, Prompt: prompt}
+
+	start := time.Now()
+	done := make(chan error, 1)
+	go func() {
+		done <- hooks.RunPromptSubmit(ctx, in, st, vs, os.Stdout)
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("RunPromptSubmit returned error: %v", err)
+		}
+		if elapsed := time.Since(start); elapsed > 1500*time.Millisecond {
+			t.Errorf("elapsed=%v — no debería superar bastante el timeout_ms=300 configurado", elapsed)
+		}
+	case <-time.After(1500 * time.Millisecond):
+		t.Error("RunPromptSubmit no respetó timeout_ms=300 — el provider colgado bloqueó más de 1500ms")
 	}
 }
 
