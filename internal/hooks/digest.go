@@ -122,15 +122,44 @@ func MaybeUpdateDigest(ctx context.Context, st store.Storer, cfg config.Config, 
 		}
 	}
 
-	_, err = st.SaveObservation(ctx, store.SaveParams{
+	// La observación se guarda con session_id, y observations tiene FK a
+	// sessions: si la fila de la sesión todavía no existe (SessionStart no
+	// corrió para esta sesión — caso real medido: 712 sesiones en la base y
+	// el digest se perdía con "FOREIGN KEY constraint failed" que el caller
+	// descartaba), el INSERT falla y el digest se pierde en silencio. Con
+	// esto el digest se guarda igual.
+	ensureSession(ctx, st, sessionID, proj.Name, cwd)
+
+	if _, err = st.SaveObservation(ctx, store.SaveParams{
 		SessionID: sessionID,
 		Type:      store.TypeSession,
 		Title:     digestTitle(sessionID),
 		Content:   strings.TrimSpace(secrets.Redact(content)),
 		Project:   proj.Name,
 		TopicKey:  topicKey,
-	})
-	return err
+	}); err != nil {
+		// Antes este error se descartaba en el caller: el digest no se
+		// guardaba y nadie se enteraba. Que quede en el log.
+		slog.Warn("digest: no se pudo guardar la observación",
+			"session_id", sessionID, "project", proj.Name, "err", err)
+		return err
+	}
+	return nil
+}
+
+// ensureSession crea la fila de sesión si no existe — necesario antes de
+// guardar cualquier observación con session_id (FK). Idempotente y fail-open:
+// si la sesión ya existe no hace nada, y si CreateSession falla (carrera con
+// otro proceso, o store sin tablas de sesiones) sigue adelante: el INSERT de
+// la observación dirá si de verdad no se pudo.
+func ensureSession(ctx context.Context, st store.Storer, sessionID, proj, cwd string) {
+	if sessionID == "" {
+		return
+	}
+	if sess, err := st.GetSession(ctx, sessionID); err == nil && sess != nil {
+		return
+	}
+	_, _ = st.CreateSession(ctx, sessionID, proj, cwd)
 }
 
 // tryDigestLLMEnrichment intenta la prosa del LLM sobre el excerpt de texto

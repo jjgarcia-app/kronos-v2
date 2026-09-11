@@ -55,7 +55,50 @@ func checkAutoDigest(ctx context.Context, cfg config.Config) Check {
 		}
 	}
 
+	detail += " | " + llmProviderStatus(cfg)
+
 	return Check{Name: "Digest automático", Detail: detail, Status: status}
+}
+
+// llmProviderStatus arma el fragmento "proveedor: X, modelo: Y[, guardián de
+// carga salteando llamadas ahora (...)]" que se agrega al detalle del check
+// de digest automático — así un `kronos doctor` deja ver de un vistazo qué
+// LLM va a usar la captura automática (digest + captura pasiva) y si el
+// guardián de carga (ver internal/llm.LoadGuardStatus) está descartando
+// llamadas en este momento, sin tener que ir a leer /proc/loadavg a mano.
+func llmProviderStatus(cfg config.Config) string {
+	provider := cfg.LLM.Provider
+	if provider == "" {
+		provider = "ollama"
+	}
+	model := cfg.LLM.Model
+	if model == "" {
+		switch provider {
+		case "claude-cli":
+			model = llm.DefaultClaudeCLIModel
+		default:
+			model = cfg.Embeddings.OllamaLLMModel
+			if model == "" {
+				model = llm.DefaultModel
+			}
+		}
+	}
+
+	detail := fmt.Sprintf("LLM captura automática: proveedor=%s, modelo=%s", provider, model)
+
+	if skipping, load1, cpus, available := llm.LoadGuardStatus(cfg.LLM.MaxLoadPerCPU); available {
+		if skipping {
+			detail += fmt.Sprintf(" | guardián de carga: SALTEANDO llamadas (load1=%.2f / %d CPUs > umbral %g)",
+				load1, cpus, cfg.LLM.MaxLoadPerCPU)
+		} else {
+			detail += fmt.Sprintf(" | guardián de carga: ok (load1=%.2f / %d CPUs, umbral %g)",
+				load1, cpus, cfg.LLM.MaxLoadPerCPU)
+		}
+	} else {
+		detail += " | guardián de carga: desactivado"
+	}
+
+	return detail
 }
 
 // breakerStatus lee (sin modificar) el estado del cortacircuitos del LLM

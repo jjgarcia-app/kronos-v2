@@ -79,13 +79,15 @@ func (srv *Server) SetVectorStore(vs *embeddings.VectorStore) {
 	srv.vs = vs
 }
 
-// SetCaptureLLM conecta el cliente Ollama local a los endpoints que hacen
+// SetCaptureLLM conecta el cliente de generación (Ollama local por default,
+// o claude-cli si el usuario configuró llm.provider=claude-cli — ver
+// internal/llm.NewGenerationClientFromConfig) a los endpoints que hacen
 // captura pasiva (/hooks/pre-compact-capture, ver pre_compact_capture.go) y
 // digest corriente de sesión (/hooks/prompt-submit, ver prompt_submit.go) —
-// opcional, seteado solo en modo daemon. c puede ser nil si Ollama no
-// respondió al ping en el arranque del daemon; cfg se guarda para que
-// getCaptureLLM pueda reintentar la conexión más tarde sin necesitar
-// reiniciar el daemon a mano.
+// opcional, seteado solo en modo daemon. c puede ser nil si el backend no
+// respondió al ping (Ollama) o no hay credenciales (claude-cli) al arrancar
+// el daemon; cfg se guarda para que getCaptureLLM pueda reintentar la
+// conexión más tarde sin necesitar reiniciar el daemon a mano.
 //
 // Bug real encontrado en vivo: antes, si el ping fallaba una sola vez al
 // arrancar (Docker Desktop todavía inicializando, por ejemplo), captureLLM
@@ -111,17 +113,17 @@ func (srv *Server) captureConfig() config.Config {
 	return srv.captureLLMCfg
 }
 
-// getCaptureLLM devuelve el cliente Ollama cacheado si ya está sano, o
-// reintenta construirlo (mismo ping de 2s que NewOllamaFromConfig) si la
-// última vez no había respondido — self-healing sin depender de que
-// alguien reinicie el daemon después de que Ollama se recupera.
+// getCaptureLLM devuelve el cliente cacheado si ya está sano, o reintenta
+// construirlo (NewGenerationClientFromConfig) si la última vez no había
+// respondido — self-healing sin depender de que alguien reinicie el daemon
+// después de que Ollama (o las credenciales de claude-cli) se recuperen.
 func (srv *Server) getCaptureLLM(ctx context.Context) *llm.Client {
 	srv.captureLLMMu.Lock()
 	defer srv.captureLLMMu.Unlock()
 	if srv.captureLLM != nil {
 		return srv.captureLLM
 	}
-	srv.captureLLM = llm.NewOllamaFromConfig(ctx, srv.captureLLMCfg)
+	srv.captureLLM = llm.NewGenerationClientFromConfig(ctx, srv.captureLLMCfg)
 	return srv.captureLLM
 }
 

@@ -30,6 +30,13 @@ func NewFromConfig(ctx context.Context, cfg config.Config) Judger {
 		}
 		return c
 
+	case "claude-cli":
+		c := NewClaudeCLIFromConfig(ctx, cfg)
+		if c == nil {
+			return nil // sin credenciales o config dir — sin LLM judgment
+		}
+		return c
+
 	case "openai", "openai-compatible":
 		if cfg.LLM.APIKey == "" {
 			return nil
@@ -61,6 +68,25 @@ func NewFromConfig(ctx context.Context, cfg config.Config) Judger {
 	return nil
 }
 
+// NewGenerationClientFromConfig arma el *Client concreto que usan los
+// consumidores que necesitan el tipo concreto en vez del Judger interface
+// (digest y captura pasiva, ver internal/hooks/digest.go y
+// internal/hooks/pre_compact_capture.go) — elige backend según
+// cfg.LLM.Provider igual que NewFromConfig, pero sin las ramas
+// openai/anthropic/disabled que no tiene sentido usar para estas dos
+// features (mandan texto de la conversación a un LLM: por default se
+// quedan locales — ver el "ollama" default de abajo).
+func NewGenerationClientFromConfig(ctx context.Context, cfg config.Config) *Client {
+	provider := cfg.LLM.Provider
+	if provider == "" {
+		provider = "ollama"
+	}
+	if provider == "claude-cli" {
+		return NewClaudeCLIFromConfig(ctx, cfg)
+	}
+	return NewOllamaFromConfig(ctx, cfg)
+}
+
 // NewOllamaFromConfig builds a *Client for the local Ollama server using the
 // same base-URL/model resolution as NewFromConfig's "ollama" branch, but
 // ALWAYS Ollama — independent of cfg.LLM.Provider. Pulled out as its own
@@ -85,6 +111,7 @@ func NewOllamaFromConfig(ctx context.Context, cfg config.Config) *Client {
 		model = DefaultModel
 	}
 	c := NewClient(baseURL, model)
+	c.maxLoadPerCPU = cfg.LLM.MaxLoadPerCPU
 	if dataDir, err := platform.DataDir(); err == nil {
 		failures := cfg.LLM.BreakerFailures
 		minutes := cfg.LLM.BreakerMinutes
