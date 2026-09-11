@@ -190,6 +190,19 @@ func (d *DualStore) markDown(err error) {
 		dsLog("debug: dual-store: operación cancelada por el llamador (context canceled), no es caída del primary: %v", err)
 		return
 	}
+	// Los errores de INTEGRIDAD tampoco son fallas de disponibilidad: un FK de
+	// session_id (la sesión todavía no existe en el primary — se creó en el
+	// buffer durante una caída, o el hook corrió sin SessionStart previo) o una
+	// PK duplicada (misma sesión reusada) marcan el primary caído 5-15 s y
+	// degradan TODAS las lecturas al buffer local congelado. Visto en vivo el
+	// 2026-09-11 (03:07:32 y 03:52:47 con FK de user_prompts, y al reusar un
+	// session_id en las pruebas del bloque core). Antes esto se parchaba
+	// call-site por call-site (SavePrompt, RecordToolUse) y SaveObservation
+	// quedaba afuera; centralizarlo acá cierra todos los caminos de una vez.
+	if isFKError(err) || isDuplicateError(err) {
+		dsLog("debug: dual-store: error de integridad (el primary sigue sano, la operación va al buffer): %v", err)
+		return
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if !d.down {
