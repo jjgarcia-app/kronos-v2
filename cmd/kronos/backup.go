@@ -41,6 +41,18 @@ func runBackupLoop(ctx context.Context) {
 		}
 	}
 
+	// Chequeo previo: si el contexto ya está cancelado, no tiene sentido
+	// arrancar el primer backup. Sin esto, un apagado del daemon podía
+	// disparar igual un pg_dump de la base completa (segundos de trabajo) que
+	// nadie iba a esperar — visto como test flaky de
+	// TestRunBackupLoop_StopsOnContextCancel: el backup con el config REAL
+	// incluye pg_dump de Postgres y con la máquina cargada excedía el timeout.
+	select {
+	case <-ctx.Done():
+		return
+	default:
+	}
+
 	runOnce()
 	ticker := time.NewTicker(backupInterval)
 	defer ticker.Stop()

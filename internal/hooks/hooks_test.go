@@ -1638,13 +1638,57 @@ func captureStderr(t *testing.T, fn func()) string {
 	return buf.String()
 }
 
-// errStore is a fake Storer that returns an error on GetSession.
+// errStore is a fake Storer that returns an error on GetSession y en
+// CountObservations — el gate consulta CountObservations antes que
+// GetSession, así que "DB unavailable" tiene que fallar-abierto ahí también.
 type errStore struct {
 	store.Storer
 }
 
+func (e *errStore) CountObservations(_ context.Context, _ string) (int, error) {
+	return 0, fmt.Errorf("db unavailable")
+}
+
 func (e *errStore) GetSession(_ context.Context, _ string) (*store.Session, error) {
 	return nil, fmt.Errorf("db unavailable")
+}
+
+// gateCWD crea un directorio temporal con .kronos/config.json fijando
+// project_name — así project.Detect(cwd) resuelve exactamente al nombre
+// pedido, sin depender del remote git real del repo donde corren los tests
+// (que RunPreToolUse SÍ ejercita vía project.Detect(in.CWD) para el chequeo
+// de min_observations).
+func gateCWD(t *testing.T, name string) string {
+	t.Helper()
+	dir := t.TempDir()
+	kdir := filepath.Join(dir, ".kronos")
+	if err := os.MkdirAll(kdir, 0o755); err != nil {
+		t.Fatalf("gateCWD mkdir: %v", err)
+	}
+	data := fmt.Sprintf(`{"project_name": %q}`, name)
+	if err := os.WriteFile(filepath.Join(kdir, "config.json"), []byte(data), 0o644); err != nil {
+		t.Fatalf("gateCWD write config: %v", err)
+	}
+	return dir
+}
+
+// seedObservations guarda n observaciones de relleno en el proyecto dado —
+// usado para superar gate.min_observations (default 5) en los tests que
+// necesitan que el gate NO se salte por "proyecto sin nada que buscar".
+func seedObservations(t *testing.T, st *store.Store, project string, n int) {
+	t.Helper()
+	ctx := context.Background()
+	for i := 0; i < n; i++ {
+		_, err := st.SaveObservation(ctx, store.SaveParams{
+			Type:    store.TypeDiscovery,
+			Title:   fmt.Sprintf("relleno %d", i),
+			Content: fmt.Sprintf("observación de relleno %d para superar min_observations", i),
+			Project: project,
+		})
+		if err != nil {
+			t.Fatalf("seedObservations: %v", err)
+		}
+	}
 }
 
 func TestRunPreToolUse_NoSearchYet_WarnMode(t *testing.T) {
@@ -1652,13 +1696,14 @@ func TestRunPreToolUse_NoSearchYet_WarnMode(t *testing.T) {
 	hooks.ResetGatedTools()
 	st := newTestStore(t)
 	ctx := context.Background()
+	seedObservations(t, st, "proj", 5)
 	st.CreateSession(ctx, "sess-gate-warn", "proj", "/tmp")
 
 	var exitCode *int
 	hooks.SetExitFn(func(code int) { exitCode = &code })
 	defer hooks.SetExitFn(nil)
 
-	in := hooks.Input{SessionID: "sess-gate-warn", ToolName: "Edit"}
+	in := hooks.Input{SessionID: "sess-gate-warn", ToolName: "Edit", CWD: gateCWD(t, "proj")}
 	stderr := captureStderr(t, func() {
 		hooks.RunPreToolUse(ctx, in, st)
 	})
@@ -1682,6 +1727,7 @@ func TestRunPreToolUse_NoSearchYet_WarnMode(t *testing.T) {
 func TestRunPreToolUse_AfterSearch_Pass(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
+	seedObservations(t, st, "proj", 5)
 	st.CreateSession(ctx, "sess-gate-pass", "proj", "/tmp")
 	st.IncrementSearchCount(ctx, "sess-gate-pass")
 
@@ -1689,7 +1735,7 @@ func TestRunPreToolUse_AfterSearch_Pass(t *testing.T) {
 	hooks.SetExitFn(func(code int) { exitCode = &code })
 	defer hooks.SetExitFn(nil)
 
-	in := hooks.Input{SessionID: "sess-gate-pass", ToolName: "Edit"}
+	in := hooks.Input{SessionID: "sess-gate-pass", ToolName: "Edit", CWD: gateCWD(t, "proj")}
 	stderr := captureStderr(t, func() {
 		hooks.RunPreToolUse(ctx, in, st)
 	})
@@ -1699,6 +1745,159 @@ func TestRunPreToolUse_AfterSearch_Pass(t *testing.T) {
 	}
 	if exitCode != nil {
 		t.Errorf("exitFn should not be called, got code %d", *exitCode)
+	}
+}
+
+// TestRunPreToolUse_FewObservations_Skips cubre el caso medido: un proyecto
+// con menos de gate.min_observations (default 5) no tiene nada contra qué
+// medir "ya buscaste acá" — el gate se salta incluso en modo bloqueo.
+func TestRunPreToolUse_FewObservations_Skips(t *testing.T) {
+	t.Setenv("KRONOS_GATE_BLOCK", "1")
+	hooks.ResetGatedTools()
+	st := newTestStore(t)
+	ctx := context.Background()
+	seedObservations(t, st, "proyecto-chico", 3)
+	st.CreateSession(ctx, "sess-gate-few-obs", "proyecto-chico", "/tmp")
+
+	var exitCode *int
+	hooks.SetExitFn(func(code int) { exitCode = &code })
+	defer hooks.SetExitFn(nil)
+
+	in := hooks.Input{SessionID: "sess-gate-few-obs", ToolName: "Edit", CWD: gateCWD(t, "proyecto-chico")}
+	stderr := captureStderr(t, func() {
+		hooks.RunPreToolUse(ctx, in, st)
+	})
+
+	if strings.Contains(stderr, "[kronos]") {
+		t.Errorf("proyecto con 3 observaciones no debería disparar el gate, got: %q", stderr)
+	}
+	if exitCode != nil {
+		t.Errorf("exitFn no debería llamarse con 3 observaciones (< min_observations), got code %d", *exitCode)
+	}
+}
+
+// TestRunPreToolUse_EnoughObservations_Blocks es el contraste directo del
+// anterior: 10 observaciones (>= min_observations default 5) sí bloquean.
+func TestRunPreToolUse_EnoughObservations_Blocks(t *testing.T) {
+	t.Setenv("KRONOS_GATE_BLOCK", "1")
+	hooks.ResetGatedTools()
+	st := newTestStore(t)
+	ctx := context.Background()
+	seedObservations(t, st, "proyecto-grande", 10)
+	st.CreateSession(ctx, "sess-gate-enough-obs", "proyecto-grande", "/tmp")
+
+	var exitCode *int
+	hooks.SetExitFn(func(code int) { exitCode = &code })
+	defer hooks.SetExitFn(nil)
+
+	in := hooks.Input{SessionID: "sess-gate-enough-obs", ToolName: "Edit", CWD: gateCWD(t, "proyecto-grande")}
+	captureStderr(t, func() {
+		hooks.RunPreToolUse(ctx, in, st)
+	})
+
+	if exitCode == nil {
+		t.Error("exitFn debería llamarse con 10 observaciones (>= min_observations)")
+	} else if *exitCode != 2 {
+		t.Errorf("exitFn called with code %d, want 2", *exitCode)
+	}
+}
+
+// TestRunPreToolUse_ConfigMinObservations_Respected verifica que
+// gate.min_observations en config.json se respeta cuando no hay env var.
+func TestRunPreToolUse_ConfigMinObservations_Respected(t *testing.T) {
+	setupTempConfigDir(t)
+	cfg := config.Default()
+	cfg.Gate.MinObservations = 2
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("cfg.Save: %v", err)
+	}
+	t.Setenv("KRONOS_GATE_BLOCK", "1")
+	hooks.ResetGatedTools()
+
+	st := newTestStore(t)
+	ctx := context.Background()
+	seedObservations(t, st, "proyecto-config", 2)
+	st.CreateSession(ctx, "sess-gate-config-min", "proyecto-config", "/tmp")
+
+	var exitCode *int
+	hooks.SetExitFn(func(code int) { exitCode = &code })
+	defer hooks.SetExitFn(nil)
+
+	in := hooks.Input{SessionID: "sess-gate-config-min", ToolName: "Edit", CWD: gateCWD(t, "proyecto-config")}
+	captureStderr(t, func() {
+		hooks.RunPreToolUse(ctx, in, st)
+	})
+
+	if exitCode == nil {
+		t.Error("con gate.min_observations=2 en config y 2 observaciones, el gate debería bloquear")
+	}
+}
+
+// TestRunPreToolUse_EnvBlockOverridesConfig verifica que KRONOS_GATE_BLOCK
+// gana sobre gate.block del config cuando está seteada — aunque la config
+// diga block=true, la env en false debe ganar.
+func TestRunPreToolUse_EnvBlockOverridesConfig(t *testing.T) {
+	setupTempConfigDir(t)
+	cfg := config.Default()
+	cfg.Gate.Block = true
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("cfg.Save: %v", err)
+	}
+	t.Setenv("KRONOS_GATE_BLOCK", "0")
+	hooks.ResetGatedTools()
+
+	st := newTestStore(t)
+	ctx := context.Background()
+	seedObservations(t, st, "proyecto-env-wins", 5)
+	st.CreateSession(ctx, "sess-gate-env-wins", "proyecto-env-wins", "/tmp")
+
+	var exitCode *int
+	hooks.SetExitFn(func(code int) { exitCode = &code })
+	defer hooks.SetExitFn(nil)
+
+	in := hooks.Input{SessionID: "sess-gate-env-wins", ToolName: "Edit", CWD: gateCWD(t, "proyecto-env-wins")}
+	stderr := captureStderr(t, func() {
+		hooks.RunPreToolUse(ctx, in, st)
+	})
+
+	if !strings.Contains(stderr, "[kronos]") {
+		t.Errorf("se esperaba el warning (modo no-block), got: %q", stderr)
+	}
+	if exitCode != nil {
+		t.Errorf("KRONOS_GATE_BLOCK=0 debería ganarle a gate.block=true del config, got exit code %d", *exitCode)
+	}
+}
+
+// TestRunPreToolUse_ConfigDisablesGate verifica que gate.enabled=false en
+// config (sin KRONOS_PRETOOL_GATE seteada) desactiva el gate por completo.
+func TestRunPreToolUse_ConfigDisablesGate(t *testing.T) {
+	setupTempConfigDir(t)
+	cfg := config.Default()
+	cfg.Gate.Enabled = false
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("cfg.Save: %v", err)
+	}
+	hooks.ResetGatedTools()
+
+	st := newTestStore(t)
+	ctx := context.Background()
+	seedObservations(t, st, "proyecto-gate-off-config", 10)
+	st.CreateSession(ctx, "sess-gate-off-config", "proyecto-gate-off-config", "/tmp")
+
+	var exitCode *int
+	hooks.SetExitFn(func(code int) { exitCode = &code })
+	defer hooks.SetExitFn(nil)
+
+	in := hooks.Input{SessionID: "sess-gate-off-config", ToolName: "Edit", CWD: gateCWD(t, "proyecto-gate-off-config")}
+	stderr := captureStderr(t, func() {
+		hooks.RunPreToolUse(ctx, in, st)
+	})
+
+	if strings.Contains(stderr, "[kronos]") {
+		t.Errorf("gate.enabled=false debería suprimir el warning, got: %q", stderr)
+	}
+	if exitCode != nil {
+		t.Errorf("exitFn no debería llamarse con gate.enabled=false, got code %d", *exitCode)
 	}
 }
 
@@ -1800,6 +1999,7 @@ func TestRunPreToolUse_GateOff_Pass(t *testing.T) {
 func TestRunPreToolUse_BlockMode(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
+	seedObservations(t, st, "proj", 5)
 	st.CreateSession(ctx, "sess-gate-block", "proj", "/tmp")
 
 	t.Setenv("KRONOS_GATE_BLOCK", "1")
@@ -1809,7 +2009,7 @@ func TestRunPreToolUse_BlockMode(t *testing.T) {
 	hooks.SetExitFn(func(code int) { exitCode = &code })
 	defer hooks.SetExitFn(nil)
 
-	in := hooks.Input{SessionID: "sess-gate-block", ToolName: "Edit"}
+	in := hooks.Input{SessionID: "sess-gate-block", ToolName: "Edit", CWD: gateCWD(t, "proj")}
 	captureStderr(t, func() {
 		hooks.RunPreToolUse(ctx, in, st)
 	})

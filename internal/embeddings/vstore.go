@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	chromem "github.com/philippgille/chromem-go"
 )
@@ -25,6 +27,43 @@ type VectorStore struct {
 	collection *chromem.Collection
 	embedFn    EmbeddingFunc
 	provider   string
+
+	latencyMu   sync.Mutex
+	lastLatency time.Duration
+	latencySet  bool
+}
+
+// trackLatency envuelve fn para registrar cuánto tardó la última llamada real
+// (éxito o error — un timeout también dice "está lento") en vs.lastLatency.
+// Es la sonda barata de runRecall (ver config.RecallConfig.VectorProbeMs):
+// antes de pagar un embedding nuevo para el prompt actual, runRecall mira
+// cuánto tardó el anterior y decide si vale la pena intentarlo. Medido en
+// esta máquina: un round-trip contra Ollama tarda entre 800ms y 6s según
+// carga — una sonda que hiciera una llamada real de verificación costaría
+// tanto como el intento que se quiere evitar.
+func (vs *VectorStore) trackLatency(fn EmbeddingFunc) EmbeddingFunc {
+	return func(ctx context.Context, text string) ([]float32, error) {
+		start := time.Now()
+		vec, err := fn(ctx, text)
+		vs.latencyMu.Lock()
+		vs.lastLatency = time.Since(start)
+		vs.latencySet = true
+		vs.latencyMu.Unlock()
+		return vec, err
+	}
+}
+
+// LastLatency devuelve la duración de la última llamada real al proveedor de
+// embeddings hecha por este store, y si hay algún dato todavía (false en la
+// primera consulta del proceso — sin historial, runRecall asume "caliente" y
+// deja pasar el intento). nil-safe: un *VectorStore nil no tiene historial.
+func (vs *VectorStore) LastLatency() (time.Duration, bool) {
+	if vs == nil {
+		return 0, false
+	}
+	vs.latencyMu.Lock()
+	defer vs.latencyMu.Unlock()
+	return vs.lastLatency, vs.latencySet
 }
 
 // New opens (or creates) a persistent vector store at dataDir.
@@ -52,17 +91,14 @@ func New(ctx context.Context, dataDir string) (*VectorStore, error) {
 		return nil, fmt.Errorf("open vector db: %w", err)
 	}
 
-	col, err := db.GetOrCreateCollection(collectionName, nil, fn)
+	vs := &VectorStore{provider: provider}
+	col, err := db.GetOrCreateCollection(collectionName, nil, vs.trackLatency(fn))
 	if err != nil {
 		return nil, fmt.Errorf("create collection: %w", err)
 	}
-
-	vs := &VectorStore{
-		db:         db,
-		collection: col,
-		embedFn:    fn,
-		provider:   provider,
-	}
+	vs.db = db
+	vs.collection = col
+	vs.embedFn = fn
 	storeCachedVectorStore(dataDir, vs)
 	return vs, nil
 }
@@ -71,11 +107,15 @@ func New(ctx context.Context, dataDir string) (*VectorStore, error) {
 // Intended for tests.
 func NewInMemory(fn EmbeddingFunc) (*VectorStore, error) {
 	db := chromem.NewDB()
-	col, err := db.GetOrCreateCollection(collectionName, nil, fn)
+	vs := &VectorStore{provider: "test"}
+	col, err := db.GetOrCreateCollection(collectionName, nil, vs.trackLatency(fn))
 	if err != nil {
 		return nil, err
 	}
-	return &VectorStore{db: db, collection: col, embedFn: fn, provider: "test"}, nil
+	vs.db = db
+	vs.collection = col
+	vs.embedFn = fn
+	return vs, nil
 }
 
 // Provider returns a description of the active embedding provider.

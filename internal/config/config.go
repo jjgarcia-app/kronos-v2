@@ -60,6 +60,21 @@ type ExportConfig struct {
 	Enabled bool `json:"enabled"`
 }
 
+// VaultConfig controla el camino de vuelta vault → base (`kronos vault
+// import`, ver internal/obsidian/vault_import.go). Apagado por defecto: leer
+// del vault y escribir en la base es más delicado que el camino normal
+// (base → vault), así que arranca en modo explícito, no automático.
+type VaultConfig struct {
+	// AutoImportOnExport: si está en true, `kronos export` corre primero un
+	// import en dry-run y avisa conflictos antes de exportar. Nunca escribe
+	// en la base por sí solo (el import automático siempre es dry-run).
+	AutoImportOnExport bool `json:"auto_import_on_export"`
+	// ImportMaxConflictsReport limita cuántos conflictos se listan en
+	// detalle por stdout/stderr en `kronos vault import` (el conteo total
+	// del resumen siempre es completo).
+	ImportMaxConflictsReport int `json:"import_max_conflicts_report"`
+}
+
 type LLMConfig struct {
 	Provider string `json:"provider"` // ollama | openai | openai-compatible | anthropic | disabled
 	Model    string `json:"model"`
@@ -88,6 +103,18 @@ type CoreConfig struct {
 	// sección global antes de dejarle lugar al proyecto (ver
 	// internal/hooks/core_block.go).
 	ProjectMinChars int `json:"project_min_chars"`
+	// MaxPerType: tope de items por tipo dentro del bloque. Medido en
+	// producción (proyecto kronos-v2, 2026-09-11): 6 de 7 items de proyecto
+	// eran [architecture], varios del mismo hilo de trabajo del día — un
+	// solo tipo se comía casi todo el bloque. 0 usa el default (3).
+	MaxPerType int `json:"max_per_type"`
+	// MaxItemChars: tope de caracteres por línea de item (tipo + título +
+	// resumen). 0 usa el default (110).
+	MaxItemChars int `json:"max_item_chars"`
+	// StaleDays: a partir de cuántos días sin actualización una decisión o
+	// arquitectura se marca "(antiguo)" en el bloque, para que el agente
+	// sepa que puede estar desactualizada. 0 usa el default (90).
+	StaleDays int `json:"stale_days"`
 }
 
 // RecallConfig controla la inyección por relevancia en UserPromptSubmit (ver
@@ -122,6 +149,40 @@ type RecallConfig struct {
 	// no llega a MinFTSResults. Default true — es la mejora oportunista, pero
 	// puede desactivarse en máquinas donde ni vale la pena el intento.
 	VectorOnFTSMiss bool `json:"vector_on_fts_miss"`
+	// MinMatchedTerms: con la query FTS armada por OR (ver runRecall), un
+	// resultado puede matchear con un solo término de tres — demasiado débil
+	// para inyectarlo como si fuera relevante. Medido en la ronda 2 del
+	// benchmark: "alfresco aspect remove" (3 términos) con el AND implícito
+	// anterior daba 0 filas porque exigía los tres en la misma observación;
+	// con OR puro cualquier observación que mencione UNA vez "aspect" ya
+	// entra, ruido igual de malo que el AND. La guarda de precisión: para
+	// prompts con ≥3 términos significativos, exigir que al menos
+	// MinMatchedTerms (verificados contra título+contenido, no solo lo que
+	// reporta el motor FTS) estén presentes. Prompts de 1-2 términos —
+	// "postgres driver"— no tienen margen para exigir 2, así que ahí alcanza
+	// con 1. Default 2.
+	MinMatchedTerms int `json:"min_matched_terms"`
+	// TotalBudgetMs es el techo real de tiempo para FTS+vector combinados en
+	// runRecall — reemplaza en la práctica a TimeoutMs como el límite que de
+	// verdad importa (se usa min(TimeoutMs, TotalBudgetMs) como deadline de
+	// ctx2, así que TimeoutMs sigue siendo compatible para quien ya lo tenía
+	// customizado más chico). Medido: un hook de UserPromptSubmit que tarda
+	// 1500ms en el peor caso (default viejo de TimeoutMs) se siente en cada
+	// prompt del usuario; 400ms es el punto donde FTS (milisegundos) más un
+	// intento vectorial corto todavía entran sin que el turno se note lento.
+	TotalBudgetMs int `json:"total_budget_ms"`
+	// VectorProbeMs es el umbral de la sonda barata que decide si el
+	// proveedor de embeddings "viene caliente": si la ÚLTIMA llamada real
+	// (ver embeddings.VectorStore.LastLatency) tardó más que esto, se asume
+	// que Ollama está lento AHORA (carga compartida con el daemon u otras
+	// sesiones, medido entre 800ms y 6s en esta máquina) y se saltea el
+	// intento vectorial en vez de gastar el presupuesto entero esperándolo.
+	// Es una sonda barata a propósito: no dispara una llamada nueva, solo lee
+	// la duración de la llamada anterior — un round-trip real (aunque sea
+	// solo para medir) costaría lo mismo que el intento que se quiere evitar.
+	// Sin datos previos (primera llamada del proceso) se asume caliente.
+	// Default 300ms.
+	VectorProbeMs int `json:"vector_probe_ms"`
 }
 
 // ConsolidationConfig controla la consolidación de duplicados semánticos
@@ -152,6 +213,25 @@ type RelationsConfig struct {
 	CandidatesLimit int     `json:"candidates_limit"`
 }
 
+// GateConfig controla el gate determinístico "buscar antes de editar"
+// (RunPreToolUse, ver internal/hooks/pre_tool_use.go). Las env vars
+// KRONOS_PRETOOL_GATE / KRONOS_GATE_BLOCK / KRONOS_GATE_TOOLS ganan sobre
+// esta config si están seteadas — no rompen lo que ya haya en
+// ~/.claude/settings.json de instalaciones existentes.
+type GateConfig struct {
+	Enabled bool     `json:"enabled"`
+	Block   bool     `json:"block"`
+	Tools   []string `json:"tools"`
+	// MinObservations: si el proyecto (observaciones no borradas, ver
+	// Storer.CountObservations) tiene menos que esto, el gate no tiene nada
+	// contra qué medir "ya buscaste en este proyecto" — se deja pasar sin
+	// bloquear y se loguea en debug. Medido en benchmark 2026-09-11: el gate
+	// en modo bloqueo agregó 57s (117s -> 174s) a una sesión de bugfix; en un
+	// proyecto con 0-4 observaciones esa búsqueda forzada es puro trámite,
+	// no hay nada que mem_search pueda encontrar. Default 5.
+	MinObservations int `json:"min_observations"`
+}
+
 type Config struct {
 	DB            DBConfig            `json:"db"`
 	Embeddings    EmbeddingsConfig    `json:"embeddings"`
@@ -160,10 +240,12 @@ type Config struct {
 	Nudge         NudgeConfig         `json:"nudge"`
 	Secrets       SecretsConfig       `json:"secrets"`
 	Export        ExportConfig        `json:"export"`
+	Vault         VaultConfig         `json:"vault"`
 	Core          CoreConfig          `json:"core"`
 	Recall        RecallConfig        `json:"recall"`
 	Consolidation ConsolidationConfig `json:"consolidation"`
 	Relations     RelationsConfig     `json:"relations"`
+	Gate          GateConfig          `json:"gate"`
 	APIToken      string              `json:"api_token"`
 }
 
@@ -195,6 +277,10 @@ func Default() Config {
 		Export: ExportConfig{
 			DefaultOutput: "~/kronos-vault",
 		},
+		Vault: VaultConfig{
+			AutoImportOnExport:       false,
+			ImportMaxConflictsReport: 10,
+		},
 		Core: CoreConfig{
 			Enabled:           true,
 			CharsLimit:        2000,
@@ -202,6 +288,9 @@ func Default() Config {
 			IncludeCheckpoint: true,
 			MaxGlobalChars:    800,
 			ProjectMinChars:   600,
+			MaxPerType:        3,
+			MaxItemChars:      110,
+			StaleDays:         90,
 		},
 		Recall: RecallConfig{
 			Enabled: true,
@@ -228,6 +317,9 @@ func Default() Config {
 			FallbackFTS:     true,
 			MinFTSResults:   1,
 			VectorOnFTSMiss: true,
+			MinMatchedTerms: 2,
+			TotalBudgetMs:   400,
+			VectorProbeMs:   300,
 		},
 		Consolidation: ConsolidationConfig{
 			Enabled:            false,
@@ -241,6 +333,12 @@ func Default() Config {
 			MinSharedTokens: 2,
 			RequireSameType: true,
 			CandidatesLimit: 3,
+		},
+		Gate: GateConfig{
+			Enabled:         true,
+			Block:           false,
+			Tools:           []string{"Edit", "Write", "Bash"},
+			MinObservations: 5,
 		},
 	}
 }
@@ -313,11 +411,20 @@ func Load() (Config, error) {
 	if cfg.Export.DefaultOutput == "" {
 		cfg.Export.DefaultOutput = def.Export.DefaultOutput
 	}
+	if cfg.Vault.ImportMaxConflictsReport == 0 {
+		cfg.Vault.ImportMaxConflictsReport = def.Vault.ImportMaxConflictsReport
+	}
 	if cfg.Consolidation.IntervalHours == 0 {
 		cfg.Consolidation.IntervalHours = def.Consolidation.IntervalHours
 	}
 	if cfg.Consolidation.Threshold == 0 {
 		cfg.Consolidation.Threshold = def.Consolidation.Threshold
+	}
+	if len(cfg.Gate.Tools) == 0 {
+		cfg.Gate.Tools = def.Gate.Tools
+	}
+	if cfg.Gate.MinObservations == 0 {
+		cfg.Gate.MinObservations = def.Gate.MinObservations
 	}
 
 	return cfg, nil
@@ -463,6 +570,19 @@ func (c *Config) Set(key, value string) error {
 		default:
 			return fmt.Errorf("unknown export field: %s", field)
 		}
+	case "vault":
+		switch field {
+		case "auto_import_on_export":
+			c.Vault.AutoImportOnExport = parseBool(value)
+		case "import_max_conflicts_report":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return fmt.Errorf("invalid int: %s", value)
+			}
+			c.Vault.ImportMaxConflictsReport = n
+		default:
+			return fmt.Errorf("unknown vault field: %s", field)
+		}
 	case "core":
 		switch field {
 		case "enabled":
@@ -493,6 +613,24 @@ func (c *Config) Set(key, value string) error {
 				return fmt.Errorf("invalid int: %s", value)
 			}
 			c.Core.ProjectMinChars = n
+		case "max_per_type":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return fmt.Errorf("invalid int: %s", value)
+			}
+			c.Core.MaxPerType = n
+		case "max_item_chars":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return fmt.Errorf("invalid int: %s", value)
+			}
+			c.Core.MaxItemChars = n
+		case "stale_days":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return fmt.Errorf("invalid int: %s", value)
+			}
+			c.Core.StaleDays = n
 		default:
 			return fmt.Errorf("unknown core field: %s", field)
 		}
@@ -534,6 +672,24 @@ func (c *Config) Set(key, value string) error {
 			c.Recall.MinFTSResults = n
 		case "vector_on_fts_miss":
 			c.Recall.VectorOnFTSMiss = parseBool(value)
+		case "min_matched_terms":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return fmt.Errorf("invalid int: %s", value)
+			}
+			c.Recall.MinMatchedTerms = n
+		case "total_budget_ms":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return fmt.Errorf("invalid int: %s", value)
+			}
+			c.Recall.TotalBudgetMs = n
+		case "vector_probe_ms":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return fmt.Errorf("invalid int: %s", value)
+			}
+			c.Recall.VectorProbeMs = n
 		default:
 			return fmt.Errorf("unknown recall field: %s", field)
 		}
@@ -584,6 +740,23 @@ func (c *Config) Set(key, value string) error {
 			c.Relations.CandidatesLimit = n
 		default:
 			return fmt.Errorf("unknown relations field: %s", field)
+		}
+	case "gate":
+		switch field {
+		case "enabled":
+			c.Gate.Enabled = parseBool(value)
+		case "block":
+			c.Gate.Block = parseBool(value)
+		case "tools":
+			c.Gate.Tools = parseList(value)
+		case "min_observations":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return fmt.Errorf("invalid int: %s", value)
+			}
+			c.Gate.MinObservations = n
+		default:
+			return fmt.Errorf("unknown gate field: %s", field)
 		}
 	case "root":
 		switch field {

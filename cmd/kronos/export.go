@@ -112,6 +112,20 @@ func runExport(args []string) error {
 		return err
 	}
 
+	// vault.auto_import_on_export (default false): antes de exportar, corre
+	// el import en dry-run y avisa conflictos. Nunca escribe en la base por
+	// sí solo — el import automático siempre es dry-run, aunque el usuario
+	// no haya pasado --dry-run acá (ese flag es de --adopt).
+	if cfg.Vault.AutoImportOnExport {
+		if _, err := obsidian.ImportVault(context.Background(), st, outDir, obsidian.ImportOptions{
+			Apply:              false,
+			Project:            project,
+			MaxConflictsReport: cfg.Vault.ImportMaxConflictsReport,
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "aviso: fallo el import automático antes de exportar: %v\n", err)
+		}
+	}
+
 	_, err = obsidian.ExportWithOptions(context.Background(), st, outDir, project, opts)
 	return err
 }
