@@ -121,11 +121,11 @@ type Model struct {
 	binaryInstalling bool
 	binaryInstallErr string
 
-	dbCursor          int  // 0=SQLite 1=PostgreSQL
+	dbCursor            int // 0=SQLite 1=PostgreSQL
 	wantsPostgresDocker bool
-	dbInput           textinput.Model // SQLite path
-	pgInput           textinput.Model // Postgres DSN
-	cfg               config.Config
+	dbInput             textinput.Model // SQLite path
+	pgInput             textinput.Model // Postgres DSN
+	cfg                 config.Config
 
 	ollamaOK     bool
 	ollamaURL    string

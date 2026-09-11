@@ -93,7 +93,7 @@ func (m Model) viewDashboard() string {
 	for i, item := range dashboardMenu {
 		line := fmt.Sprintf("  [%s] %s", item.key, item.label)
 		if i == m.cursor {
-			b.WriteString(styleHighlight.Width(m.width).Render(styleCursor.Render("▶ ") + item.label) + "\n")
+			b.WriteString(styleHighlight.Width(m.width).Render(styleCursor.Render("▶ ")+item.label) + "\n")
 		} else {
 			b.WriteString(styleMuted.Render(line) + "\n")
 		}
@@ -650,4 +650,3 @@ func min(a, b int) int {
 	}
 	return b
 }
-

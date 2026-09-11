@@ -2186,6 +2186,45 @@ func TestRunPreToolUse_SatisfiedByInjection_Disabled_StillBlocks(t *testing.T) {
 	}
 }
 
+// TestRunPreToolUse_EnvSatisfiedByInjectionOverridesConfig verifica que
+// KRONOS_GATE_SATISFIED_BY_INJECTION gana sobre la config, igual que los otros
+// knobs del gate: se puede apagar el atajo desde el entorno sin tocar
+// config.json (config dice true, env dice "0" → vuelve a bloquear).
+func TestRunPreToolUse_EnvSatisfiedByInjectionOverridesConfig(t *testing.T) {
+	setupTempConfigDir(t)
+	cfg := config.Default()
+	cfg.Gate.SatisfiedByInjection = true
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("cfg.Save: %v", err)
+	}
+	t.Setenv("KRONOS_GATE_BLOCK", "1")
+	t.Setenv("KRONOS_GATE_SATISFIED_BY_INJECTION", "0")
+	hooks.ResetGatedTools()
+
+	st := newTestStore(t)
+	ctx := context.Background()
+	seedObservations(t, st, "proyecto-env-satisfied", 5)
+	st.CreateSession(ctx, "sess-gate-env-satisfied", "proyecto-env-satisfied", "/tmp")
+	if err := st.PersistInjectedIDs(ctx, "sess-gate-env-satisfied", []string{"1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	var exitCode *int
+	hooks.SetExitFn(func(code int) { exitCode = &code })
+	defer hooks.SetExitFn(nil)
+
+	in := hooks.Input{SessionID: "sess-gate-env-satisfied", ToolName: "Edit", CWD: gateCWD(t, "proyecto-env-satisfied")}
+	captureStderr(t, func() {
+		hooks.RunPreToolUse(ctx, in, st)
+	})
+
+	if exitCode == nil {
+		t.Error("con la env en 0 la inyección no debería alcanzar para saltar el gate")
+	} else if *exitCode != 2 {
+		t.Errorf("exitFn called with code %d, want 2", *exitCode)
+	}
+}
+
 // --- PreCompact ---
 
 func TestRunPreCompact_PrintsWarning(t *testing.T) {
