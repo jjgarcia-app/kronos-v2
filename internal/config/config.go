@@ -60,6 +60,21 @@ type ExportConfig struct {
 	Enabled bool `json:"enabled"`
 }
 
+// VaultConfig controla el camino de vuelta vault → base (`kronos vault
+// import`, ver internal/obsidian/vault_import.go). Apagado por defecto: leer
+// del vault y escribir en la base es más delicado que el camino normal
+// (base → vault), así que arranca en modo explícito, no automático.
+type VaultConfig struct {
+	// AutoImportOnExport: si está en true, `kronos export` corre primero un
+	// import en dry-run y avisa conflictos antes de exportar. Nunca escribe
+	// en la base por sí solo (el import automático siempre es dry-run).
+	AutoImportOnExport bool `json:"auto_import_on_export"`
+	// ImportMaxConflictsReport limita cuántos conflictos se listan en
+	// detalle por stdout/stderr en `kronos vault import` (el conteo total
+	// del resumen siempre es completo).
+	ImportMaxConflictsReport int `json:"import_max_conflicts_report"`
+}
+
 type LLMConfig struct {
 	Provider string `json:"provider"` // ollama | openai | openai-compatible | anthropic | disabled
 	Model    string `json:"model"`
@@ -160,6 +175,7 @@ type Config struct {
 	Nudge         NudgeConfig         `json:"nudge"`
 	Secrets       SecretsConfig       `json:"secrets"`
 	Export        ExportConfig        `json:"export"`
+	Vault         VaultConfig         `json:"vault"`
 	Core          CoreConfig          `json:"core"`
 	Recall        RecallConfig        `json:"recall"`
 	Consolidation ConsolidationConfig `json:"consolidation"`
@@ -194,6 +210,10 @@ func Default() Config {
 		},
 		Export: ExportConfig{
 			DefaultOutput: "~/kronos-vault",
+		},
+		Vault: VaultConfig{
+			AutoImportOnExport:       false,
+			ImportMaxConflictsReport: 10,
 		},
 		Core: CoreConfig{
 			Enabled:           true,
@@ -312,6 +332,9 @@ func Load() (Config, error) {
 	}
 	if cfg.Export.DefaultOutput == "" {
 		cfg.Export.DefaultOutput = def.Export.DefaultOutput
+	}
+	if cfg.Vault.ImportMaxConflictsReport == 0 {
+		cfg.Vault.ImportMaxConflictsReport = def.Vault.ImportMaxConflictsReport
 	}
 	if cfg.Consolidation.IntervalHours == 0 {
 		cfg.Consolidation.IntervalHours = def.Consolidation.IntervalHours
@@ -462,6 +485,19 @@ func (c *Config) Set(key, value string) error {
 			c.Export.Enabled = parseBool(value)
 		default:
 			return fmt.Errorf("unknown export field: %s", field)
+		}
+	case "vault":
+		switch field {
+		case "auto_import_on_export":
+			c.Vault.AutoImportOnExport = parseBool(value)
+		case "import_max_conflicts_report":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return fmt.Errorf("invalid int: %s", value)
+			}
+			c.Vault.ImportMaxConflictsReport = n
+		default:
+			return fmt.Errorf("unknown vault field: %s", field)
 		}
 	case "core":
 		switch field {
