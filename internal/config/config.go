@@ -179,6 +179,25 @@ type RelationsConfig struct {
 	CandidatesLimit int     `json:"candidates_limit"`
 }
 
+// GateConfig controla el gate determinístico "buscar antes de editar"
+// (RunPreToolUse, ver internal/hooks/pre_tool_use.go). Las env vars
+// KRONOS_PRETOOL_GATE / KRONOS_GATE_BLOCK / KRONOS_GATE_TOOLS ganan sobre
+// esta config si están seteadas — no rompen lo que ya haya en
+// ~/.claude/settings.json de instalaciones existentes.
+type GateConfig struct {
+	Enabled bool     `json:"enabled"`
+	Block   bool     `json:"block"`
+	Tools   []string `json:"tools"`
+	// MinObservations: si el proyecto (observaciones no borradas, ver
+	// Storer.CountObservations) tiene menos que esto, el gate no tiene nada
+	// contra qué medir "ya buscaste en este proyecto" — se deja pasar sin
+	// bloquear y se loguea en debug. Medido en benchmark 2026-09-11: el gate
+	// en modo bloqueo agregó 57s (117s -> 174s) a una sesión de bugfix; en un
+	// proyecto con 0-4 observaciones esa búsqueda forzada es puro trámite,
+	// no hay nada que mem_search pueda encontrar. Default 5.
+	MinObservations int `json:"min_observations"`
+}
+
 type Config struct {
 	DB            DBConfig            `json:"db"`
 	Embeddings    EmbeddingsConfig    `json:"embeddings"`
@@ -192,6 +211,7 @@ type Config struct {
 	Recall        RecallConfig        `json:"recall"`
 	Consolidation ConsolidationConfig `json:"consolidation"`
 	Relations     RelationsConfig     `json:"relations"`
+	Gate          GateConfig          `json:"gate"`
 	APIToken      string              `json:"api_token"`
 }
 
@@ -277,6 +297,12 @@ func Default() Config {
 			RequireSameType: true,
 			CandidatesLimit: 3,
 		},
+		Gate: GateConfig{
+			Enabled:         true,
+			Block:           false,
+			Tools:           []string{"Edit", "Write", "Bash"},
+			MinObservations: 5,
+		},
 	}
 }
 
@@ -356,6 +382,12 @@ func Load() (Config, error) {
 	}
 	if cfg.Consolidation.Threshold == 0 {
 		cfg.Consolidation.Threshold = def.Consolidation.Threshold
+	}
+	if len(cfg.Gate.Tools) == 0 {
+		cfg.Gate.Tools = def.Gate.Tools
+	}
+	if cfg.Gate.MinObservations == 0 {
+		cfg.Gate.MinObservations = def.Gate.MinObservations
 	}
 
 	return cfg, nil
@@ -653,6 +685,23 @@ func (c *Config) Set(key, value string) error {
 			c.Relations.CandidatesLimit = n
 		default:
 			return fmt.Errorf("unknown relations field: %s", field)
+		}
+	case "gate":
+		switch field {
+		case "enabled":
+			c.Gate.Enabled = parseBool(value)
+		case "block":
+			c.Gate.Block = parseBool(value)
+		case "tools":
+			c.Gate.Tools = parseList(value)
+		case "min_observations":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return fmt.Errorf("invalid int: %s", value)
+			}
+			c.Gate.MinObservations = n
+		default:
+			return fmt.Errorf("unknown gate field: %s", field)
 		}
 	case "root":
 		switch field {

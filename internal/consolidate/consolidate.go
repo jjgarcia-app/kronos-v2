@@ -24,6 +24,8 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
+	"time"
 
 	"github.com/jjgarcia-app/kronos-v2/internal/relations"
 	"github.com/jjgarcia-app/kronos-v2/internal/store"
@@ -33,6 +35,17 @@ import (
 // observaciones semánticamente duplicadas. Intencionalmente más alto que
 // relations.SimilarityThreshold (0.85, pensado para "relacionado" — una
 // sugerencia al guardar, no una fusión).
+//
+// Calibrado 2026-09-11 con --dry-run contra los dos proyectos reales más
+// grandes disponibles en el buffer local (atisa-provider-management-all-in-one,
+// 630 obs, y kronos-v2, 16 obs), probando 0.85/0.88/0.90/0.93: en NINGÚN
+// umbral apareció un candidato por similitud semántica en ninguno de los dos
+// proyectos (0 pares en los cuatro casos, ver tabla en el commit) — el
+// corpus real no tiene duplicados semánticos que topic_key no resuelva ya.
+// Sin evidencia de falsos negativos que bajar el umbral resolviera, se deja
+// 0.93: el criterio conservador (evitar fusionar cosas que no son
+// duplicados) no tiene costo medido en este corpus, y bajarlo a ciegas solo
+// arriesgaría falsos positivos el día que sí aparezca un duplicado real.
 const DefaultThreshold float32 = 0.93
 
 // DefaultMaxPairs es el tope de observaciones que se consultan contra el
@@ -47,6 +60,16 @@ const DefaultMaxPairs = 50
 // filtro real de proyecto/tipo se aplica después, así que conviene pedir de
 // más.
 const similarLimit = 8
+
+// minSharedTitleTokens: tokens significativos de título que dos
+// observaciones del mismo bucket (proyecto+tipo) tienen que compartir para
+// que CUALQUIERA de las dos entre a la pasada de embeddings — ver
+// significantTitleTokens. Medido en atisa-provider-management-all-in-one
+// (630 obs locales): sin este prefiltro, `gc --consolidate` mandaba a Ollama
+// una llamada por cada observación del bucket entero aunque los títulos no
+// tuvieran nada en común entre sí (5 evaluadas, 32s, 6.4s por llamada, 0
+// candidatos) — con el prefiltro esas llamadas nunca se piden.
+const minSharedTitleTokens = 3
 
 // Options controla qué candidatos se consideran y si se escriben cambios.
 type Options struct {
@@ -66,6 +89,16 @@ type Options struct {
 	// store en esta corrida (<=0 usa DefaultMaxPairs). No aplica al camino
 	// topic_key, que siempre corre completo por ser gratis.
 	MaxPairs int
+
+	// Since: solo observaciones actualizadas después de este momento entran
+	// a la pasada de embeddings (cero = sin filtro, evalúa todo lo que
+	// sobrevivió al prefiltro de tokens). No aplica al camino topic_key
+	// (gratis, corre completo siempre) ni al prefiltro de tokens (Options no
+	// necesita nada para ese paso). Pensado para que el caller (ver `kronos
+	// gc --consolidate --since`) persista el timestamp de la corrida anterior
+	// y no vuelva a pagar una llamada de embeddings por una observación que
+	// ya se evaluó y no cambió desde entonces.
+	Since time.Time
 }
 
 // Pair es un par candidato a fusión (o ya fusionado, si Applied=true).
@@ -101,6 +134,16 @@ type Report struct {
 	// con --max-pairs más alto (o varias corridas por proyecto) puede
 	// encontrar más candidatos.
 	PairsSkippedByCap int
+	// PairsSkippedByPrefilter: observaciones que topic_key no resolvió pero
+	// que tampoco entraron a la pasada de embeddings porque ninguna otra
+	// observación de su mismo bucket (proyecto+tipo) comparte
+	// minSharedTitleTokens tokens de título con ellas — ver
+	// significantTitleTokens. Nunca gastan un embedding.
+	PairsSkippedByPrefilter int
+	// PairsSkippedBySince: observaciones que pasaron el prefiltro de tokens
+	// pero quedaron afuera por Options.Since — ya se evaluaron en una
+	// corrida anterior y no se actualizaron desde entonces.
+	PairsSkippedBySince int
 }
 
 // Run busca pares de observaciones semánticamente duplicadas dentro del
@@ -153,20 +196,55 @@ func Run(ctx context.Context, st *store.Store, rel *relations.Detector, opts Opt
 		}
 	}
 
-	// Paso 2: similitud semántica — solo sobre lo que topic_key no resolvió,
-	// y solo hasta agotar maxPairs. Determinístico (ordenado por ID) para que
-	// dos corridas con el mismo MaxPairs evalúen siempre el mismo subconjunto.
-	var flatRemaining []*store.Observation
+	// Paso 2a: prefiltro por solapamiento de título — de lo que topic_key no
+	// resolvió, una observación solo es candidata a la pasada de embeddings
+	// si comparte minSharedTitleTokens tokens significativos de título con
+	// alguna otra observación de su mismo bucket (o el mismo topic_key no
+	// vacío, ya cubierto en la práctica por el paso 1). Gratis — no toca el
+	// proveedor de embeddings.
+	var afterPrefilter []*store.Observation
+	skippedByPrefilter := 0
 	for _, bucket := range buckets {
 		if len(bucket) < 2 {
 			continue
 		}
+		var remaining []*store.Observation
 		for _, o := range bucket {
 			if !resolved[o.ID] {
-				flatRemaining = append(flatRemaining, o)
+				remaining = append(remaining, o)
+			}
+		}
+		if len(remaining) < 2 {
+			skippedByPrefilter += len(remaining)
+			continue
+		}
+		tokensByID := make(map[int64]map[string]bool, len(remaining))
+		for _, o := range remaining {
+			tokensByID[o.ID] = significantTitleTokens(o.Title)
+		}
+		for _, o := range remaining {
+			if hasTitlePartner(o, remaining, tokensByID) {
+				afterPrefilter = append(afterPrefilter, o)
+			} else {
+				skippedByPrefilter++
 			}
 		}
 	}
+
+	// Paso 2b: --since — de lo que sobrevivió al prefiltro, solo evaluar por
+	// embeddings lo actualizado después de la corrida anterior. No aplica al
+	// camino topic_key ni al prefiltro de tokens, ambos gratis.
+	var flatRemaining []*store.Observation
+	skippedBySince := 0
+	for _, o := range afterPrefilter {
+		if !opts.Since.IsZero() && o.UpdatedAt.Before(opts.Since) {
+			skippedBySince++
+			continue
+		}
+		flatRemaining = append(flatRemaining, o)
+	}
+	// Determinístico (ordenado por ID) para que dos corridas con el mismo
+	// MaxPairs evalúen siempre el mismo subconjunto.
 	sort.Slice(flatRemaining, func(i, j int) bool { return flatRemaining[i].ID < flatRemaining[j].ID })
 
 	useEmbeddings := !opts.NoEmbeddings && rel != nil && rel.Enabled()
@@ -245,12 +323,14 @@ func Run(ctx context.Context, st *store.Store, rel *relations.Detector, opts Opt
 	}
 
 	return &Report{
-		DryRun:            opts.DryRun,
-		Pairs:             pairs,
-		Merged:            merged,
-		EmbeddingsUsed:    useEmbeddings,
-		PairsEvaluated:    evaluated,
-		PairsSkippedByCap: skippedByCap,
+		DryRun:                  opts.DryRun,
+		Pairs:                   pairs,
+		Merged:                  merged,
+		EmbeddingsUsed:          useEmbeddings,
+		PairsEvaluated:          evaluated,
+		PairsSkippedByCap:       skippedByCap,
+		PairsSkippedByPrefilter: skippedByPrefilter,
+		PairsSkippedBySince:     skippedBySince,
 	}, nil
 }
 
@@ -326,6 +406,70 @@ func findTopicKeyPairs(bucket []*store.Observation, seen map[[2]int64]bool) []Pa
 		}
 	}
 	return pairs
+}
+
+// titleTokenStopwords son conectores/artículos (español e inglés, el repo
+// mezcla ambos en títulos) sin señal de tema — mismo criterio que
+// internal/store/relations.go (significantTokens, para el detector de
+// relaciones); duplicado acá en vez de exportado porque esta rama no toca
+// internal/store salvo lectura.
+var titleTokenStopwords = map[string]bool{
+	"para": true, "como": true, "pero": true, "esto": true, "esta": true,
+	"este": true, "esos": true, "esas": true, "unos": true, "unas": true,
+	"cada": true, "todo": true, "toda": true, "todos": true, "todas": true,
+	"hace": true, "tiene": true, "tienen": true, "desde": true, "hasta": true,
+	"sobre": true, "entre": true, "cuando": true, "donde": true,
+	"porque": true, "también": true, "puede": true, "puedo": true,
+	"sido": true, "está": true, "están": true, "otro": true, "otra": true,
+	"otros": true, "otras": true, "with": true, "that": true, "this": true,
+	"from": true, "have": true, "were": true, "when": true, "what": true,
+	"will": true, "your": true, "their": true, "there": true, "which": true,
+	"about": true, "into": true, "than": true, "then": true, "these": true,
+	"those": true, "some": true, "such": true,
+}
+
+// significantTitleTokens extrae del título las palabras de ≥4 letras que no
+// son stopwords — usado por el prefiltro de la pasada de embeddings
+// (minSharedTitleTokens).
+func significantTitleTokens(title string) map[string]bool {
+	tokens := make(map[string]bool)
+	for _, w := range strings.Fields(strings.ToLower(title)) {
+		w = strings.Trim(w, ".,;:!?()[]{}\"'—-")
+		if len([]rune(w)) < 4 || titleTokenStopwords[w] {
+			continue
+		}
+		tokens[w] = true
+	}
+	return tokens
+}
+
+// sharedTitleTokenCount cuenta cuántos tokens aparecen en ambos sets.
+func sharedTitleTokenCount(a, b map[string]bool) int {
+	n := 0
+	for w := range a {
+		if b[w] {
+			n++
+		}
+	}
+	return n
+}
+
+// hasTitlePartner indica si o tiene, dentro de group, al menos otra
+// observación con la que comparta topic_key no vacío o minSharedTitleTokens
+// tokens significativos de título.
+func hasTitlePartner(o *store.Observation, group []*store.Observation, tokensByID map[int64]map[string]bool) bool {
+	for _, other := range group {
+		if other.ID == o.ID {
+			continue
+		}
+		if o.TopicKey != "" && o.TopicKey == other.TopicKey {
+			return true
+		}
+		if sharedTitleTokenCount(tokensByID[o.ID], tokensByID[other.ID]) >= minSharedTitleTokens {
+			return true
+		}
+	}
+	return false
 }
 
 func pairKey(a, b int64) [2]int64 {
