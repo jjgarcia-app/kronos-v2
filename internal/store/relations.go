@@ -88,6 +88,14 @@ type CandidateOptions struct {
 	Limit      int     // default 3
 	BM25Floor  float64 // default -2.0 (filtro de calidad)
 	SkipInsert bool    // si true, no inserta filas en memory_relations
+
+	// MinSharedTokens y RequireSameType son filtros anti-ruido opcionales —
+	// su cero-valor (0 / false) preserva el comportamiento histórico (solo
+	// BM25Floor) para callers que no los setean. El caller de mem_save
+	// (internal/mcp/handlers.go) los pasa siempre desde config.RelationsConfig
+	// — ver ahí la medición real que motivó endurecerlos.
+	MinSharedTokens int  // mínimo de tokens significativos (≥4 letras, sin stopwords) compartidos entre títulos
+	RequireSameType bool // el candidato debe compartir Type, o TopicKey no vacío
 }
 
 // JudgeRelationParams parámetros para mem_judge.
@@ -163,8 +171,22 @@ func (s *Store) FindCandidates(ctx context.Context, savedObs *Observation, opts 
 	}
 	rows.Close()
 
+	savedTokens := significantTokens(savedObs.Title)
+
 	var candidates []Candidate
 	for _, c := range raw {
+		if opts.MinSharedTokens > 0 {
+			if sharedTokenCount(savedTokens, significantTokens(c.Title)) < opts.MinSharedTokens {
+				continue
+			}
+		}
+		if opts.RequireSameType {
+			sameTopic := c.TopicKey != "" && c.TopicKey == savedObs.TopicKey
+			if c.Type != savedObs.Type && !sameTopic {
+				continue
+			}
+		}
+
 		exists, err := s.relationExists(ctx, savedObs.SyncID, c.SyncID)
 		if err != nil {
 			return nil, err
@@ -563,6 +585,54 @@ func sanitizeFTSCandidates(title string) string {
 		return ""
 	}
 	return strings.Join(parts, " OR ")
+}
+
+// stopwordsCandidates son conectores/artículos de ≥4 letras (español e
+// inglés, el repo mezcla ambos en títulos) que no aportan señal de tema —
+// sin filtrarlos, dos observaciones sin relación real pueden compartir 2+
+// "tokens significativos" solo por conectores comunes.
+var stopwordsCandidates = map[string]bool{
+	"para": true, "como": true, "pero": true, "esto": true, "esta": true,
+	"este": true, "esos": true, "esas": true, "unos": true, "unas": true,
+	"cada": true, "todo": true, "toda": true, "todos": true, "todas": true,
+	"hace": true, "tiene": true, "tienen": true, "desde": true, "hasta": true,
+	"sobre": true, "entre": true, "cuando": true, "donde": true,
+	"porque": true, "también": true, "puede": true, "puedo": true,
+	"sido": true, "está": true, "están": true, "otro": true, "otra": true,
+	"otros": true, "otras": true, "with": true, "that": true, "this": true,
+	"from": true, "have": true, "were": true, "when": true, "what": true,
+	"will": true, "your": true, "their": true, "there": true, "which": true,
+	"about": true, "into": true, "than": true, "then": true, "these": true,
+	"those": true, "some": true, "such": true,
+}
+
+// significantTokens extrae del título las palabras de ≥4 letras que no son
+// stopwords — usado para medir superposición real de tema entre dos
+// observaciones (ver CandidateOptions.MinSharedTokens).
+func significantTokens(title string) map[string]bool {
+	tokens := make(map[string]bool)
+	for _, w := range strings.Fields(strings.ToLower(title)) {
+		w = strings.Trim(w, ".,;:!?()[]{}\"'—-")
+		if len([]rune(w)) < 4 {
+			continue
+		}
+		if stopwordsCandidates[w] {
+			continue
+		}
+		tokens[w] = true
+	}
+	return tokens
+}
+
+// sharedTokenCount cuenta cuántos tokens aparecen en ambos sets.
+func sharedTokenCount(a, b map[string]bool) int {
+	n := 0
+	for w := range a {
+		if b[w] {
+			n++
+		}
+	}
+	return n
 }
 
 func validRelationVerbList() []string {

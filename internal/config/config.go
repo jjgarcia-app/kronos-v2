@@ -125,6 +125,22 @@ type ConsolidationConfig struct {
 	RequireSameProject bool    `json:"require_same_project"`
 }
 
+// RelationsConfig controla el filtro anti-ruido de FindCandidates — el
+// detector de candidatos a relación que corre tras cada mem_save sobre el
+// store local (ver internal/mcp/handlers.go). Medido en producción el
+// 2026-09-11: con el BM25Floor permisivo (-2.0) y sin filtro de tokens
+// compartidos ni de tipo, cada mem_save con un título que compartía UNA sola
+// palabra común con otra observación ("kronos", "fix", "session") generaba
+// 2-3 "Conflictos potenciales detectados" — ese día se juzgaron 11 pendientes
+// a mano, los 11 falsos positivos. RequireSameType por sí solo ya elimina los
+// cruces preferencia↔bugfix que causaron la mayoría.
+type RelationsConfig struct {
+	BM25Floor       float64 `json:"bm25_floor"`
+	MinSharedTokens int     `json:"min_shared_tokens"`
+	RequireSameType bool    `json:"require_same_type"`
+	CandidatesLimit int     `json:"candidates_limit"`
+}
+
 type Config struct {
 	DB            DBConfig            `json:"db"`
 	Embeddings    EmbeddingsConfig    `json:"embeddings"`
@@ -136,6 +152,7 @@ type Config struct {
 	Core          CoreConfig          `json:"core"`
 	Recall        RecallConfig        `json:"recall"`
 	Consolidation ConsolidationConfig `json:"consolidation"`
+	Relations     RelationsConfig     `json:"relations"`
 	APIToken      string              `json:"api_token"`
 }
 
@@ -205,6 +222,12 @@ func Default() Config {
 			Threshold:          0.93,
 			RequireSameType:    true,
 			RequireSameProject: true,
+		},
+		Relations: RelationsConfig{
+			BM25Floor:       -6.0,
+			MinSharedTokens: 2,
+			RequireSameType: true,
+			CandidatesLimit: 3,
 		},
 	}
 }
@@ -511,6 +534,31 @@ func (c *Config) Set(key, value string) error {
 			c.Consolidation.RequireSameProject = parseBool(value)
 		default:
 			return fmt.Errorf("unknown consolidation field: %s", field)
+		}
+	case "relations":
+		switch field {
+		case "bm25_floor":
+			f, err := strconv.ParseFloat(value, 64)
+			if err != nil {
+				return fmt.Errorf("invalid float: %s", value)
+			}
+			c.Relations.BM25Floor = f
+		case "min_shared_tokens":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return fmt.Errorf("invalid int: %s", value)
+			}
+			c.Relations.MinSharedTokens = n
+		case "require_same_type":
+			c.Relations.RequireSameType = parseBool(value)
+		case "candidates_limit":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return fmt.Errorf("invalid int: %s", value)
+			}
+			c.Relations.CandidatesLimit = n
+		default:
+			return fmt.Errorf("unknown relations field: %s", field)
 		}
 	case "root":
 		switch field {

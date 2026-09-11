@@ -172,6 +172,7 @@ func buildMCPServer(ctx context.Context, cfg config.Config, st store.Storer, dat
 	toolFilter := mcp.ResolveTools(toolsFlag)
 	srv := mcp.NewWithOptions(st, cfg.Nudge.ActionsThreshold, cfg.Nudge.FallbackMinutes, rel, toolFilter)
 	srv.SetDataDir(dataDir)
+	srv.SetRelationsConfig(cfg.Relations)
 	if ls := srv.LocalStoreForJudge(); ls != nil {
 		judge.AutoJudge(ctx, ls, rel, llmJudger, reindexDone)
 	}

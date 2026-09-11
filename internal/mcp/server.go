@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/jjgarcia-app/kronos-v2/internal/config"
 	"github.com/jjgarcia-app/kronos-v2/internal/relations"
 	"github.com/jjgarcia-app/kronos-v2/internal/store"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
@@ -29,6 +30,7 @@ type Server struct {
 	rel        *relations.Detector // nil when embeddings are disabled
 	dataDir    string              // directorio de datos para checkpoints
 	toolFilter map[string]bool     // nil = registrar todos; non-nil = solo los listados
+	relCfg     config.RelationsConfig
 }
 
 // New crea un Server listo para ser servido via stdio o HTTP.
@@ -49,6 +51,7 @@ func NewWithOptions(st store.Storer, nudgeActions, nudgeFallbackMins int, rel *r
 		activity:   NewActivity(nudgeActions, nudgeFallbackMins),
 		rel:        rel,
 		toolFilter: toolFilter,
+		relCfg:     config.Default().Relations,
 	}
 
 	s.mcp = server.NewMCPServer("kronos", Version,
@@ -63,6 +66,14 @@ func NewWithOptions(st store.Storer, nudgeActions, nudgeFallbackMins int, rel *r
 // Llamar antes de ServeStdio.
 func (s *Server) SetDataDir(dir string) *Server {
 	s.dataDir = dir
+	return s
+}
+
+// SetRelationsConfig configura los knobs anti-ruido de FindCandidates (ver
+// config.RelationsConfig). Opcional — sin llamarlo, el Server usa
+// config.Default().Relations.
+func (s *Server) SetRelationsConfig(c config.RelationsConfig) *Server {
+	s.relCfg = c
 	return s
 }
 
