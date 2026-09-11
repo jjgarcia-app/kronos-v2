@@ -53,6 +53,15 @@ func TestDefault_HasExpectedValues(t *testing.T) {
 	if cfg.Core.ProjectMinChars != 600 {
 		t.Errorf("default core.project_min_chars = %d, want 600", cfg.Core.ProjectMinChars)
 	}
+	if cfg.Core.MaxPerType != 3 {
+		t.Errorf("default core.max_per_type = %d, want 3", cfg.Core.MaxPerType)
+	}
+	if cfg.Core.MaxItemChars != 110 {
+		t.Errorf("default core.max_item_chars = %d, want 110", cfg.Core.MaxItemChars)
+	}
+	if cfg.Core.StaleDays != 90 {
+		t.Errorf("default core.stale_days = %d, want 90", cfg.Core.StaleDays)
+	}
 }
 
 func TestLoad_PartialCoreSection_KeepsDefaults(t *testing.T) {
@@ -83,6 +92,15 @@ func TestLoad_PartialCoreSection_KeepsDefaults(t *testing.T) {
 	}
 	if cfg.Core.ProjectMinChars != 600 {
 		t.Errorf("core.project_min_chars ausente debería conservar el default 600, got %d", cfg.Core.ProjectMinChars)
+	}
+	if cfg.Core.MaxPerType != 3 {
+		t.Errorf("core.max_per_type ausente debería conservar el default 3, got %d", cfg.Core.MaxPerType)
+	}
+	if cfg.Core.MaxItemChars != 110 {
+		t.Errorf("core.max_item_chars ausente debería conservar el default 110, got %d", cfg.Core.MaxItemChars)
+	}
+	if cfg.Core.StaleDays != 90 {
+		t.Errorf("core.stale_days ausente debería conservar el default 90, got %d", cfg.Core.StaleDays)
 	}
 }
 
@@ -201,6 +219,9 @@ func TestSet_ValidFields(t *testing.T) {
 		{"core.include_checkpoint", "false"},
 		{"core.max_global_chars", "500"},
 		{"core.project_min_chars", "400"},
+		{"core.max_per_type", "2"},
+		{"core.max_item_chars", "90"},
+		{"core.stale_days", "30"},
 	}
 	for _, c := range cases {
 		if err := cfg.Set(c.key, c.val); err != nil {
@@ -242,6 +263,15 @@ func TestSet_ValidFields(t *testing.T) {
 	}
 	if cfg.Core.ProjectMinChars != 400 {
 		t.Errorf("core.project_min_chars not set: got %d", cfg.Core.ProjectMinChars)
+	}
+	if cfg.Core.MaxPerType != 2 {
+		t.Errorf("core.max_per_type not set: got %d", cfg.Core.MaxPerType)
+	}
+	if cfg.Core.MaxItemChars != 90 {
+		t.Errorf("core.max_item_chars not set: got %d", cfg.Core.MaxItemChars)
+	}
+	if cfg.Core.StaleDays != 30 {
+		t.Errorf("core.stale_days not set: got %d", cfg.Core.StaleDays)
 	}
 }
 
