@@ -27,12 +27,22 @@ Flags:
       --prune             Borra archivos generados cuya observación de
                            origen ya no existe (nunca borra notas manuales
                            ni archivos generados editados a mano)
+      --adopt             Migra al formato nuevo los archivos generados por
+                           una versión ANTERIOR del export (sin la marca
+                           "generated_by: kronos-export"), verificando que
+                           id/project/type y el contenido coincidan con la
+                           base antes de tocar nada. No corre el export
+                           normal — es un modo aparte, ver --dry-run.
+      --dry-run           Junto con --adopt, solo reporta qué se adoptaría
+                           sin escribir nada.
   -h, --help               Muestra esta ayuda y no exporta nada
 
 Ejemplos:
   kronos export
   kronos export --project kronos-v2
   kronos export -o ~/otro-vault --prune
+  kronos export --adopt --dry-run
+  kronos export --adopt
 `
 
 func runExport(args []string) error {
@@ -46,6 +56,8 @@ func runExport(args []string) error {
 	outDir := obsidian.ExpandPath(cfg.Export.DefaultOutput)
 	project := ""
 	opts := obsidian.ExportOptions{}
+	adopt := false
+	dryRun := false
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -63,11 +75,19 @@ func runExport(args []string) error {
 			project = args[i]
 		case "--prune":
 			opts.Prune = true
+		case "--adopt":
+			adopt = true
+		case "--dry-run":
+			dryRun = true
 		default:
 			if !strings.HasPrefix(args[i], "-") {
 				outDir = args[i]
 			}
 		}
+	}
+
+	if dryRun && !adopt {
+		return fmt.Errorf("--dry-run solo tiene efecto junto con --adopt")
 	}
 
 	outDir = obsidian.ExpandPath(outDir)
@@ -86,6 +106,11 @@ func runExport(args []string) error {
 		return fmt.Errorf("open store: %w", err)
 	}
 	defer st.Close()
+
+	if adopt {
+		_, err := obsidian.AdoptWithOptions(context.Background(), st, outDir, project, dryRun)
+		return err
+	}
 
 	_, err = obsidian.ExportWithOptions(context.Background(), st, outDir, project, opts)
 	return err
