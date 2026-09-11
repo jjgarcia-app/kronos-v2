@@ -79,6 +79,21 @@ type CoreConfig struct {
 	IncludeCheckpoint bool `json:"include_checkpoint"`
 }
 
+// RecallConfig controla la inyección por relevancia en UserPromptSubmit (ver
+// internal/hooks/prompt_submit.go): mismo hallazgo que motivó CoreConfig
+// (60/9.470 mem_search, 0,63%), pero acá el disparador es cada prompt del
+// usuario en vez de solo el arranque de sesión — así que el presupuesto por
+// defecto es más chico y el timeout más corto, porque esto corre con mucha
+// más frecuencia y no puede arriesgar la latencia del turno.
+type RecallConfig struct {
+	Enabled       bool    `json:"enabled"`
+	K             int     `json:"k"`
+	MinSimilarity float64 `json:"min_similarity"`
+	CharsLimit    int     `json:"chars_limit"`
+	TimeoutMs     int     `json:"timeout_ms"`
+	FallbackFTS   bool    `json:"fallback_fts"`
+}
+
 type Config struct {
 	DB         DBConfig         `json:"db"`
 	Embeddings EmbeddingsConfig `json:"embeddings"`
@@ -88,6 +103,7 @@ type Config struct {
 	Secrets    SecretsConfig    `json:"secrets"`
 	Export     ExportConfig     `json:"export"`
 	Core       CoreConfig       `json:"core"`
+	Recall     RecallConfig     `json:"recall"`
 	APIToken   string           `json:"api_token"`
 }
 
@@ -124,6 +140,14 @@ func Default() Config {
 			CharsLimit:        2000,
 			MaxItems:          12,
 			IncludeCheckpoint: true,
+		},
+		Recall: RecallConfig{
+			Enabled:       true,
+			K:             3,
+			MinSimilarity: 0.72,
+			CharsLimit:    600,
+			TimeoutMs:     800,
+			FallbackFTS:   true,
 		},
 	}
 }
@@ -360,6 +384,39 @@ func (c *Config) Set(key, value string) error {
 			c.Core.IncludeCheckpoint = parseBool(value)
 		default:
 			return fmt.Errorf("unknown core field: %s", field)
+		}
+	case "recall":
+		switch field {
+		case "enabled":
+			c.Recall.Enabled = parseBool(value)
+		case "k":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return fmt.Errorf("invalid int: %s", value)
+			}
+			c.Recall.K = n
+		case "min_similarity":
+			n, err := strconv.ParseFloat(value, 64)
+			if err != nil {
+				return fmt.Errorf("invalid float: %s", value)
+			}
+			c.Recall.MinSimilarity = n
+		case "chars_limit":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return fmt.Errorf("invalid int: %s", value)
+			}
+			c.Recall.CharsLimit = n
+		case "timeout_ms":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return fmt.Errorf("invalid int: %s", value)
+			}
+			c.Recall.TimeoutMs = n
+		case "fallback_fts":
+			c.Recall.FallbackFTS = parseBool(value)
+		default:
+			return fmt.Errorf("unknown recall field: %s", field)
 		}
 	case "root":
 		switch field {
