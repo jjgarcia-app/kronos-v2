@@ -76,7 +76,7 @@ type VaultConfig struct {
 }
 
 type LLMConfig struct {
-	Provider string `json:"provider"` // ollama | openai | openai-compatible | anthropic | disabled
+	Provider string `json:"provider"` // ollama | claude-cli | openai | openai-compatible | anthropic | disabled
 	Model    string `json:"model"`
 	APIKey   string `json:"api_key"`
 	BaseURL  string `json:"base_url"`
@@ -92,6 +92,27 @@ type LLMConfig struct {
 	// que se abre — durante esa ventana no se intenta ninguna llamada al LLM
 	// local. Default 30.
 	BreakerMinutes int `json:"breaker_minutes"`
+	// CLIPath: binario a invocar cuando Provider es "claude-cli" (ver
+	// internal/llm.NewClaudeCLIFromConfig) — se resuelve por PATH si no es
+	// una ruta absoluta. Default "claude".
+	CLIPath string `json:"cli_path"`
+	// TimeoutMs acota cuánto puede tardar una llamada de generación con
+	// Provider "claude-cli" — al vencer se mata el subproceso. Medido en
+	// vivo: `claude -p --model haiku` con un prompt trivial tardó 6s; 30000
+	// (default) deja margen para prompts más largos sin dejar un hook
+	// colgado indefinidamente.
+	TimeoutMs int `json:"timeout_ms"`
+	// MaxLoadPerCPU es el umbral del guardián de carga (ver
+	// internal/llm.LoadGuardStatus): si load1/NumCPU supera este valor, no
+	// se intenta ninguna llamada de generación (ni Ollama ni claude-cli) —
+	// se saltea y se loguea en debug. Motivado por un bug real medido en
+	// producción: con la máquina saturada, cada intento fallido dejaba un
+	// proceso de generación local girando a >200% CPU durante minutos,
+	// empeorando la carga y haciendo fallar el intento siguiente (círculo
+	// vicioso). Default 1.0; 0 desactiva el guardián. No aplica a los
+	// embeddings del recall (esos ya degradan a FTS por presupuesto de
+	// tiempo, no por carga).
+	MaxLoadPerCPU float64 `json:"max_load_per_cpu"`
 }
 
 // CoreConfig controla el bloque siempre-presente que SessionStart inyecta
@@ -334,6 +355,9 @@ func Default() Config {
 		LLM: LLMConfig{
 			BreakerFailures: 3,
 			BreakerMinutes:  30,
+			CLIPath:         "claude",
+			TimeoutMs:       30000,
+			MaxLoadPerCPU:   1.0,
 		},
 		Memory: MemoryConfig{
 			MaxObservationLength: 50000,
@@ -698,6 +722,20 @@ func (c *Config) Set(key, value string) error {
 				return fmt.Errorf("invalid int: %s", value)
 			}
 			c.LLM.BreakerMinutes = n
+		case "cli_path":
+			c.LLM.CLIPath = value
+		case "timeout_ms":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return fmt.Errorf("invalid int: %s", value)
+			}
+			c.LLM.TimeoutMs = n
+		case "max_load_per_cpu":
+			f, err := strconv.ParseFloat(value, 64)
+			if err != nil {
+				return fmt.Errorf("invalid float: %s", value)
+			}
+			c.LLM.MaxLoadPerCPU = f
 		default:
 			return fmt.Errorf("unknown llm field: %s", field)
 		}

@@ -2,6 +2,7 @@ package hooks
 
 import (
 	"context"
+	"log/slog"
 	"strings"
 
 	"github.com/jjgarcia-app/kronos-v2/internal/llm"
@@ -55,12 +56,19 @@ func RunPreCompactCapture(ctx context.Context, st store.Storer, llmClient *llm.C
 	}
 
 	proj := project.Detect(cwd)
-	_, err = st.SaveObservation(ctx, store.SaveParams{
+	// Igual que en el digest: observations tiene FK a sessions, así que si la
+	// fila de la sesión no existe el INSERT falla y la captura se pierde.
+	ensureSession(ctx, st, sessionID, proj.Name, cwd)
+	if _, err = st.SaveObservation(ctx, store.SaveParams{
 		SessionID: sessionID,
 		Type:      store.TypePassive,
 		Title:     title,
 		Content:   content,
 		Project:   proj.Name,
-	})
-	return err
+	}); err != nil {
+		slog.Warn("captura pasiva: no se pudo guardar la observación",
+			"session_id", sessionID, "project", proj.Name, "err", err)
+		return err
+	}
+	return nil
 }

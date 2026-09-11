@@ -375,3 +375,38 @@ func TestMaybeUpdateDigest_EmptySessionOrTranscriptPath_NoOp(t *testing.T) {
 		t.Errorf("transcript_path vacío no debería fallar: %v", err)
 	}
 }
+
+// TestMaybeUpdateDigest_SessionRowMissing_StillSaves cubre el bug real medido
+// en producción: la observación del digest se guarda con session_id y la tabla
+// observations tiene FK a sessions. Si la fila de la sesión no existe todavía
+// (SessionStart no corrió para esa sesión: sesión resumida, o el digest
+// disparado desde el camino local del hook), el INSERT fallaba con
+// "FOREIGN KEY constraint failed" y el caller descartaba el error: el digest
+// se perdía en silencio, siempre.
+//
+// A diferencia del test anterior, acá NO se crea la sesión a propósito.
+func TestMaybeUpdateDigest_SessionRowMissing_StillSaves(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	path := writeTestTranscript(t, []string{
+		`{"type":"user","message":{"role":"user","content":"sesión resumida sin fila en la base, con texto suficiente"}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Write","input":{"file_path":"/repo/internal/bar.go"}}]}}`,
+	})
+
+	if err := hooks.MaybeUpdateDigest(ctx, st, config.Default(), nil, "sin-fila", path, "/tmp/kronos-v2", false); err != nil {
+		t.Fatalf("con la sesión sin fila debería guardarse igual: %v", err)
+	}
+	obs, err := st.GetByTopicKey(ctx, "kronos-v2", "session/sin-fila")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if obs == nil {
+		t.Fatal("el digest no se guardó: la observación con session_id necesita que la fila de sesión exista")
+	}
+	if !strings.Contains(obs.Content, "sesión resumida sin fila") {
+		t.Errorf("Content inesperado: %q", obs.Content)
+	}
+	if sess, err := st.GetSession(ctx, "sin-fila"); err != nil || sess == nil {
+		t.Errorf("la fila de la sesión debería haberse creado (err=%v)", err)
+	}
+}
