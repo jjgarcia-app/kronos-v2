@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jjgarcia-app/kronos-v2/internal/config"
@@ -23,6 +26,11 @@ const nudgeEveryN = 15
 // no debería pasar (config.Default() ya pone 1500ms), pero un config.json
 // editado a mano no puede dejar el hook sin límite de tiempo.
 const recallTimeoutFallback = 1500 * time.Millisecond
+
+// totalBudgetFallback: mismo caso que recallTimeoutFallback pero para
+// TotalBudgetMs (config.Default() pone 400ms) — un config.json a mano no
+// puede dejar el presupuesto TOTAL de FTS+vector sin techo.
+const totalBudgetFallback = 400 * time.Millisecond
 
 // trivialPromptPatterns son saludos/charla que no ameritan gastar ni FTS ni
 // un embedding — caso real medido: "hola qué hora es" trajo ruido (una
@@ -128,12 +136,174 @@ func RunPromptSubmit(ctx context.Context, in Input, st store.Storer, vs *embeddi
 
 // recallItem es una observación candidata a inyectarse, ya resuelta desde
 // vector search o FTS — el formateo final (formatRecallBlock) no necesita
-// saber de cuál de las dos estrategias vino.
+// saber de cuál de las dos estrategias vino. matchedTerms/similarity son el
+// criterio de orden final (ver rankAndDedupeRecallItems): se calculan igual
+// sea cual sea el origen, así ninguno de los dos caminos gana solo por venir
+// de ahí.
 type recallItem struct {
-	id      string
-	title   string
-	typ     string
-	content string
+	id           string
+	title        string
+	typ          string
+	content      string
+	matchedTerms int
+	similarity   float64
+}
+
+// quotedPhraseRe extrae frases "entre comillas" del prompt — se preservan
+// como término de frase exacta en la query OR en vez de partirse palabra por
+// palabra (ver buildPromptQuery).
+var quotedPhraseRe = regexp.MustCompile(`"([^"]+)"`)
+
+// promptQuery es la consulta FTS armada a partir de un prompt para la
+// estrategia "FTS por OR con guarda de precisión" (ver runRecall):
+// orTerms ya vienen listos para unir con " OR " (cada uno entre comillas,
+// frases completas preservadas); sigTerms es la misma lista en minúsculas,
+// usada después para verificar cuántos términos aparecen de verdad en
+// título+contenido de cada resultado — el motor FTS ya no lo garantiza una
+// vez que la query relaja el AND implícito a OR.
+type promptQuery struct {
+	orTerms  []string
+	sigTerms []string
+}
+
+func (q promptQuery) ftsQuery() string {
+	return strings.Join(q.orTerms, " OR ")
+}
+
+// buildPromptQuery tokeniza el prompt para la query FTS por OR: frases entre
+// comillas se preservan enteras; el resto se parte en palabras significativas
+// reusando significantTitleTokens (internal/hooks/core_block.go) — mismo
+// filtro (minúsculas, ≥4 letras, sin stopwords) que ya usa el dedupe del
+// bloque core para títulos, aplicado acá al prompt en vez de a un título.
+// Caso real medido (ronda 2 del benchmark): "alfresco aspect remove" (3
+// términos) daba 0 filas con el AND implícito de ambos backends porque exige
+// los tres en la misma observación; unidos por OR, cada uno entra como
+// candidato y countMatchedTerms decide después cuáles matchean lo bastante
+// como para no ser ruido.
+func buildPromptQuery(prompt string) promptQuery {
+	var q promptQuery
+	seen := make(map[string]bool)
+
+	rest := prompt
+	for _, m := range quotedPhraseRe.FindAllStringSubmatch(prompt, -1) {
+		phrase := strings.TrimSpace(m[1])
+		if phrase == "" {
+			continue
+		}
+		lower := strings.ToLower(phrase)
+		if seen[lower] {
+			continue
+		}
+		seen[lower] = true
+		q.orTerms = append(q.orTerms, fmt.Sprintf(`"%s"`, phrase))
+		q.sigTerms = append(q.sigTerms, lower)
+		rest = strings.Replace(rest, m[0], " ", 1)
+	}
+
+	for _, tok := range significantTitleTokens(rest) {
+		if seen[tok] {
+			continue
+		}
+		seen[tok] = true
+		q.orTerms = append(q.orTerms, fmt.Sprintf(`"%s"`, tok))
+		q.sigTerms = append(q.sigTerms, tok)
+	}
+
+	return q
+}
+
+// minMatchedTermsFor decide cuántos términos deben aparecer de verdad en un
+// resultado para contarlo como match real y no ruido de la relajación OR:
+// con 3+ términos significativos alcanza que coincidan `configured` (default
+// 2, ver config.RecallConfig.MinMatchedTerms); con 1-2 términos ("postgres
+// driver") no hay margen para exigir 2, así que con 1 alcanza.
+func minMatchedTermsFor(sigTermCount, configured int) int {
+	if sigTermCount < 3 {
+		return 1
+	}
+	if configured <= 0 {
+		return 2
+	}
+	return configured
+}
+
+// countMatchedTerms cuenta cuántos de terms aparecen (substring, sin
+// distinguir mayúsculas) en título+contenido — es la verificación real de
+// precisión que reemplaza la garantía que el AND implícito daba gratis: con
+// la query relajada a OR, "matcheó por FTS" ya no implica "todos los
+// términos están ahí".
+func countMatchedTerms(terms []string, title, content string) int {
+	haystack := strings.ToLower(title + " " + content)
+	n := 0
+	for _, t := range terms {
+		if t != "" && strings.Contains(haystack, t) {
+			n++
+		}
+	}
+	return n
+}
+
+// vectorProbeThreshold resuelve config.RecallConfig.VectorProbeMs con su
+// default (300ms) — separado para no repetir el fallback en cada punto que
+// lo necesita.
+func vectorProbeThreshold(rc config.RecallConfig) time.Duration {
+	ms := rc.VectorProbeMs
+	if ms <= 0 {
+		ms = 300
+	}
+	return time.Duration(ms) * time.Millisecond
+}
+
+// promptRecallCacheTTL: misma ventana que embeddings.recallCacheTTL — una
+// consulta repetida (reformulación, doble Enter) dentro de este tramo no
+// vuelve a pagar ni el round-trip de FTS ni el de embeddings.
+const promptRecallCacheTTL = 10 * time.Minute
+
+type promptCacheEntry struct {
+	items   []recallItem
+	expires time.Time
+}
+
+// promptCache guarda, por (proyecto, prompt normalizado), los candidatos que
+// ya pasaron su guarda de precisión (FTS con min_matched_terms, vector con
+// min_similarity) — SIN el filtro de ya-inyectado, que es por sesión y se
+// aplica siempre fresco en runRecall aunque la lista venga de acá. Sin
+// límite de tamaño ni desalojo activo: mismo razonamiento que
+// embeddings.embedCache — el volumen de prompts distintos por ventana de 10
+// minutos es chico, no vale la pena una LRU.
+var (
+	promptCacheMu sync.Mutex
+	promptCache   = make(map[string]promptCacheEntry)
+)
+
+// promptCacheKey incluye la dirección del *Store subyacente además de
+// proyecto+prompt: promptCache es un mapa global de paquete (mismo patrón que
+// embeddings.embedCache), y sin esto dos stores DISTINTOS con el mismo
+// proyecto y el mismo prompt (caso real: la suite de tests, que crea un
+// store SQLite nuevo por test pero reusa nombres de proyecto y prompts entre
+// tests) compartirían resultados que no corresponden — observaciones de un
+// store no existen en el otro. En producción hay un solo *Store por proceso
+// (corto) o por vida del daemon (compartido), así que esto no cambia nada
+// del comportamiento real, solo aísla instancias distintas dentro del mismo
+// binario.
+func promptCacheKey(st store.Storer, project, prompt string) string {
+	return fmt.Sprintf("%p\x00%s\x00%s", st, project, strings.ToLower(strings.TrimSpace(prompt)))
+}
+
+func loadPromptCache(key string) ([]recallItem, bool) {
+	promptCacheMu.Lock()
+	defer promptCacheMu.Unlock()
+	e, ok := promptCache[key]
+	if !ok || time.Now().After(e.expires) {
+		return nil, false
+	}
+	return e.items, true
+}
+
+func storePromptCache(key string, items []recallItem) {
+	promptCacheMu.Lock()
+	defer promptCacheMu.Unlock()
+	promptCache[key] = promptCacheEntry{items: items, expires: time.Now().Add(promptRecallCacheTTL)}
 }
 
 // runRecall es el corazón de la inyección por relevancia: mide el prompt
@@ -143,11 +313,19 @@ type recallItem struct {
 // veces sobre 9.470 prompts (0,63%): la recuperación no puede depender de que
 // el agente se acuerde de buscar.
 //
-// Estrategia FTS-first: FTS5 responde en milisegundos y es determinístico, así
-// que corre siempre primero. El camino vectorial (embeddings vía Ollama, 800ms
-// a 6s medidos en esta máquina) solo se intenta si FTS no encontró nada — y
-// con el presupuesto de timeout_ms como techo duro, nunca más. Ver
-// config.RecallConfig para el detalle de las mediciones que motivan esto.
+// Recalibración (ronda 2 del benchmark): el AND implícito de ambos backends
+// FTS hacía fallar justo los prompts técnicos cortos ("alfresco aspect
+// remove", 0 filas) y todos los conversacionales, dejando casi todo el peso
+// en el camino vectorial (800ms-6s medidos contra Ollama en esta máquina).
+// Ahora: (1) la query FTS se arma por OR con una guarda de precisión
+// (min_matched_terms verificado contra título+contenido, no lo que reporta
+// el motor) en vez de exigir AND; (2) un presupuesto TOTAL (TotalBudgetMs,
+// default 400ms) acota FTS+vector combinados, nunca solo uno de los dos; (3)
+// antes de pagar un embedding nuevo, una sonda barata (VectorProbeMs) mira
+// cuánto tardó la ÚLTIMA llamada real del proveedor y se saltea el intento
+// si viene lento, en vez de arriesgar todo el presupuesto en un round-trip
+// que probablemente no vuelva a tiempo. Ver config.RecallConfig para el
+// detalle de knobs y mediciones.
 //
 // Fail-open total (recover propio): un panic acá nunca debe tirar abajo
 // UserPromptSubmit — en el peor caso, el usuario se queda sin el bloque de
@@ -171,9 +349,23 @@ func runRecall(ctx context.Context, in Input, st store.Storer, vs *embeddings.Ve
 		return
 	}
 
+	// Presupuesto total (punto 2 de la recalibración): min(TimeoutMs,
+	// TotalBudgetMs). TimeoutMs sigue siendo compatible para quien ya lo
+	// tenía customizado más chico que el nuevo default de TotalBudgetMs —
+	// nunca se relaja el límite, solo se puede volver más estricto. FTS
+	// corre primero adentro del mismo ctx2 y el intento vectorial, si llega
+	// a intentarse, hereda lo que quede: nunca se excede el presupuesto
+	// total, sea cual sea la combinación de los dos caminos.
 	timeout := time.Duration(rc.TimeoutMs) * time.Millisecond
 	if timeout <= 0 {
 		timeout = recallTimeoutFallback
+	}
+	totalBudget := time.Duration(rc.TotalBudgetMs) * time.Millisecond
+	if totalBudget <= 0 {
+		totalBudget = totalBudgetFallback
+	}
+	if totalBudget < timeout {
+		timeout = totalBudget
 	}
 	ctx2, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -193,72 +385,35 @@ func runRecall(ctx context.Context, in Input, st store.Storer, vs *embeddings.Ve
 		injectedSet[id] = true
 	}
 
-	var items []recallItem
-	// picked acumula IDs ya elegidos en ESTE prompt (además de injectedSet,
-	// ya inyectados en prompts anteriores de la sesión) — evita que la misma
-	// observación se cuente dos veces si matchea tanto por FTS como por
-	// vector (solo relevante con min_fts_results > 1, el default 1 nunca
-	// llega a correr ambas estrategias sobre la misma observación).
-	picked := make(map[string]bool, k)
+	pq := buildPromptQuery(in.Prompt)
 
-	// Estrategia 1 (siempre primero): FTS5 sobre las observaciones existentes
-	// — sin red, sin LLM, responde en milisegundos. Search ya cubre proyecto +
-	// global cuando Scope viene vacío (ver store.SearchParams). FallbackFTS
-	// gatea si este camino corre en absoluto (default true; false solo para
-	// aislar el camino vectorial en pruebas).
-	if rc.FallbackFTS {
-		ftsRes, err := st.Search(ctx2, store.SearchParams{
-			Query:   in.Prompt,
-			Project: projName,
-			Limit:   k,
-		})
-		if err != nil {
-			slog.Debug("runRecall: FTS error", "err", err)
-		}
-		for _, r := range ftsRes {
-			id := strconv.FormatInt(r.ID, 10)
-			if injectedSet[id] || picked[id] {
-				continue
-			}
-			items = append(items, recallItem{id: id, title: r.Title, typ: string(r.Type), content: r.Content})
-			picked[id] = true
-			if len(items) >= k {
-				break
-			}
-		}
+	// Cache por prompt normalizado (punto 4): FTS y vector ya resueltos para
+	// esta consulta+proyecto no se vuelven a pagar dentro de
+	// promptRecallCacheTTL. El filtro de ya-inyectado (injectedSet, por
+	// sesión — punto 3, persistido también por el arranque de sesión en
+	// session_start.go) se aplica SIEMPRE fresco después, así que una misma
+	// consulta repetida en la misma sesión no repite items ya mostrados
+	// aunque la lista de candidatos venga del cache.
+	cacheKey := promptCacheKey(st, projName, in.Prompt)
+	candidates, cached := loadPromptCache(cacheKey)
+	if !cached {
+		candidates = gatherRecallCandidates(ctx2, in.Prompt, st, vs, projName, pq, rc, k, minFTSResults)
+		storePromptCache(cacheKey, candidates)
 	}
 
-	// Estrategia 2 (solo si FTS no alcanzó el mínimo): búsqueda vectorial
-	// oportunista (embeddings ya existentes en internal/embeddings — Ollama
-	// con nomic-embed-text). vs.Similar es nil-safe: si el provider no está
-	// disponible, vs viene nil desde el caller y esto simplemente no aporta
-	// resultados. El presupuesto de ctx2 (timeout_ms) es el único límite: si
-	// se agota acá, se sigue con lo que ya dio FTS (o nada) sin bloquear más.
-	if len(items) < minFTSResults && rc.VectorOnFTSMiss && vs != nil {
-		sims, err := vs.Similar(ctx2, in.Prompt, k, 0, float32(rc.MinSimilarity))
-		if err != nil {
-			if ctx2.Err() != nil {
-				slog.Debug("runRecall: presupuesto de timeout agotado en el camino vectorial", "timeout_ms", rc.TimeoutMs)
-			} else {
-				slog.Debug("runRecall: vector search error", "err", err)
-			}
+	// picked evita contar dos veces la misma observación si aparece tanto en
+	// FTS como en vector (relevante sobre todo con min_fts_results > 1).
+	picked := make(map[string]bool, len(candidates))
+	items := make([]recallItem, 0, len(candidates))
+	for _, it := range candidates {
+		if injectedSet[it.id] || picked[it.id] {
+			continue
 		}
-		for _, s := range sims {
-			id := strconv.FormatInt(s.ObsID, 10)
-			if injectedSet[id] || picked[id] {
-				continue
-			}
-			obs, err := st.GetObservation(ctx2, s.ObsID)
-			if err != nil || obs == nil {
-				continue
-			}
-			items = append(items, recallItem{id: id, title: obs.Title, typ: string(obs.Type), content: obs.Content})
-			picked[id] = true
-			if len(items) >= k {
-				break
-			}
-		}
+		picked[it.id] = true
+		items = append(items, it)
 	}
+
+	items = rankAndDedupeRecallItems(items, k)
 
 	if len(items) == 0 {
 		return
@@ -274,6 +429,125 @@ func runRecall(ctx context.Context, in Input, st store.Storer, vs *embeddings.Ve
 	merged = append(merged, injectedIDs...)
 	merged = append(merged, usedIDs...)
 	_ = st.PersistInjectedIDs(ctx, in.SessionID, merged)
+}
+
+// gatherRecallCandidates ejecuta la estrategia FTS-first + vector oportunista
+// y devuelve los candidatos que pasaron su guarda de precisión — SIN el
+// filtro de ya-inyectado, que aplica el caller (ver runRecall) fresco en cada
+// llamada, incluso cuando esta lista viene del cache por prompt normalizado.
+func gatherRecallCandidates(ctx2 context.Context, prompt string, st store.Storer, vs *embeddings.VectorStore, projName string, pq promptQuery, rc config.RecallConfig, k, minFTSResults int) []recallItem {
+	var candidates []recallItem
+
+	// Estrategia 1 (siempre primero): FTS sobre las observaciones existentes
+	// — sin red, sin LLM, responde en milisegundos. Search ya cubre proyecto
+	// + global cuando Scope viene vacío (ver store.SearchParams). FallbackFTS
+	// gatea si este camino corre en absoluto (default true; false solo para
+	// aislar el camino vectorial en pruebas). Sin términos significativos
+	// (prompt de puras palabras cortas/stopwords) no hay query que armar —
+	// directo al vector.
+	if rc.FallbackFTS && len(pq.orTerms) > 0 {
+		needed := minMatchedTermsFor(len(pq.sigTerms), rc.MinMatchedTerms)
+		ftsRes, err := st.Search(ctx2, store.SearchParams{
+			Query:   pq.ftsQuery(),
+			Project: projName,
+			Limit:   k,
+		})
+		if err != nil {
+			slog.Debug("runRecall: FTS error", "err", err)
+		}
+		for _, r := range ftsRes {
+			matched := countMatchedTerms(pq.sigTerms, r.Title, r.Content)
+			if matched < needed {
+				continue // relajado por OR pero no matcheó lo suficiente — ruido, no resultado
+			}
+			candidates = append(candidates, recallItem{
+				id: strconv.FormatInt(r.ID, 10), title: r.Title, typ: string(r.Type), content: r.Content,
+				matchedTerms: matched,
+			})
+		}
+	}
+
+	// Estrategia 2 (solo si FTS no alcanzó el mínimo): búsqueda vectorial
+	// oportunista, gateada por presupuesto Y por la sonda de proveedor
+	// caliente/frío antes de pagar el round-trip.
+	if len(candidates) < minFTSResults && rc.VectorOnFTSMiss && vs != nil {
+		if ctx2.Err() != nil {
+			slog.Debug("runRecall: sin presupuesto restante, se saltea el intento vectorial", "err", ctx2.Err())
+			return candidates
+		}
+		if last, ok := vs.LastLatency(); ok && last > vectorProbeThreshold(rc) {
+			slog.Debug("runRecall: proveedor de embeddings viene lento (sonda), se saltea el intento vectorial",
+				"last_latency_ms", last.Milliseconds(), "probe_ms", rc.VectorProbeMs)
+			return candidates
+		}
+
+		sims, err := vs.Similar(ctx2, prompt, k, 0, float32(rc.MinSimilarity))
+		if err != nil {
+			if ctx2.Err() != nil {
+				slog.Debug("runRecall: presupuesto total agotado en el camino vectorial", "total_budget_ms", rc.TotalBudgetMs)
+			} else {
+				slog.Debug("runRecall: vector search error", "err", err)
+			}
+		}
+		seen := make(map[string]bool, len(candidates))
+		for _, c := range candidates {
+			seen[c.id] = true
+		}
+		for _, s := range sims {
+			id := strconv.FormatInt(s.ObsID, 10)
+			if seen[id] {
+				continue
+			}
+			obs, err := st.GetObservation(ctx2, s.ObsID)
+			if err != nil || obs == nil {
+				continue
+			}
+			candidates = append(candidates, recallItem{
+				id: id, title: obs.Title, typ: string(obs.Type), content: obs.Content,
+				matchedTerms: countMatchedTerms(pq.sigTerms, obs.Title, obs.Content),
+				similarity:   float64(s.Similarity),
+			})
+		}
+	}
+
+	return candidates
+}
+
+// rankAndDedupeRecallItems ordena por (términos matcheados, similitud) —
+// mismo criterio para candidatos de FTS y de vector, así ninguno le gana al
+// otro solo por venir de un camino distinto — y colapsa títulos solapados
+// ≥70% en tokens significativos (mismas función y umbral que usa el bloque
+// core para deduplicar — ver internal/hooks/core_block.go, titleOverlap /
+// titleOverlapThreshold / significantTitleTokens), antes de cortar en k.
+func rankAndDedupeRecallItems(items []recallItem, k int) []recallItem {
+	sort.SliceStable(items, func(i, j int) bool {
+		if items[i].matchedTerms != items[j].matchedTerms {
+			return items[i].matchedTerms > items[j].matchedTerms
+		}
+		return items[i].similarity > items[j].similarity
+	})
+
+	kept := make([]recallItem, 0, len(items))
+	keptTokens := make([][]string, 0, len(items))
+	for _, it := range items {
+		tokens := significantTitleTokens(it.title)
+		dup := false
+		for _, kt := range keptTokens {
+			if titleOverlap(tokens, kt) >= titleOverlapThreshold {
+				dup = true
+				break
+			}
+		}
+		if dup {
+			continue
+		}
+		kept = append(kept, it)
+		keptTokens = append(keptTokens, tokens)
+		if len(kept) >= k {
+			break
+		}
+	}
+	return kept
 }
 
 // formatRecallBlock arma el bloque "[kronos:relevante] ..." respetando
