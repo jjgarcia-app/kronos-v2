@@ -91,7 +91,7 @@ func TestExport_ObservationFileHasFrontmatter(t *testing.T) {
 	// Walk to find any .md file that's not _index.md.
 	var found string
 	filepath.WalkDir(outDir, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() || filepath.Base(path) == "_index.md" {
+		if err != nil || d.IsDir() || filepath.Base(path) == "_index.md" || filepath.Base(path) == "_core.md" {
 			return nil
 		}
 		if strings.HasSuffix(path, ".md") && found == "" {
@@ -171,7 +171,7 @@ func TestExport_DirectoryStructure(t *testing.T) {
 	// Observations should be in <project>/<type>/ subdirs.
 	var mdCount int
 	filepath.WalkDir(outDir, func(path string, d os.DirEntry, err error) error {
-		if err == nil && !d.IsDir() && strings.HasSuffix(path, ".md") && filepath.Base(path) != "_index.md" {
+		if err == nil && !d.IsDir() && strings.HasSuffix(path, ".md") && filepath.Base(path) != "_index.md" && filepath.Base(path) != "_core.md" {
 			mdCount++
 			// Each file should be at least 2 levels deep inside outDir.
 			rel, _ := filepath.Rel(outDir, path)
