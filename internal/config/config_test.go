@@ -35,6 +35,43 @@ func TestDefault_HasExpectedValues(t *testing.T) {
 	if !cfg.Secrets.Enabled {
 		t.Error("default secrets.enabled should be true")
 	}
+	if !cfg.Core.Enabled {
+		t.Error("default core.enabled should be true")
+	}
+	if cfg.Core.CharsLimit != 2000 {
+		t.Errorf("default core.chars_limit = %d, want 2000", cfg.Core.CharsLimit)
+	}
+	if cfg.Core.MaxItems != 12 {
+		t.Errorf("default core.max_items = %d, want 12", cfg.Core.MaxItems)
+	}
+	if !cfg.Core.IncludeCheckpoint {
+		t.Error("default core.include_checkpoint should be true")
+	}
+}
+
+func TestLoad_PartialCoreSection_KeepsDefaults(t *testing.T) {
+	setTempConfigDir(t)
+	path, err := config.ConfigPath()
+	if err != nil {
+		t.Fatalf("ConfigPath: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(`{"core":{"enabled":false}}`), 0644); err != nil {
+		t.Fatalf("write partial config: %v", err)
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Core.Enabled {
+		t.Error("core.enabled explícito en false debería respetarse")
+	}
+	if cfg.Core.CharsLimit != 2000 {
+		t.Errorf("core.chars_limit ausente debería conservar el default 2000, got %d", cfg.Core.CharsLimit)
+	}
+	if cfg.Core.MaxItems != 12 {
+		t.Errorf("core.max_items ausente debería conservar el default 12, got %d", cfg.Core.MaxItems)
+	}
 }
 
 func TestSave_Load_Roundtrip(t *testing.T) {
@@ -91,6 +128,10 @@ func TestSet_ValidFields(t *testing.T) {
 		{"export.enabled", "true"},
 		{"db.local_only_projects", "proyecto-a, proyecto-b"},
 		{"root.api_token", "sekret-token"},
+		{"core.enabled", "false"},
+		{"core.chars_limit", "1500"},
+		{"core.max_items", "8"},
+		{"core.include_checkpoint", "false"},
 	}
 	for _, c := range cases {
 		if err := cfg.Set(c.key, c.val); err != nil {
@@ -114,6 +155,18 @@ func TestSet_ValidFields(t *testing.T) {
 	}
 	if cfg.APIToken != "sekret-token" {
 		t.Errorf("api_token not set: got %q", cfg.APIToken)
+	}
+	if cfg.Core.Enabled {
+		t.Error("core.enabled should be false")
+	}
+	if cfg.Core.CharsLimit != 1500 {
+		t.Errorf("core.chars_limit not set: got %d", cfg.Core.CharsLimit)
+	}
+	if cfg.Core.MaxItems != 8 {
+		t.Errorf("core.max_items not set: got %d", cfg.Core.MaxItems)
+	}
+	if cfg.Core.IncludeCheckpoint {
+		t.Error("core.include_checkpoint should be false")
 	}
 }
 
