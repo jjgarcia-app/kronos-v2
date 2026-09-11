@@ -43,7 +43,7 @@ func TestHandlePreCompactCapture_RespondsImmediately_WithoutWaitingForLLM(t *tes
 	defer slowOllama.Close()
 
 	srv, ts := newTestServer(t, "")
-	srv.SetCaptureLLM(llm.NewClient(slowOllama.URL, "llama3.2:1b"), config.Config{})
+	srv.SetCaptureLLM(llm.NewClient(slowOllama.URL, "llama3.2:1b"), config.Default())
 
 	transcriptPath := filepath.Join(t.TempDir(), "t.jsonl")
 	_ = os.WriteFile(transcriptPath, []byte(`{"type":"user","message":{"role":"user","content":"algo"}}`+"\n"), 0o644)
@@ -96,7 +96,7 @@ func TestHandlePreCompactCapture_EndToEnd_SavesObservationAsync(t *testing.T) {
 	defer ollama.Close()
 
 	srv, ts := newTestServer(t, "")
-	srv.SetCaptureLLM(llm.NewClient(ollama.URL, "llama3.2:1b"), config.Config{})
+	srv.SetCaptureLLM(llm.NewClient(ollama.URL, "llama3.2:1b"), config.Default())
 
 	ctx := context.Background()
 	if _, err := srv.st.CreateSession(ctx, "s1", "proj", "/tmp"); err != nil {
@@ -170,7 +170,7 @@ func TestHandlePreCompactCapture_ForcesDigestUpdate_EvenIfNotDue(t *testing.T) {
 	defer ollama.Close()
 
 	srv, ts := newTestServer(t, "")
-	srv.SetCaptureLLM(llm.NewClient(ollama.URL, "llama3.2:1b"), config.Config{})
+	srv.SetCaptureLLM(llm.NewClient(ollama.URL, "llama3.2:1b"), config.Default())
 
 	// project.Detect(cwd) es lo que MaybeUpdateDigest usa de verdad para
 	// resolver el nombre del proyecto (ver internal/hooks/digest.go) — no
@@ -194,9 +194,10 @@ func TestHandlePreCompactCapture_ForcesDigestUpdate_EvenIfNotDue(t *testing.T) {
 	}
 
 	transcriptPath := filepath.Join(t.TempDir(), "t.jsonl")
+	prompt := `{"type":"user","message":{"role":"user","content":"encontré otro bug justo antes de compactar"}}` + "\n"
 	longText := strings.Repeat("contenido de conversación real que supera el mínimo de caracteres para que se llame al LLM. ", 4)
 	_ = os.WriteFile(transcriptPath,
-		[]byte(`{"type":"assistant","message":{"role":"assistant","content":"`+longText+`"}}`+"\n"),
+		[]byte(prompt+`{"type":"assistant","message":{"role":"assistant","content":"`+longText+`"}}`+"\n"),
 		0o644)
 
 	body, _ := json.Marshal(map[string]string{

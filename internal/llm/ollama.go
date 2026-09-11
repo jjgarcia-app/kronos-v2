@@ -4,12 +4,20 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"time"
 )
+
+// errBreakerOpen is returned by the three generate-calling methods
+// (JudgeRelation, ExtractFinding, UpdateDigest) when the circuit breaker is
+// open — callers already treat any non-nil error from these methods as
+// "skip gracefully", so this doesn't need special handling beyond what
+// fail-open call sites already do.
+var errBreakerOpen = errors.New("llm breaker abierto — no se intenta la llamada")
 
 const (
 	DefaultModel   = "llama3.2"
@@ -26,9 +34,18 @@ type JudgeResult struct {
 
 // Client is a minimal Ollama HTTP client for generative judgment.
 type Client struct {
-	base  string
-	model string
-	http  *http.Client
+	base    string
+	model   string
+	http    *http.Client
+	breaker *Breaker
+}
+
+// SetBreaker conecta un cortacircuitos al cliente — las tres llamadas de
+// generación (JudgeRelation, ExtractFinding, UpdateDigest) lo consultan
+// antes de pegarle a Ollama y le reportan el resultado. nil (default de
+// NewClient) deja al cliente sin cortacircuitos, igual que antes.
+func (c *Client) SetBreaker(b *Breaker) {
+	c.breaker = b
 }
 
 // New creates a Client with default settings (localhost:11434, llama3.2).
@@ -72,7 +89,20 @@ func (c *Client) Ping(ctx context.Context) error {
 // JudgeRelation asks the LLM to classify the semantic relationship between
 // two observations that have already been screened by cosine similarity.
 // Returns nil (no error) when Ollama is unavailable — callers should fall back gracefully.
-func (c *Client) JudgeRelation(ctx context.Context, aTitle, aContent, bTitle, bContent string, similarity float32) (*JudgeResult, error) {
+func (c *Client) JudgeRelation(ctx context.Context, aTitle, aContent, bTitle, bContent string, similarity float32) (result *JudgeResult, err error) {
+	if c.breaker != nil {
+		if !c.breaker.Allow() {
+			return nil, errBreakerOpen
+		}
+		defer func() {
+			if err != nil {
+				c.breaker.RecordFailure(err)
+			} else {
+				c.breaker.RecordSuccess()
+			}
+		}()
+	}
+
 	prompt := buildJudgePrompt(aTitle, aContent, bTitle, bContent, similarity)
 
 	payload, err := json.Marshal(map[string]any{
@@ -152,7 +182,20 @@ type Finding struct {
 // and if so, extracts a title + structured content. Returns (nil, nil) when
 // the model finds nothing, same fail-open contract as JudgeRelation: callers
 // treat both "Ollama unavailable" and "nothing found" as "skip, don't save".
-func (c *Client) ExtractFinding(ctx context.Context, excerpt string) (*Finding, error) {
+func (c *Client) ExtractFinding(ctx context.Context, excerpt string) (finding *Finding, err error) {
+	if c.breaker != nil {
+		if !c.breaker.Allow() {
+			return nil, errBreakerOpen
+		}
+		defer func() {
+			if err != nil {
+				c.breaker.RecordFailure(err)
+			} else {
+				c.breaker.RecordSuccess()
+			}
+		}()
+	}
+
 	prompt := buildExtractPrompt(excerpt)
 
 	payload, err := json.Marshal(map[string]any{
@@ -227,7 +270,20 @@ type DigestUpdate struct {
 //
 // Returns (nil, nil) on any failure or empty response — same fail-open
 // contract as ExtractFinding/JudgeRelation.
-func (c *Client) UpdateDigest(ctx context.Context, previousDigest, excerpt string) (*DigestUpdate, error) {
+func (c *Client) UpdateDigest(ctx context.Context, previousDigest, excerpt string) (update *DigestUpdate, err error) {
+	if c.breaker != nil {
+		if !c.breaker.Allow() {
+			return nil, errBreakerOpen
+		}
+		defer func() {
+			if err != nil {
+				c.breaker.RecordFailure(err)
+			} else {
+				c.breaker.RecordSuccess()
+			}
+		}()
+	}
+
 	prompt := buildDigestPrompt(previousDigest, excerpt)
 
 	payload, err := json.Marshal(map[string]any{

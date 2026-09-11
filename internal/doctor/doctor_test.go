@@ -32,6 +32,7 @@ func TestRun_ReturnsAllChecks(t *testing.T) {
 		"Modelo embeddings",
 		"Hooks Claude Code",
 		"Binario en PATH",
+		"Digest automático",
 	}
 	if len(report.Checks) != len(wantNames) {
 		t.Fatalf("expected %d checks, got %d", len(wantNames), len(report.Checks))

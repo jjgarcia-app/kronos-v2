@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/jjgarcia-app/kronos-v2/internal/config"
+	"github.com/jjgarcia-app/kronos-v2/internal/platform"
 )
 
 // Judger classifies the semantic relationship between two observations.
@@ -84,6 +85,15 @@ func NewOllamaFromConfig(ctx context.Context, cfg config.Config) *Client {
 		model = DefaultModel
 	}
 	c := NewClient(baseURL, model)
+	if dataDir, err := platform.DataDir(); err == nil {
+		failures := cfg.LLM.BreakerFailures
+		minutes := cfg.LLM.BreakerMinutes
+		var openFor time.Duration
+		if minutes > 0 {
+			openFor = time.Duration(minutes) * time.Minute
+		}
+		c.SetBreaker(NewBreaker(DefaultBreakerPath(dataDir), failures, openFor))
+	}
 	pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	if err := c.Ping(pingCtx); err != nil {

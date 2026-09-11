@@ -100,6 +100,17 @@ func (srv *Server) SetCaptureLLM(c *llm.Client, cfg config.Config) {
 	srv.captureLLMCfg = cfg
 }
 
+// captureConfig devuelve la config con la que se construyó el captureLLM
+// actual — usada por los endpoints de digest/pre-compact-capture para leer
+// cfg.Digest sin necesitar su propio campo Config en Server (captureLLMCfg
+// ya es la config completa cargada al arrancar el daemon, ver
+// cmd/kronos/serve.go).
+func (srv *Server) captureConfig() config.Config {
+	srv.captureLLMMu.Lock()
+	defer srv.captureLLMMu.Unlock()
+	return srv.captureLLMCfg
+}
+
 // getCaptureLLM devuelve el cliente Ollama cacheado si ya está sano, o
 // reintenta construirlo (mismo ping de 2s que NewOllamaFromConfig) si la
 // última vez no había respondido — self-healing sin depender de que
