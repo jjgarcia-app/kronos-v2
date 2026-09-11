@@ -88,7 +88,9 @@ type LLMConfig struct {
 // pedirle al agente que consulte memoria a mano no funciona, así que el
 // contexto relevante tiene que aparecer solo, acotado por presupuesto.
 type CoreConfig struct {
-	Enabled           bool `json:"enabled"`
+	Enabled bool `json:"enabled"`
+	// CharsLimit: presupuesto total del bloque en caracteres (alias de config:
+	// "budget_chars"). 0 usa el default.
 	CharsLimit        int  `json:"chars_limit"`
 	MaxItems          int  `json:"max_items"`
 	IncludeCheckpoint bool `json:"include_checkpoint"`
@@ -380,6 +382,42 @@ func ConfigPath() (string, error) {
 	return filepath.Join(dir, "config.json"), nil
 }
 
+// applyCoreAliases traduce los alias de la sección core (budget_chars →
+// chars_limit, item_chars → max_item_chars) a sus campos canónicos. Si el
+// archivo trae el nombre canónico, ese manda; si trae los dos, el alias se
+// ignora (nunca pisa un valor explícito del nombre bueno).
+func applyCoreAliases(data []byte, cfg *Config) error {
+	var raw struct {
+		Core map[string]json.RawMessage `json:"core"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil || raw.Core == nil {
+		// Sin sección core (o JSON ya inválido, que el Load principal reporta
+		// con mejor mensaje) no hay nada que traducir.
+		return nil
+	}
+
+	setInt := func(alias, canonical string, dst *int) error {
+		if _, ok := raw.Core[canonical]; ok {
+			return nil
+		}
+		v, ok := raw.Core[alias]
+		if !ok {
+			return nil
+		}
+		var n int
+		if err := json.Unmarshal(v, &n); err != nil {
+			return fmt.Errorf("config core.%s: %w", alias, err)
+		}
+		*dst = n
+		return nil
+	}
+
+	if err := setInt("budget_chars", "chars_limit", &cfg.Core.CharsLimit); err != nil {
+		return err
+	}
+	return setInt("item_chars", "max_item_chars", &cfg.Core.MaxItemChars)
+}
+
 // Load reads the config from disk, applying defaults for missing fields.
 func Load() (Config, error) {
 	cfg := Default()
@@ -399,6 +437,15 @@ func Load() (Config, error) {
 
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return cfg, fmt.Errorf("parse config: %w", err)
+	}
+
+	// Alias de claves en la sección core (ver CoreConfig): el brief de la ronda
+	// 4 llamó "budget_chars"/"item_chars" a lo que acá se llama
+	// "chars_limit"/"max_item_chars". Se aceptan los dos nombres y el canónico
+	// gana si el archivo trae ambos, así ninguna config.json queda ignorada en
+	// silencio. El switch de Set() acepta los alias por su lado.
+	if err := applyCoreAliases(data, &cfg); err != nil {
+		return cfg, err
 	}
 
 	// Apply defaults for zero-value fields
@@ -615,7 +662,10 @@ func (c *Config) Set(key, value string) error {
 		switch field {
 		case "enabled":
 			c.Core.Enabled = parseBool(value)
-		case "chars_limit":
+		case "chars_limit", "budget_chars":
+			// Mismo campo: "chars_limit" es el nombre histórico y "budget_chars"
+			// el alias que quedó del brief de la ronda 4. Se aceptan los dos
+			// para no romper config.json existentes.
 			n, err := strconv.Atoi(value)
 			if err != nil {
 				return fmt.Errorf("invalid int: %s", value)
@@ -655,7 +705,8 @@ func (c *Config) Set(key, value string) error {
 				return fmt.Errorf("invalid int: %s", value)
 			}
 			c.Core.MaxPerType = n
-		case "max_item_chars":
+		case "max_item_chars", "item_chars":
+			// "max_item_chars" histórico, "item_chars" alias (mismo campo).
 			n, err := strconv.Atoi(value)
 			if err != nil {
 				return fmt.Errorf("invalid int: %s", value)
