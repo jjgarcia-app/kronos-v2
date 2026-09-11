@@ -9,7 +9,25 @@ import (
 	"github.com/jjgarcia-app/kronos-v2/internal/doctor"
 )
 
+const doctorUsage = `Uso: kronos doctor [--fix <check>]
+
+Corre diagnósticos de salud sobre config, store y sync, y reporta el
+estado de cada check (OK / warn / fail).
+
+  --fix <check>  Aplica el fix disponible para ese check puntual
+  -h, --help     Muestra esta ayuda y no corre ningún check
+
+Ejemplos:
+  kronos doctor
+  kronos doctor --fix db-integrity
+`
+
 func runDoctor(args []string) error {
+	if hasHelpFlag(args) {
+		fmt.Print(doctorUsage)
+		return nil
+	}
+
 	cfg, _ := config.Load()
 
 	// --fix <name>: aplicar fix para un check específico

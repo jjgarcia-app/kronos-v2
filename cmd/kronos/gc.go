@@ -12,7 +12,25 @@ import (
 	"github.com/jjgarcia-app/kronos-v2/internal/store"
 )
 
+const gcUsage = `Uso: kronos gc [días]
+
+Elimina observaciones sin actualizar hace más de <días> (default: 90, o
+memory.retention_days en config.json) y relaciones huérfanas/pendientes de
+más de 30 días. Es destructivo: borra filas del store.
+
+  -h, --help  Muestra esta ayuda y no borra nada
+
+Ejemplos:
+  kronos gc
+  kronos gc 30
+`
+
 func runGC(args []string) error {
+	if hasHelpFlag(args) {
+		fmt.Print(gcUsage)
+		return nil
+	}
+
 	days := 90
 	for _, a := range args {
 		if n, err := strconv.Atoi(a); err == nil && n > 0 {

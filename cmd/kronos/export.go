@@ -12,10 +12,40 @@ import (
 	"github.com/jjgarcia-app/kronos-v2/internal/platform"
 )
 
+const exportUsage = `Uso: kronos export [ruta] [flags]
+
+Exporta las observaciones de kronos a un vault de Obsidian (Markdown).
+La exportación es no destructiva: solo toca archivos que ella misma generó
+en un export anterior (marcados con "generated_by: kronos-export" en el
+frontmatter). Una nota escrita a mano, o un archivo generado que editaste
+a mano después de exportarlo, nunca se sobreescriben — se avisan por stderr
+y se cuentan aparte en el resumen final.
+
+Flags:
+  -o, --output <ruta>     Directorio de salida (default: %s)
+  -p, --project <nombre>  Exporta solo un proyecto
+      --prune             Borra archivos generados cuya observación de
+                           origen ya no existe (nunca borra notas manuales
+                           ni archivos generados editados a mano)
+  -h, --help               Muestra esta ayuda y no exporta nada
+
+Ejemplos:
+  kronos export
+  kronos export --project kronos-v2
+  kronos export -o ~/otro-vault --prune
+`
+
 func runExport(args []string) error {
 	cfg, _ := config.Load()
+
+	if hasHelpFlag(args) {
+		fmt.Printf(exportUsage, obsidian.ExpandPath(cfg.Export.DefaultOutput))
+		return nil
+	}
+
 	outDir := obsidian.ExpandPath(cfg.Export.DefaultOutput)
 	project := ""
+	opts := obsidian.ExportOptions{}
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -31,6 +61,8 @@ func runExport(args []string) error {
 			}
 			i++
 			project = args[i]
+		case "--prune":
+			opts.Prune = true
 		default:
 			if !strings.HasPrefix(args[i], "-") {
 				outDir = args[i]
@@ -55,5 +87,6 @@ func runExport(args []string) error {
 	}
 	defer st.Close()
 
-	return obsidian.Export(context.Background(), st, outDir, project)
+	_, err = obsidian.ExportWithOptions(context.Background(), st, outDir, project, opts)
+	return err
 }
