@@ -495,6 +495,21 @@ func stripNulBytes(s string) string {
 	return strings.ReplaceAll(s, "\x00", "")
 }
 
+// LatestByType retorna la observación no borrada más reciente (por
+// updated_at) de un tipo dado, en TODOS los proyectos — usado por `kronos
+// doctor` para reportar cuándo se guardó el último digest automático de
+// sesión (ver internal/hooks/digest.go, MaybeUpdateDigest). nil si no hay
+// ninguna.
+func (s *Store) LatestByType(ctx context.Context, typ ObservationType) (*Observation, error) {
+	row := s.queryRow(ctx,
+		`SELECT id, sync_id, session_id, type, title, content, tool_name, project, scope, topic_key,
+		        normalized_hash, revision_count, duplicate_count, created_at, updated_at, deleted_at
+		 FROM observations
+		 WHERE type = ? AND deleted_at IS NULL
+		 ORDER BY updated_at DESC LIMIT 1`, string(typ))
+	return s.scanObservation(row)
+}
+
 // ListRecent retorna las N observaciones no borradas más recientemente actualizadas,
 // de todos los proyectos. Usado para re-indexación de embeddings al iniciar el servidor.
 func (s *Store) ListRecent(ctx context.Context, limit int) ([]*Observation, error) {
