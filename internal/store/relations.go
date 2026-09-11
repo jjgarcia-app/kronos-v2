@@ -444,6 +444,31 @@ func (s *Store) findRelationBetween(ctx context.Context, sourceID, targetID stri
 	return &r, nil
 }
 
+// RelationVerbBetween busca si ya existe una relación activa (en cualquier
+// dirección) entre dos sync_ids y devuelve su verbo. Usado por la
+// consolidación de duplicados (kronos gc --consolidate) para no reprocesar un
+// par que una corrida anterior ya marcó como supersedes — sin este chequeo,
+// correr --no-dry-run dos veces subiría revision_count del superviviente en
+// cada corrida.
+func (s *Store) RelationVerbBetween(ctx context.Context, sourceID, targetID string) (string, bool, error) {
+	row := s.queryRow(ctx, `
+		SELECT relation FROM memory_relations
+		WHERE deleted_at IS NULL
+		  AND ((source_id = ? AND target_id = ?) OR (source_id = ? AND target_id = ?))
+		LIMIT 1`,
+		sourceID, targetID, targetID, sourceID,
+	)
+	var rel string
+	err := row.Scan(&rel)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return rel, true, nil
+}
+
 func (s *Store) getRelationByID(ctx context.Context, id int64) (*Relation, error) {
 	row := s.queryRow(ctx, `
 		SELECT id, sync_id, source_id, target_id, relation, judgment_status,

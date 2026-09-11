@@ -113,17 +113,30 @@ type RecallConfig struct {
 	VectorOnFTSMiss bool `json:"vector_on_fts_miss"`
 }
 
+// ConsolidationConfig controla la consolidación de duplicados semánticos
+// (kronos gc --consolidate y su equivalente periódico en el daemon). Apagada
+// por defecto: fusionar observaciones es una operación de juicio, no algo
+// para dejar corriendo solo sin que nadie mire el reporte primero.
+type ConsolidationConfig struct {
+	Enabled            bool    `json:"enabled"`
+	IntervalHours      int     `json:"interval_hours"`
+	Threshold          float64 `json:"threshold"`
+	RequireSameType    bool    `json:"require_same_type"`
+	RequireSameProject bool    `json:"require_same_project"`
+}
+
 type Config struct {
-	DB         DBConfig         `json:"db"`
-	Embeddings EmbeddingsConfig `json:"embeddings"`
-	LLM        LLMConfig        `json:"llm"`
-	Memory     MemoryConfig     `json:"memory"`
-	Nudge      NudgeConfig      `json:"nudge"`
-	Secrets    SecretsConfig    `json:"secrets"`
-	Export     ExportConfig     `json:"export"`
-	Core       CoreConfig       `json:"core"`
-	Recall     RecallConfig     `json:"recall"`
-	APIToken   string           `json:"api_token"`
+	DB            DBConfig            `json:"db"`
+	Embeddings    EmbeddingsConfig    `json:"embeddings"`
+	LLM           LLMConfig           `json:"llm"`
+	Memory        MemoryConfig        `json:"memory"`
+	Nudge         NudgeConfig         `json:"nudge"`
+	Secrets       SecretsConfig       `json:"secrets"`
+	Export        ExportConfig        `json:"export"`
+	Core          CoreConfig          `json:"core"`
+	Recall        RecallConfig        `json:"recall"`
+	Consolidation ConsolidationConfig `json:"consolidation"`
+	APIToken      string              `json:"api_token"`
 }
 
 // Default returns a Config populated with sensible defaults.
@@ -185,6 +198,13 @@ func Default() Config {
 			FallbackFTS:     true,
 			MinFTSResults:   1,
 			VectorOnFTSMiss: true,
+		},
+		Consolidation: ConsolidationConfig{
+			Enabled:            false,
+			IntervalHours:      24,
+			Threshold:          0.93,
+			RequireSameType:    true,
+			RequireSameProject: true,
 		},
 	}
 }
@@ -256,6 +276,12 @@ func Load() (Config, error) {
 	}
 	if cfg.Export.DefaultOutput == "" {
 		cfg.Export.DefaultOutput = def.Export.DefaultOutput
+	}
+	if cfg.Consolidation.IntervalHours == 0 {
+		cfg.Consolidation.IntervalHours = def.Consolidation.IntervalHours
+	}
+	if cfg.Consolidation.Threshold == 0 {
+		cfg.Consolidation.Threshold = def.Consolidation.Threshold
 	}
 
 	return cfg, nil
@@ -462,6 +488,29 @@ func (c *Config) Set(key, value string) error {
 			c.Recall.VectorOnFTSMiss = parseBool(value)
 		default:
 			return fmt.Errorf("unknown recall field: %s", field)
+		}
+	case "consolidation":
+		switch field {
+		case "enabled":
+			c.Consolidation.Enabled = parseBool(value)
+		case "interval_hours":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return fmt.Errorf("invalid int: %s", value)
+			}
+			c.Consolidation.IntervalHours = n
+		case "threshold":
+			f, err := strconv.ParseFloat(value, 64)
+			if err != nil {
+				return fmt.Errorf("invalid float: %s", value)
+			}
+			c.Consolidation.Threshold = f
+		case "require_same_type":
+			c.Consolidation.RequireSameType = parseBool(value)
+		case "require_same_project":
+			c.Consolidation.RequireSameProject = parseBool(value)
+		default:
+			return fmt.Errorf("unknown consolidation field: %s", field)
 		}
 	case "root":
 		switch field {

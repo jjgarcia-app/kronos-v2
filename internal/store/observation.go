@@ -353,6 +353,21 @@ func (s *Store) updateObservation(ctx context.Context, id int64, title, content,
 	return s.GetObservation(ctx, id)
 }
 
+// IncrementRevisionCount sube revision_count en 1 sin tocar title/content/hash.
+// Usado por la consolidación de duplicados semánticos (kronos gc --consolidate)
+// para reflejar que la observación superviviente absorbió una duplicada, sin
+// pasar por updateObservation (que recalcularía el hash y pisaría el contenido).
+func (s *Store) IncrementRevisionCount(ctx context.Context, id int64) (*Observation, error) {
+	_, err := s.exec(ctx,
+		`UPDATE observations SET revision_count = revision_count + 1, updated_at = ? WHERE id = ?`,
+		now(), id,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("increment revision count: %w", err)
+	}
+	return s.GetObservation(ctx, id)
+}
+
 func (s *Store) bumpDuplicate(ctx context.Context, id int64, ts string) (*Observation, error) {
 	_, err := s.exec(ctx,
 		`UPDATE observations
