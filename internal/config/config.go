@@ -88,6 +88,18 @@ type CoreConfig struct {
 	// sección global antes de dejarle lugar al proyecto (ver
 	// internal/hooks/core_block.go).
 	ProjectMinChars int `json:"project_min_chars"`
+	// MaxPerType: tope de items por tipo dentro del bloque. Medido en
+	// producción (proyecto kronos-v2, 2026-09-11): 6 de 7 items de proyecto
+	// eran [architecture], varios del mismo hilo de trabajo del día — un
+	// solo tipo se comía casi todo el bloque. 0 usa el default (3).
+	MaxPerType int `json:"max_per_type"`
+	// MaxItemChars: tope de caracteres por línea de item (tipo + título +
+	// resumen). 0 usa el default (110).
+	MaxItemChars int `json:"max_item_chars"`
+	// StaleDays: a partir de cuántos días sin actualización una decisión o
+	// arquitectura se marca "(antiguo)" en el bloque, para que el agente
+	// sepa que puede estar desactualizada. 0 usa el default (90).
+	StaleDays int `json:"stale_days"`
 }
 
 // RecallConfig controla la inyección por relevancia en UserPromptSubmit (ver
@@ -202,6 +214,9 @@ func Default() Config {
 			IncludeCheckpoint: true,
 			MaxGlobalChars:    800,
 			ProjectMinChars:   600,
+			MaxPerType:        3,
+			MaxItemChars:      110,
+			StaleDays:         90,
 		},
 		Recall: RecallConfig{
 			Enabled: true,
@@ -493,6 +508,24 @@ func (c *Config) Set(key, value string) error {
 				return fmt.Errorf("invalid int: %s", value)
 			}
 			c.Core.ProjectMinChars = n
+		case "max_per_type":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return fmt.Errorf("invalid int: %s", value)
+			}
+			c.Core.MaxPerType = n
+		case "max_item_chars":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return fmt.Errorf("invalid int: %s", value)
+			}
+			c.Core.MaxItemChars = n
+		case "stale_days":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return fmt.Errorf("invalid int: %s", value)
+			}
+			c.Core.StaleDays = n
 		default:
 			return fmt.Errorf("unknown core field: %s", field)
 		}
