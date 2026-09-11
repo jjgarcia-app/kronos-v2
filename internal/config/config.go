@@ -26,13 +26,13 @@ type DBConfig struct {
 }
 
 type EmbeddingsConfig struct {
-	Provider        string `json:"provider"`
-	OllamaURL       string `json:"ollama_url"`
-	OllamaModel     string `json:"ollama_model"`
-	OllamaLLMModel  string `json:"ollama_llm_model"`
-	OllamaDocker    bool   `json:"ollama_docker"`
-	AnthropicKey    string `json:"anthropic_api_key"`
-	OpenAIKey       string `json:"openai_api_key"`
+	Provider       string `json:"provider"`
+	OllamaURL      string `json:"ollama_url"`
+	OllamaModel    string `json:"ollama_model"`
+	OllamaLLMModel string `json:"ollama_llm_model"`
+	OllamaDocker   bool   `json:"ollama_docker"`
+	AnthropicKey   string `json:"anthropic_api_key"`
+	OpenAIKey      string `json:"openai_api_key"`
 }
 
 type MemoryConfig struct {
@@ -85,13 +85,32 @@ type CoreConfig struct {
 // usuario en vez de solo el arranque de sesión — así que el presupuesto por
 // defecto es más chico y el timeout más corto, porque esto corre con mucha
 // más frecuencia y no puede arriesgar la latencia del turno.
+//
+// Estrategia FTS-first (ver runRecall): medido en esta máquina, un embedding
+// síncrono contra Ollama tarda entre 800ms y 6s según carga (Ollama
+// compartido con el daemon y otras sesiones), mientras que FTS5 sobre las
+// observaciones existentes responde en milisegundos, sin red ni LLM de por
+// medio. Por eso FTS corre siempre primero (determinístico y rápido) y el
+// camino vectorial es una mejora oportunista que solo se paga cuando FTS no
+// encontró nada — nunca el camino principal.
 type RecallConfig struct {
 	Enabled       bool    `json:"enabled"`
 	K             int     `json:"k"`
 	MinSimilarity float64 `json:"min_similarity"`
 	CharsLimit    int     `json:"chars_limit"`
 	TimeoutMs     int     `json:"timeout_ms"`
-	FallbackFTS   bool    `json:"fallback_fts"`
+	// FallbackFTS habilita el camino FTS (siempre el primero en intentarse).
+	// Default true — desactivarlo solo tiene sentido para aislar el camino
+	// vectorial en pruebas.
+	FallbackFTS bool `json:"fallback_fts"`
+	// MinFTSResults es la cantidad mínima de resultados FTS para darlos por
+	// buenos e inyectarlos sin gastar un embedding. Default 1: cualquier
+	// match FTS real es preferible a esperar un round-trip a Ollama.
+	MinFTSResults int `json:"min_fts_results"`
+	// VectorOnFTSMiss controla si se intenta el camino vectorial cuando FTS
+	// no llega a MinFTSResults. Default true — es la mejora oportunista, pero
+	// puede desactivarse en máquinas donde ni vale la pena el intento.
+	VectorOnFTSMiss bool `json:"vector_on_fts_miss"`
 }
 
 type Config struct {
@@ -142,12 +161,30 @@ func Default() Config {
 			IncludeCheckpoint: true,
 		},
 		Recall: RecallConfig{
-			Enabled:       true,
-			K:             3,
-			MinSimilarity: 0.72,
+			Enabled: true,
+			K:       3,
+			// 0.62: punto medio medido entre los dos mejores matches
+			// legítimos reales contra Ollama/nomic-embed-text en esta
+			// máquina — "alfresco aspect remove" dio 0.62 y "postgres
+			// driver" dio 0.66 de similitud coseno real. El default
+			// anterior (0.72) nunca disparaba con ninguno de los dos: quedaba
+			// por encima de ambos, así que el camino vectorial jamás se
+			// activaba en la práctica.
+			MinSimilarity: 0.62,
 			CharsLimit:    600,
-			TimeoutMs:     800,
-			FallbackFTS:   true,
+			// 1500ms: el round-trip real de un embedding contra Ollama en
+			// esta máquina midió entre 800ms y 6s (4-6 cores, Ollama
+			// compartido con el daemon y otras sesiones de trabajo). Con
+			// FTS-first, este timeout ya no acota el camino principal (FTS
+			// responde en milisegundos) — es presupuesto exclusivo para el
+			// intento vectorial oportunista que solo se paga si FTS no
+			// encontró nada. 800ms (default anterior, pensado para acotar
+			// TODO el recall) cortaba ese intento casi siempre antes de que
+			// Ollama llegara a responder.
+			TimeoutMs:       1500,
+			FallbackFTS:     true,
+			MinFTSResults:   1,
+			VectorOnFTSMiss: true,
 		},
 	}
 }
@@ -415,6 +452,14 @@ func (c *Config) Set(key, value string) error {
 			c.Recall.TimeoutMs = n
 		case "fallback_fts":
 			c.Recall.FallbackFTS = parseBool(value)
+		case "min_fts_results":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return fmt.Errorf("invalid int: %s", value)
+			}
+			c.Recall.MinFTSResults = n
+		case "vector_on_fts_miss":
+			c.Recall.VectorOnFTSMiss = parseBool(value)
 		default:
 			return fmt.Errorf("unknown recall field: %s", field)
 		}
