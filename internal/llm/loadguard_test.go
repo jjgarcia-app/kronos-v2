@@ -9,7 +9,8 @@ import (
 
 // countingBackend cuenta cuántas veces se llamó a generate — usado para
 // verificar que el guardián de carga corta ANTES de llegar al backend, no
-// solo que el resultado final sea un error.
+// solo que el resultado final sea un error. Implementa consumesLocalCPU
+// (true) para representar al backend local (Ollama).
 type countingBackend struct {
 	calls int
 }
@@ -17,6 +18,39 @@ type countingBackend struct {
 func (b *countingBackend) generate(ctx context.Context, prompt string, numPredict int) (string, error) {
 	b.calls++
 	return `{"content":"ok"}`, nil
+}
+
+func (b *countingBackend) consumesLocalCPU() bool { return true }
+
+// remoteBackend representa a un backend que genera FUERA de esta máquina
+// (claude-cli): no implementa consumesLocalCPU a propósito.
+type remoteBackend struct {
+	calls int
+}
+
+func (b *remoteBackend) generate(ctx context.Context, prompt string, numPredict int) (string, error) {
+	b.calls++
+	return `{"found":false}`, nil
+}
+
+// TestExtractFinding_LoadGuard_DoesNotApplyToRemoteBackend es el caso real
+// medido: con 8 agentes corriendo el load de esta máquina ronda 6-10, así que
+// un guardián aplicado también a claude-cli saltearía SIEMPRE y la captura
+// automática quedaría muerta. El guardián existe para proteger CPU local
+// (llama-server girando al 212% por 13 minutos), no para castigar la nube.
+func TestExtractFinding_LoadGuard_DoesNotApplyToRemoteBackend(t *testing.T) {
+	if _, err := readLoadAvg1(); err != nil {
+		t.Skip("no se pudo leer /proc/loadavg en este sistema — el guardián de carga no aplica")
+	}
+	backend := &remoteBackend{}
+	c := &Client{backend: backend, maxLoadPerCPU: 0.0001} // umbral imposible
+
+	if _, err := c.ExtractFinding(context.Background(), "excerpt de sobra para pasar minExcerptChars, bien largo"); err != nil {
+		t.Fatalf("un backend remoto no debería saltearse por carga local: %v", err)
+	}
+	if backend.calls != 1 {
+		t.Fatalf("esperaba que el backend remoto se llamara 1 vez, calls=%d", backend.calls)
+	}
 }
 
 func TestExtractFinding_LoadGuard_SkipsWhenOverThreshold(t *testing.T) {

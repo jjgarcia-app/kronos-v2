@@ -126,14 +126,31 @@ func (c *Client) Ping(ctx context.Context) error {
 	return nil
 }
 
-// checkLoadGuard es el guardián de carga (ver loadguard.go) que los tres
-// métodos de generación consultan ANTES de comprometer el cortacircuitos —
-// deliberadamente separado de él y chequeado antes de que se registre el
-// defer que llama RecordFailure/RecordSuccess: un salteo por carga alta no
-// es un fallo del backend (Ollama o claude-cli), así que no debe contar
-// como uno ni acercar el cortacircuitos a abrirse. Aplica por igual a
-// cualquier backend de generación.
+// localCPUBackend es un backend cuya generación consume CPU DE ESTA máquina
+// (Ollama corre el modelo acá) — es el único al que le aplica el guardián de
+// carga. claudeCLIBackend no lo implementa a propósito: `claude -p` genera en
+// la nube y lo único local es un proceso esperando red, así que saltearlo por
+// carga alta no protege ningún CPU y en cambio deja sin captura automática a
+// una máquina ocupada (medido: con 8 agentes corriendo el load ronda 6-10, o
+// sea que el guardián saltearía siempre y la feature quedaría muerta).
+//
+// El caso que motivó el guardián es concreto y solo del backend local: un
+// intento fallido con Ollama saturado dejaba `llama-server` girando al 212% de
+// CPU durante 13 minutos.
+type localCPUBackend interface {
+	consumesLocalCPU() bool
+}
+
+// checkLoadGuard es el guardián de carga (ver loadguard.go) que los métodos de
+// generación consultan ANTES de comprometer el cortacircuitos — deliberadamente
+// separado de él y chequeado antes de que se registre el defer que llama a
+// RecordFailure/RecordSuccess: un salteo por carga alta no es un fallo del
+// backend, así que no debe contar como uno ni acercar el cortacircuitos a
+// abrirse. Aplica solo a backends que consumen CPU local (ver localCPUBackend).
 func (c *Client) checkLoadGuard() error {
+	if lb, ok := c.backend.(localCPUBackend); !ok || !lb.consumesLocalCPU() {
+		return nil
+	}
 	if over, load1, cpus := loadOverThreshold(c.maxLoadPerCPU); over {
 		c.logLoadSkipOnce(load1, cpus)
 		return errLoadTooHigh
@@ -158,6 +175,12 @@ func (c *Client) logLoadSkipOnce(load1 float64, cpus int) {
 
 // ollamaBackend implementa generateBackend contra la API HTTP de Ollama
 // (/api/generate, format:"json" para forzar salida parseable).
+//
+// consumesLocalCPU() devuelve true: es el backend que corre el modelo en ESTA
+// máquina, y el único al que le aplica el guardián de carga (ver
+// localCPUBackend). claudeCLIBackend no implementa este método a propósito.
+func (b *ollamaBackend) consumesLocalCPU() bool { return true }
+
 type ollamaBackend struct {
 	base  string
 	model string
