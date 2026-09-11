@@ -115,7 +115,13 @@ func (s *Server) handleMemSave(ctx context.Context, req mcpgo.CallToolRequest) (
 
 	// Conflict surfacing via FTS5 BM25 (best-effort, always local).
 	if ls := s.localStore(); ls != nil && obs.RevisionCount == 1 {
-		candidates, _ := ls.FindCandidates(ctx, obs, store.CandidateOptions{Project: proj})
+		candidates, _ := ls.FindCandidates(ctx, obs, store.CandidateOptions{
+			Project:         proj,
+			Limit:           s.relCfg.CandidatesLimit,
+			BM25Floor:       s.relCfg.BM25Floor,
+			MinSharedTokens: s.relCfg.MinSharedTokens,
+			RequireSameType: s.relCfg.RequireSameType,
+		})
 		if len(candidates) > 0 {
 			msg += "\n\n**Conflictos potenciales detectados** — usar mem_judge para resolverlos:"
 			for _, c := range candidates {

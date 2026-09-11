@@ -101,6 +101,61 @@ func TestSave_Load_Roundtrip(t *testing.T) {
 	}
 }
 
+func TestLoad_NoRelationsSection_KeepsDefaults(t *testing.T) {
+	setTempConfigDir(t)
+	path, err := config.ConfigPath()
+	if err != nil {
+		t.Fatalf("ConfigPath: %v", err)
+	}
+	// Simula un config.json de una versión anterior a relations: la sección
+	// no existe en absoluto en el archivo.
+	if err := os.WriteFile(path, []byte(`{"db":{"backend":"sqlite"}}`), 0644); err != nil {
+		t.Fatalf("write config sin relations: %v", err)
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Relations.BM25Floor != -6.0 {
+		t.Errorf("relations.bm25_floor ausente debería conservar el default -6.0, got %v", cfg.Relations.BM25Floor)
+	}
+	if cfg.Relations.MinSharedTokens != 2 {
+		t.Errorf("relations.min_shared_tokens ausente debería conservar el default 2, got %d", cfg.Relations.MinSharedTokens)
+	}
+	if !cfg.Relations.RequireSameType {
+		t.Error("relations.require_same_type ausente debería conservar el default true")
+	}
+	if cfg.Relations.CandidatesLimit != 3 {
+		t.Errorf("relations.candidates_limit ausente debería conservar el default 3, got %d", cfg.Relations.CandidatesLimit)
+	}
+}
+
+func TestLoad_PartialRelationsSection_KeepsOtherDefaults(t *testing.T) {
+	setTempConfigDir(t)
+	path, err := config.ConfigPath()
+	if err != nil {
+		t.Fatalf("ConfigPath: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(`{"relations":{"min_shared_tokens":3}}`), 0644); err != nil {
+		t.Fatalf("write config parcial: %v", err)
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Relations.MinSharedTokens != 3 {
+		t.Errorf("relations.min_shared_tokens explícito debería respetarse, got %d", cfg.Relations.MinSharedTokens)
+	}
+	if cfg.Relations.BM25Floor != -6.0 {
+		t.Errorf("relations.bm25_floor ausente debería conservar el default -6.0, got %v", cfg.Relations.BM25Floor)
+	}
+	if !cfg.Relations.RequireSameType {
+		t.Error("relations.require_same_type ausente debería conservar el default true")
+	}
+}
+
 func TestLoad_NoFile_ReturnsDefaults(t *testing.T) {
 	setTempConfigDir(t)
 	cfg, err := config.Load()

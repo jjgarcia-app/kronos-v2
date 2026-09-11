@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -174,7 +175,21 @@ func (d *DualStore) isPrimaryDown() bool {
 // (timeout, breaker, auth, TLS, connection reset, etc.) — antes solo se
 // imprimía "primary caído" sin la causa, lo que hacía imposible diagnosticar
 // por qué el daemon estaba parpadeando entre Postgres y el buffer local.
+//
+// Un error de cancelación del CONTEXTO DEL LLAMADOR (hook abortado, sesión
+// cerrando, timeout del cliente MCP) no es una falla de disponibilidad del
+// primary — es el que se fue, no el store. Medido en producción el
+// 2026-09-11 (benchmark de 8 sesiones en paralelo): los dos únicos eventos
+// "primary caído" del día fueron "context canceled" a las 04:11:05 y
+// 04:12:58, y ambos degradaron TODAS las lecturas al buffer local durante
+// 5-15s (primaryRetryTTL) sin que Postgres tuviera ningún problema real. Se
+// ignora acá (solo se loguea en debug) para no confundir cancelación del
+// llamador con caída real del store.
 func (d *DualStore) markDown(err error) {
+	if isCallerCanceled(err) {
+		dsLog("debug: dual-store: operación cancelada por el llamador (context canceled), no es caída del primary: %v", err)
+		return
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if !d.down {
@@ -182,6 +197,22 @@ func (d *DualStore) markDown(err error) {
 	}
 	d.down = true
 	d.downSince = time.Now()
+}
+
+// isCallerCanceled detecta context.Canceled/context.DeadlineExceeded, tanto
+// vía errors.Is (caso normal, cuando el driver envuelve el error con %w)
+// como por el mensaje literal "context canceled" — el respaldo hace falta
+// porque pgx en algunos caminos devuelve el error de cancelación envuelto en
+// un tipo propio (pgconn) que no siempre preserva la cadena Unwrap hasta
+// context.Canceled.
+func isCallerCanceled(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	return strings.Contains(err.Error(), "context canceled")
 }
 
 func (d *DualStore) markUp(p *Store) {
