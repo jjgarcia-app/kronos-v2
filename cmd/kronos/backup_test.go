@@ -26,6 +26,11 @@ func setupTempDataDir(t *testing.T) string {
 	if err := os.MkdirAll(kronosDir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
+	// HOME aislado: si no, config.Load() lee el config REAL del usuario, que
+	// apunta a su Postgres de producción, y cada backup del test dispara un
+	// pg_dump de la base completa (segundos). Eso hacía que el test dependiera
+	// de la carga de la máquina y fallara solo en la suite completa.
+	t.Setenv("HOME", base)
 	switch runtime.GOOS {
 	case "windows":
 		t.Setenv("LOCALAPPDATA", base)
