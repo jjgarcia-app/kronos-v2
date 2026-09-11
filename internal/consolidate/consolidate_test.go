@@ -109,8 +109,8 @@ func TestRun_MergesSimilarPairSameProjectAndType(t *testing.T) {
 	st := newTestStore(t)
 	rel := newDetector(t)
 
-	o1 := saveAndIndex(t, ctx, st, rel, "proj-a", store.TypeDiscovery, "bug de login con MFA", obsContentA)
-	o2 := saveAndIndex(t, ctx, st, rel, "proj-a", store.TypeDiscovery, "bug de login con MFA (variante)", obsContentB)
+	o1 := saveAndIndex(t, ctx, st, rel, "proj-a", store.TypeDiscovery, "bug login token expira mfa", obsContentA)
+	o2 := saveAndIndex(t, ctx, st, rel, "proj-a", store.TypeDiscovery, "bug login token expira mfa variante", obsContentB)
 
 	report, err := consolidate.Run(ctx, st, rel, consolidate.Options{
 		Threshold:          0.93,
@@ -170,8 +170,8 @@ func TestRun_DoesNotMergeAcrossDifferentTypes(t *testing.T) {
 	st := newTestStore(t)
 	rel := newDetector(t)
 
-	saveAndIndex(t, ctx, st, rel, "proj-a", store.TypeDiscovery, "bug de login con MFA", obsContentA)
-	saveAndIndex(t, ctx, st, rel, "proj-a", store.TypeBugfix, "bug de login con MFA (variante)", obsContentB)
+	saveAndIndex(t, ctx, st, rel, "proj-a", store.TypeDiscovery, "bug login token expira mfa", obsContentA)
+	saveAndIndex(t, ctx, st, rel, "proj-a", store.TypeBugfix, "bug login token expira mfa variante", obsContentB)
 
 	report, err := consolidate.Run(ctx, st, rel, consolidate.Options{
 		Threshold:          0.93,
@@ -196,8 +196,8 @@ func TestRun_DryRunWritesNothing(t *testing.T) {
 	st := newTestStore(t)
 	rel := newDetector(t)
 
-	o1 := saveAndIndex(t, ctx, st, rel, "proj-a", store.TypeDiscovery, "bug de login con MFA", obsContentA)
-	saveAndIndex(t, ctx, st, rel, "proj-a", store.TypeDiscovery, "bug de login con MFA (variante)", obsContentB)
+	o1 := saveAndIndex(t, ctx, st, rel, "proj-a", store.TypeDiscovery, "bug login token expira mfa", obsContentA)
+	saveAndIndex(t, ctx, st, rel, "proj-a", store.TypeDiscovery, "bug login token expira mfa variante", obsContentB)
 
 	before, err := st.GetObservation(ctx, o1.ID)
 	if err != nil {
@@ -251,8 +251,8 @@ func TestRun_IsIdempotentAcrossRuns(t *testing.T) {
 	st := newTestStore(t)
 	rel := newDetector(t)
 
-	saveAndIndex(t, ctx, st, rel, "proj-a", store.TypeDiscovery, "bug de login con MFA", obsContentA)
-	saveAndIndex(t, ctx, st, rel, "proj-a", store.TypeDiscovery, "bug de login con MFA (variante)", obsContentB)
+	saveAndIndex(t, ctx, st, rel, "proj-a", store.TypeDiscovery, "bug login token expira mfa", obsContentA)
+	saveAndIndex(t, ctx, st, rel, "proj-a", store.TypeDiscovery, "bug login token expira mfa variante", obsContentB)
 
 	opts := consolidate.Options{Threshold: 0.93, RequireSameType: true, RequireSameProject: true, DryRun: false}
 
@@ -360,8 +360,8 @@ func TestRun_NoEmbeddingsSkipsEmbeddingPass(t *testing.T) {
 	}
 
 	// par que SOLO se detectaría por similitud semántica (topic_key vacío)
-	saveAndIndex(t, ctx, st, rel, "proj-a", store.TypeDiscovery, "bug de login con MFA", obsContentA)
-	saveAndIndex(t, ctx, st, rel, "proj-a", store.TypeDiscovery, "bug de login con MFA (variante)", obsContentB)
+	saveAndIndex(t, ctx, st, rel, "proj-a", store.TypeDiscovery, "bug login token expira mfa", obsContentA)
+	saveAndIndex(t, ctx, st, rel, "proj-a", store.TypeDiscovery, "bug login token expira mfa variante", obsContentB)
 
 	report, err := consolidate.Run(ctx, st, rel, consolidate.Options{
 		RequireSameType: true, RequireSameProject: true, DryRun: true, NoEmbeddings: true,
@@ -398,8 +398,11 @@ func TestRun_MaxPairsCapsEmbeddingEvaluations(t *testing.T) {
 		"contenido completamente distinto número tres sobre backups",
 		"contenido completamente distinto número cuatro sobre alertas",
 	}
+	// título compartido entre las 4 ("resumen operativo semanal") para que
+	// sobrevivan el prefiltro de tokens de título (minSharedTitleTokens=3) —
+	// el test quiere ejercitar el tope MaxPairs, no el prefiltro.
 	for i, txt := range texts {
-		saveAndIndex(t, ctx, st, rel, "proj-cap", store.TypeDiscovery, fmt.Sprintf("obs %d", i), txt)
+		saveAndIndex(t, ctx, st, rel, "proj-cap", store.TypeDiscovery, fmt.Sprintf("resumen operativo semanal %d", i), txt)
 	}
 
 	report, err := consolidate.Run(ctx, st, rel, consolidate.Options{
@@ -416,5 +419,189 @@ func TestRun_MaxPairsCapsEmbeddingEvaluations(t *testing.T) {
 	}
 	if report.PairsSkippedByCap != 3 {
 		t.Errorf("esperaba 3 observaciones fuera del tope, got %d", report.PairsSkippedByCap)
+	}
+}
+
+// countingEmbedFn envuelve deterministicFn contando invocaciones — usado
+// para medir cuántas llamadas al proveedor de embeddings evita cada filtro
+// (proyecto/tipo, prefiltro de tokens de título, --since) sin depender de
+// Ollama real ni de logs.
+func countingEmbedFn(calls *int) embeddings.EmbeddingFunc {
+	return func(ctx context.Context, text string) ([]float32, error) {
+		*calls++
+		return deterministicFn(ctx, text)
+	}
+}
+
+func newCountingDetector(t *testing.T) (*relations.Detector, *int) {
+	t.Helper()
+	calls := 0
+	vs, err := embeddings.NewInMemory(countingEmbedFn(&calls))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return relations.New(vs), &calls
+}
+
+// (item de verificación c, primera mitad) proyectos o tipos distintos nunca
+// llegan a la pasada de embeddings — bucketize() los separa antes de que
+// Run() arme flatRemaining, así que el proveedor de embeddings no se toca
+// aunque los títulos sean idénticos.
+func TestRun_CrossTypeAndCrossProject_NoEmbeddingCalls(t *testing.T) {
+	t.Run("tipos distintos, mismo proyecto", func(t *testing.T) {
+		ctx := context.Background()
+		st := newTestStore(t)
+		rel, calls := newCountingDetector(t)
+
+		saveAndIndex(t, ctx, st, rel, "proj-x", store.TypeDiscovery, "informe de despliegue semanal", "contenido A")
+		saveAndIndex(t, ctx, st, rel, "proj-x", store.TypeBugfix, "informe de despliegue semanal", "contenido B")
+		*calls = 0 // descartar las llamadas de Index(), solo interesa la pasada de Run()
+
+		report, err := consolidate.Run(ctx, st, rel, consolidate.Options{
+			RequireSameType: true, RequireSameProject: true, DryRun: true,
+		})
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if *calls != 0 {
+			t.Errorf("tipos distintos no deberían gastar embeddings, got %d llamadas", *calls)
+		}
+		if report.PairsEvaluated != 0 {
+			t.Errorf("esperaba 0 observaciones evaluadas, got %d", report.PairsEvaluated)
+		}
+	})
+
+	t.Run("proyectos distintos, mismo tipo", func(t *testing.T) {
+		ctx := context.Background()
+		st := newTestStore(t)
+		rel, calls := newCountingDetector(t)
+
+		saveAndIndex(t, ctx, st, rel, "proj-y1", store.TypeDiscovery, "informe de despliegue semanal", "contenido A")
+		saveAndIndex(t, ctx, st, rel, "proj-y2", store.TypeDiscovery, "informe de despliegue semanal", "contenido B")
+		*calls = 0
+
+		report, err := consolidate.Run(ctx, st, rel, consolidate.Options{
+			RequireSameType: true, RequireSameProject: true, DryRun: true,
+		})
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if *calls != 0 {
+			t.Errorf("proyectos distintos no deberían gastar embeddings, got %d llamadas", *calls)
+		}
+		if report.PairsEvaluated != 0 {
+			t.Errorf("esperaba 0 observaciones evaluadas, got %d", report.PairsEvaluated)
+		}
+	})
+}
+
+// (item de verificación c, segunda mitad) el prefiltro de tokens de título
+// (minSharedTitleTokens=3) descarta observaciones del MISMO bucket
+// (proyecto+tipo) cuyos títulos no tienen nada en común, sin gastar
+// embeddings — y sí los evalúa cuando el título comparte suficiente señal.
+func TestRun_TitlePrefilter_SkipsUnrelatedTitles_NoEmbeddingCalls(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	rel, calls := newCountingDetector(t)
+
+	// 4 observaciones mismo proyecto/tipo, títulos SIN tokens en común entre
+	// sí (cada una habla de un tema distinto) — ninguna debería sobrevivir
+	// al prefiltro.
+	saveAndIndex(t, ctx, st, rel, "proj-noise", store.TypeDiscovery, "mysql pool exhausted", "contenido 1")
+	saveAndIndex(t, ctx, st, rel, "proj-noise", store.TypeDiscovery, "alfresco upload retry", "contenido 2")
+	saveAndIndex(t, ctx, st, rel, "proj-noise", store.TypeDiscovery, "webhook signature secret", "contenido 3")
+	saveAndIndex(t, ctx, st, rel, "proj-noise", store.TypeDiscovery, "cron backup schedule", "contenido 4")
+	*calls = 0
+
+	report, err := consolidate.Run(ctx, st, rel, consolidate.Options{
+		RequireSameType: true, RequireSameProject: true, DryRun: true,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if *calls != 0 {
+		t.Errorf("títulos sin tokens compartidos no deberían gastar embeddings, got %d llamadas", *calls)
+	}
+	if report.PairsEvaluated != 0 {
+		t.Errorf("esperaba 0 observaciones evaluadas, got %d", report.PairsEvaluated)
+	}
+	if report.PairsSkippedByPrefilter != 4 {
+		t.Errorf("esperaba 4 observaciones descartadas por el prefiltro de título, got %d", report.PairsSkippedByPrefilter)
+	}
+
+	// Contraste: dos observaciones más, mismo bucket, que SÍ comparten >=3
+	// tokens de título entre sí — estas dos deben pasar el prefiltro y
+	// gastar embeddings (una llamada cada una).
+	saveAndIndex(t, ctx, st, rel, "proj-noise", store.TypeDiscovery, "postgres driver timeout error", "contenido 5")
+	saveAndIndex(t, ctx, st, rel, "proj-noise", store.TypeDiscovery, "postgres driver timeout otra vez", "contenido 6")
+	*calls = 0
+
+	report2, err := consolidate.Run(ctx, st, rel, consolidate.Options{
+		RequireSameType: true, RequireSameProject: true, DryRun: true,
+	})
+	if err != nil {
+		t.Fatalf("Run (2): %v", err)
+	}
+	if *calls == 0 {
+		t.Error("las dos observaciones con título compartido deberían gastar al menos un embedding")
+	}
+	if report2.PairsEvaluated != 2 {
+		t.Errorf("esperaba exactamente 2 observaciones evaluadas (las que comparten título), got %d", report2.PairsEvaluated)
+	}
+	if report2.PairsSkippedByPrefilter != 4 {
+		t.Errorf("las 4 originales siguen sin pareja de título, esperaba 4 descartadas por prefiltro, got %d", report2.PairsSkippedByPrefilter)
+	}
+}
+
+// (item de verificación d) --since evita reevaluar por embeddings
+// observaciones que no cambiaron desde la corrida anterior.
+func TestRun_Since_SkipsAlreadyEvaluatedObservations(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	rel, calls := newCountingDetector(t)
+
+	o1 := saveAndIndex(t, ctx, st, rel, "proj-since", store.TypeDiscovery, "postgres driver timeout", "contenido 1")
+	o2 := saveAndIndex(t, ctx, st, rel, "proj-since", store.TypeDiscovery, "postgres driver timeout otra vez", "contenido 2")
+	*calls = 0
+
+	// since = después de que ambas se actualizaron por última vez -> ninguna
+	// entra a la pasada de embeddings.
+	since := o1.UpdatedAt
+	if o2.UpdatedAt.After(since) {
+		since = o2.UpdatedAt
+	}
+	since = since.Add(time.Second)
+
+	report, err := consolidate.Run(ctx, st, rel, consolidate.Options{
+		RequireSameType: true, RequireSameProject: true, DryRun: true, Since: since,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if *calls != 0 {
+		t.Errorf("--since posterior a ambas observaciones no debería gastar embeddings, got %d llamadas", *calls)
+	}
+	if report.PairsEvaluated != 0 {
+		t.Errorf("esperaba 0 observaciones evaluadas, got %d", report.PairsEvaluated)
+	}
+	if report.PairsSkippedBySince != 2 {
+		t.Errorf("esperaba 2 observaciones descartadas por --since, got %d", report.PairsSkippedBySince)
+	}
+
+	// Sin --since (cero) o con una fecha anterior, sí se evalúan.
+	report2, err := consolidate.Run(ctx, st, rel, consolidate.Options{
+		RequireSameType: true, RequireSameProject: true, DryRun: true,
+	})
+	if err != nil {
+		t.Fatalf("Run (sin since): %v", err)
+	}
+	if *calls == 0 {
+		t.Error("sin --since, las observaciones deberían gastar embeddings")
+	}
+	if report2.PairsEvaluated != 2 {
+		t.Errorf("esperaba 2 observaciones evaluadas sin --since, got %d", report2.PairsEvaluated)
+	}
+	if report2.PairsSkippedBySince != 0 {
+		t.Errorf("sin --since no debería haber descartes por since, got %d", report2.PairsSkippedBySince)
 	}
 }

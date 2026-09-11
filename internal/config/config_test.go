@@ -62,6 +62,46 @@ func TestDefault_HasExpectedValues(t *testing.T) {
 	if cfg.Core.StaleDays != 90 {
 		t.Errorf("default core.stale_days = %d, want 90", cfg.Core.StaleDays)
 	}
+	if !cfg.Gate.Enabled {
+		t.Error("default gate.enabled should be true")
+	}
+	if cfg.Gate.Block {
+		t.Error("default gate.block should be false")
+	}
+	if len(cfg.Gate.Tools) != 3 || cfg.Gate.Tools[0] != "Edit" || cfg.Gate.Tools[1] != "Write" || cfg.Gate.Tools[2] != "Bash" {
+		t.Errorf("default gate.tools = %v, want [Edit Write Bash]", cfg.Gate.Tools)
+	}
+	if cfg.Gate.MinObservations != 5 {
+		t.Errorf("default gate.min_observations = %d, want 5", cfg.Gate.MinObservations)
+	}
+}
+
+func TestLoad_PartialGateSection_KeepsDefaults(t *testing.T) {
+	setTempConfigDir(t)
+	path, err := config.ConfigPath()
+	if err != nil {
+		t.Fatalf("ConfigPath: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(`{"gate":{"block":true}}`), 0644); err != nil {
+		t.Fatalf("write partial config: %v", err)
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Gate.Block {
+		t.Error("gate.block explícito en true debería respetarse")
+	}
+	if !cfg.Gate.Enabled {
+		t.Error("gate.enabled ausente debería conservar el default true")
+	}
+	if len(cfg.Gate.Tools) != 3 {
+		t.Errorf("gate.tools ausente debería conservar el default, got %v", cfg.Gate.Tools)
+	}
+	if cfg.Gate.MinObservations != 5 {
+		t.Errorf("gate.min_observations ausente debería conservar el default 5, got %d", cfg.Gate.MinObservations)
+	}
 }
 
 func TestLoad_PartialCoreSection_KeepsDefaults(t *testing.T) {
@@ -222,6 +262,10 @@ func TestSet_ValidFields(t *testing.T) {
 		{"core.max_per_type", "2"},
 		{"core.max_item_chars", "90"},
 		{"core.stale_days", "30"},
+		{"gate.enabled", "false"},
+		{"gate.block", "true"},
+		{"gate.tools", "Edit, Bash"},
+		{"gate.min_observations", "3"},
 	}
 	for _, c := range cases {
 		if err := cfg.Set(c.key, c.val); err != nil {
@@ -273,6 +317,18 @@ func TestSet_ValidFields(t *testing.T) {
 	if cfg.Core.StaleDays != 30 {
 		t.Errorf("core.stale_days not set: got %d", cfg.Core.StaleDays)
 	}
+	if cfg.Gate.Enabled {
+		t.Error("gate.enabled should be false")
+	}
+	if !cfg.Gate.Block {
+		t.Error("gate.block should be true")
+	}
+	if len(cfg.Gate.Tools) != 2 || cfg.Gate.Tools[0] != "Edit" || cfg.Gate.Tools[1] != "Bash" {
+		t.Errorf("gate.tools not parsed: got %v", cfg.Gate.Tools)
+	}
+	if cfg.Gate.MinObservations != 3 {
+		t.Errorf("gate.min_observations not set: got %d", cfg.Gate.MinObservations)
+	}
 }
 
 func TestSet_InvalidKey_ReturnsError(t *testing.T) {
@@ -284,6 +340,7 @@ func TestSet_InvalidKey_ReturnsError(t *testing.T) {
 		"memory.not_a_field",
 		"root.not_a_field",
 		"export.not_a_field",
+		"gate.not_a_field",
 	}
 	for _, key := range cases {
 		if err := cfg.Set(key, "value"); err == nil {
