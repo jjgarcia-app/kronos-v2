@@ -93,10 +93,12 @@ func injectContinuity(ctx context.Context, st store.Storer, projName, sessionID 
 	}
 
 	var injectedIDs []string
+	hasIntent := false
 
 	if sessionID != "" {
 		if digest, err := st.GetByTopicKey(ctx, projName, digestTopicKey(sessionID)); err == nil && digest != nil {
-			fmt.Printf("[kronos] %s (%s): %s\n", digest.Title, digest.Type, preview80(digest.Content))
+			printContinuityLine(digest.Title, digest.Type, digest.Content)
+			hasIntent = hasIntent || digest.Type == store.TypeIntent
 			injectedIDs = append(injectedIDs, strconv.FormatInt(digest.ID, 10))
 		}
 	}
@@ -112,13 +114,31 @@ func injectContinuity(ctx context.Context, st store.Storer, projName, sessionID 
 				if containsID(injectedIDs, id) {
 					continue
 				}
-				fmt.Printf("[kronos] %s (%s): %s\n", o.Title, o.Type, preview80(o.Content))
+				printContinuityLine(o.Title, o.Type, o.Content)
+				hasIntent = hasIntent || o.Type == store.TypeIntent
 				injectedIDs = append(injectedIDs, id)
 			}
 		}
 	}
 
+	if hasIntent {
+		fmt.Println(intentWarning)
+	}
+
 	_ = st.PersistInjectedIDs(ctx, sessionID, injectedIDs)
+}
+
+// printContinuityLine imprime un item de continuidad. Los de tipo
+// store.TypeIntent se marcan con el prefijo "[intent]" (en vez del formato
+// "(tipo)" normal) — ver store.TypeIntent para el caso real del benchmark
+// que motiva distinguirlos: un plan/afirmación sin verificar no debe leerse
+// igual que un hecho confirmado.
+func printContinuityLine(title string, typ store.ObservationType, content string) {
+	if typ == store.TypeIntent {
+		fmt.Printf("[kronos] [intent] %s: %s\n", title, preview80(content))
+		return
+	}
+	fmt.Printf("[kronos] %s (%s): %s\n", title, typ, preview80(content))
 }
 
 // printCoreBlock imprime el bloque siempre-presente (ver core_block.go)
@@ -136,6 +156,8 @@ func printCoreBlock(ctx context.Context, st store.Storer, projName string) {
 		CharsLimit:        cfg.Core.CharsLimit,
 		MaxItems:          cfg.Core.MaxItems,
 		IncludeCheckpoint: cfg.Core.IncludeCheckpoint,
+		MaxGlobalChars:    cfg.Core.MaxGlobalChars,
+		ProjectMinChars:   cfg.Core.ProjectMinChars,
 	})
 	if err != nil || block == "" {
 		return

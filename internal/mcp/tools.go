@@ -30,7 +30,7 @@ CAMPO content — usa esta estructura:
 CAMPO scope — usa "global" solo para patrones reutilizables entre proyectos. Default "project" para todo lo demás.`),
 		mcpgo.WithString("title", mcpgo.Required(), mcpgo.Description("Frase verbal corta y buscable. Formato: Verbo + qué. Ej: 'Elegimos pgx sobre lib/pq por compatibilidad con RETURNING'")),
 		mcpgo.WithString("content", mcpgo.Required(), mcpgo.Description("Nota estructurada: Qué ocurrió | Por qué importa | Archivos relevantes (path:línea) | Cómo aplicar o reproducir")),
-		mcpgo.WithString("type", mcpgo.Required(), mcpgo.Description("Tipo: bugfix | decision | architecture | discovery | pattern | config | preference | passive")),
+		mcpgo.WithString("type", mcpgo.Required(), mcpgo.Description("Tipo: bugfix | decision | architecture | discovery | pattern | config | preference | passive | intent (plan o afirmación todavía sin verificar contra el repo — el bloque core la marca [intent] y avisa que hay que confirmarla)")),
 		mcpgo.WithString("project", mcpgo.Description("Nombre del proyecto. Si se omite, se detecta automáticamente a partir de 'directory' (o del cwd del server si tampoco se pasa 'directory')")),
 		mcpgo.WithString("directory", mcpgo.Description("Directorio de trabajo actual, usado para autodetectar 'project' si se omite. Recomendado pasarlo siempre que se conozca — el servidor MCP es un proceso persistente y su propio cwd puede no coincidir con el del repo actual")),
 		mcpgo.WithString("session_id", mcpgo.Description("ID de la sesión activa — el que kronos imprimió al arrancar esta sesión ('[kronos] your session_id is ...'). Pasalo siempre que lo tengas: Claude Code no le da el session_id a los MCP servers, así que sin esto kronos no puede asociar el save a tu sesión real")),

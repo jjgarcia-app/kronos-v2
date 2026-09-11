@@ -47,6 +47,12 @@ func TestDefault_HasExpectedValues(t *testing.T) {
 	if !cfg.Core.IncludeCheckpoint {
 		t.Error("default core.include_checkpoint should be true")
 	}
+	if cfg.Core.MaxGlobalChars != 800 {
+		t.Errorf("default core.max_global_chars = %d, want 800", cfg.Core.MaxGlobalChars)
+	}
+	if cfg.Core.ProjectMinChars != 600 {
+		t.Errorf("default core.project_min_chars = %d, want 600", cfg.Core.ProjectMinChars)
+	}
 }
 
 func TestLoad_PartialCoreSection_KeepsDefaults(t *testing.T) {
@@ -71,6 +77,12 @@ func TestLoad_PartialCoreSection_KeepsDefaults(t *testing.T) {
 	}
 	if cfg.Core.MaxItems != 12 {
 		t.Errorf("core.max_items ausente debería conservar el default 12, got %d", cfg.Core.MaxItems)
+	}
+	if cfg.Core.MaxGlobalChars != 800 {
+		t.Errorf("core.max_global_chars ausente debería conservar el default 800, got %d", cfg.Core.MaxGlobalChars)
+	}
+	if cfg.Core.ProjectMinChars != 600 {
+		t.Errorf("core.project_min_chars ausente debería conservar el default 600, got %d", cfg.Core.ProjectMinChars)
 	}
 }
 
@@ -132,6 +144,8 @@ func TestSet_ValidFields(t *testing.T) {
 		{"core.chars_limit", "1500"},
 		{"core.max_items", "8"},
 		{"core.include_checkpoint", "false"},
+		{"core.max_global_chars", "500"},
+		{"core.project_min_chars", "400"},
 	}
 	for _, c := range cases {
 		if err := cfg.Set(c.key, c.val); err != nil {
@@ -167,6 +181,12 @@ func TestSet_ValidFields(t *testing.T) {
 	}
 	if cfg.Core.IncludeCheckpoint {
 		t.Error("core.include_checkpoint should be false")
+	}
+	if cfg.Core.MaxGlobalChars != 500 {
+		t.Errorf("core.max_global_chars not set: got %d", cfg.Core.MaxGlobalChars)
+	}
+	if cfg.Core.ProjectMinChars != 400 {
+		t.Errorf("core.project_min_chars not set: got %d", cfg.Core.ProjectMinChars)
 	}
 }
 

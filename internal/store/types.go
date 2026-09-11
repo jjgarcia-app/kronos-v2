@@ -14,6 +14,20 @@ const (
 	TypePreference   ObservationType = "preference"
 	TypePassive      ObservationType = "passive"
 	TypeSession      ObservationType = "session"
+	// TypeIntent: plan o afirmación dicha por el usuario o el agente que
+	// TODAVÍA no está confirmada contra el código real — a diferencia de
+	// bugfix/decision/discovery/etc, que describen algo ya verificado.
+	// Motivado por dos hallazgos del benchmark 2026-09-11 (8 sesiones
+	// reales): (1) el usuario dijo "el comando de release es X" cuando el
+	// script todavía no existía en el repo, y esa afirmación quedó guardada
+	// sin distinguirse de un hecho comprobado; (2) en otra sesión el agente
+	// encontró una observación guardada, la citó, y — correctamente — se
+	// negó a darla por buena porque contradecía el filesystem ("no lo voy a
+	// dar por bueno solo porque está en memoria"). Kronos no verifica
+	// automáticamente: TypeIntent solo marca la diferencia para que el
+	// bloque core y la inyección por continuidad avisen "esto es un plan,
+	// confirmalo antes de asumirlo" (ver internal/hooks/core_block.go).
+	TypeIntent ObservationType = "intent"
 )
 
 type Scope string
