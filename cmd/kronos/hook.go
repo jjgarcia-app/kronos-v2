@@ -152,13 +152,21 @@ func runPromptSubmitHook(reason string) error {
 
 	// Digest corriente de la sesión — cuando el daemon no responde, este
 	// proceso corto es lo único que va a intentar actualizarlo. IsDigestDue
-	// primero (barato, sin LLM) para no pagar el ping a Ollama de
-	// llm.NewOllamaFromConfig en CADA prompt cuando casi siempre todavía no
-	// corresponde.
-	if hooks.IsDigestDue(context.Background(), st, in.SessionID, in.CWD) {
-		digestCtx, cancel := context.WithTimeout(context.Background(), preCompactCaptureLocalFallbackTimeout)
-		llmClient := llm.NewOllamaFromConfig(digestCtx, cfg)
-		_ = hooks.MaybeUpdateDigest(digestCtx, st, llmClient, in.SessionID, in.TranscriptPath, in.CWD, false)
+	// primero (barato, sin LLM) para no tocar el store en CADA prompt cuando
+	// casi siempre todavía no corresponde.
+	//
+	// Sin LLM acá a propósito (llmClient=nil): este bloque corre en el hot
+	// path de CADA prompt del usuario cuando el daemon no responde — pagar
+	// el ping a Ollama (y mucho peor, esperar una generación que puede
+	// colgar, ver internal/llm.Breaker) demoraría el prompt. El
+	// determinístico (transcript.TailFacts, sin red) es instantáneo y se
+	// guarda igual; el enriquecimiento por LLM queda para el daemon (ver
+	// internal/server/prompt_submit.go, que sí corre en una goroutine
+	// desacoplada de la respuesta) y para el fallback de PreCompact (ver
+	// runLocalPreCompactCaptureFallback), que tienen presupuesto para eso.
+	if hooks.IsDigestDue(context.Background(), st, cfg, in.SessionID, in.CWD) {
+		digestCtx, cancel := context.WithTimeout(context.Background(), digestDeterministicLocalTimeout)
+		_ = hooks.MaybeUpdateDigest(digestCtx, st, cfg, nil, in.SessionID, in.TranscriptPath, in.CWD, false)
 		cancel()
 	}
 
@@ -212,6 +220,13 @@ const preCompactCaptureDispatchTimeout = 500 * time.Millisecond
 // caracteres de transcript, corto comparado con el costo real de perder la
 // captura en silencio.
 const preCompactCaptureLocalFallbackTimeout = 15 * time.Second
+
+// digestDeterministicLocalTimeout acota el bloque de digest determinístico
+// del fallback local de prompt-submit (ver runPromptSubmitHook) — no toca
+// el LLM (ver el comentario en el call site), solo lee el transcript y
+// escribe una observación; 2s es generoso para eso, muy por debajo de lo
+// que costaba antes esperar (y perder) una llamada a Ollama colgada.
+const digestDeterministicLocalTimeout = 2 * time.Second
 
 // runPreCompactHook corre el aviso local de siempre (RunPreCompact, rápido,
 // nunca debe demorar la compactación de Claude Code) y AL LADO le avisa al
@@ -315,7 +330,7 @@ func runLocalPreCompactCaptureFallback(cfg config.Config, st store.Storer, in ho
 	defer cancel()
 	llmClient := llm.NewOllamaFromConfig(ctx, cfg)
 	_ = hooks.RunPreCompactCapture(ctx, st, llmClient, in.SessionID, in.TranscriptPath, in.CWD)
-	_ = hooks.MaybeUpdateDigest(ctx, st, llmClient, in.SessionID, in.TranscriptPath, in.CWD, true)
+	_ = hooks.MaybeUpdateDigest(ctx, st, cfg, llmClient, in.SessionID, in.TranscriptPath, in.CWD, true)
 }
 
 // parseReason extracts the reason value from remaining args.

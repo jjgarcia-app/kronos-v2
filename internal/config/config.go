@@ -80,6 +80,18 @@ type LLMConfig struct {
 	Model    string `json:"model"`
 	APIKey   string `json:"api_key"`
 	BaseURL  string `json:"base_url"`
+	// BreakerFailures: fallos consecutivos del LLM local (digest, captura
+	// pasiva de PreCompact, judge — ver internal/llm.Breaker) que abren el
+	// cortacircuitos. Motivado por un bug real medido en producción: sin
+	// esto, cada llamada de generación colgada (no la del ping, que tiene su
+	// propio timeout corto) se reintentaba en cada prompt sin límite, en
+	// silencio, y el proceso de Ollama colgado le robaba CPU al resto de las
+	// sesiones. Default 3.
+	BreakerFailures int `json:"breaker_failures"`
+	// BreakerMinutes: cuánto tiempo queda abierto el cortacircuitos una vez
+	// que se abre — durante esa ventana no se intenta ninguna llamada al LLM
+	// local. Default 30.
+	BreakerMinutes int `json:"breaker_minutes"`
 }
 
 // CoreConfig controla el bloque siempre-presente que SessionStart inyecta
@@ -259,6 +271,36 @@ type GateConfig struct {
 	SatisfiedByInjection bool `json:"satisfied_by_injection"`
 }
 
+// DigestConfig controla el "digest corriente por sesión" (ver
+// internal/hooks/digest.go, MaybeUpdateDigest) — el resumen automático de
+// "en qué se viene trabajando" que arma el hilo de continuidad de una
+// sesión sin depender de que el agente llame mem_save. Medido en producción
+// el 2026-09-11: el camino con LLM nunca se completaba en esta máquina
+// (Ollama colgaba en la llamada de generación, no en el ping) y fallaba
+// siempre en silencio — por eso el determinístico (Enabled) es el camino
+// principal y el LLM (LLMEnrichment) es una mejora oportunista, no una
+// dependencia dura.
+type DigestConfig struct {
+	// Enabled activa el digest automático por sesión (determinístico +
+	// LLM oportunista). Default true.
+	Enabled bool `json:"enabled"`
+	// IntervalMinutes: cuánto tiempo mínimo tiene que pasar desde la última
+	// actualización del digest de una sesión antes de intentar otra.
+	// Default 20.
+	IntervalMinutes int `json:"interval_minutes"`
+	// LLMEnrichment: si true (default), además del determinístico se
+	// intenta una versión en prosa vía el LLM local, dentro del presupuesto
+	// de LLMTimeoutMs. Si false, el digest queda siempre en su forma
+	// determinística (útil para máquinas donde el LLM local no sirve, o
+	// para desactivar el costo de Ollama sin perder el digest).
+	LLMEnrichment bool `json:"llm"`
+	// LLMTimeoutMs acota cuánto puede tardar el intento de enriquecimiento
+	// por LLM en el daemon (los procesos de hook de vida corta usan su
+	// propio presupuesto, más chico — ver cmd/kronos/hook.go). Default
+	// 20000 (20s).
+	LLMTimeoutMs int `json:"llm_timeout_ms"`
+}
+
 type Config struct {
 	DB            DBConfig            `json:"db"`
 	Embeddings    EmbeddingsConfig    `json:"embeddings"`
@@ -273,6 +315,7 @@ type Config struct {
 	Consolidation ConsolidationConfig `json:"consolidation"`
 	Relations     RelationsConfig     `json:"relations"`
 	Gate          GateConfig          `json:"gate"`
+	Digest        DigestConfig        `json:"digest"`
 	APIToken      string              `json:"api_token"`
 }
 
@@ -287,6 +330,10 @@ func Default() Config {
 			OllamaURL:      "http://localhost:11434",
 			OllamaModel:    "nomic-embed-text",
 			OllamaLLMModel: "llama3.2",
+		},
+		LLM: LLMConfig{
+			BreakerFailures: 3,
+			BreakerMinutes:  30,
 		},
 		Memory: MemoryConfig{
 			MaxObservationLength: 50000,
@@ -369,6 +416,12 @@ func Default() Config {
 			Tools:                []string{"Edit", "Write", "Bash"},
 			MinObservations:      5,
 			SatisfiedByInjection: true,
+		},
+		Digest: DigestConfig{
+			Enabled:         true,
+			IntervalMinutes: 20,
+			LLMEnrichment:   true,
+			LLMTimeoutMs:    20000,
 		},
 	}
 }
@@ -633,6 +686,18 @@ func (c *Config) Set(key, value string) error {
 			c.LLM.APIKey = value
 		case "base_url":
 			c.LLM.BaseURL = value
+		case "breaker_failures":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return fmt.Errorf("invalid int: %s", value)
+			}
+			c.LLM.BreakerFailures = n
+		case "breaker_minutes":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return fmt.Errorf("invalid int: %s", value)
+			}
+			c.LLM.BreakerMinutes = n
 		default:
 			return fmt.Errorf("unknown llm field: %s", field)
 		}
@@ -846,6 +911,27 @@ func (c *Config) Set(key, value string) error {
 			c.Gate.SatisfiedByInjection = parseBool(value)
 		default:
 			return fmt.Errorf("unknown gate field: %s", field)
+		}
+	case "digest":
+		switch field {
+		case "enabled":
+			c.Digest.Enabled = parseBool(value)
+		case "interval_minutes":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return fmt.Errorf("invalid int: %s", value)
+			}
+			c.Digest.IntervalMinutes = n
+		case "llm":
+			c.Digest.LLMEnrichment = parseBool(value)
+		case "llm_timeout_ms":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return fmt.Errorf("invalid int: %s", value)
+			}
+			c.Digest.LLMTimeoutMs = n
+		default:
+			return fmt.Errorf("unknown digest field: %s", field)
 		}
 	case "root":
 		switch field {
