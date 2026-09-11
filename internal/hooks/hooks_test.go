@@ -13,11 +13,27 @@ import (
 	"time"
 
 	"github.com/jjgarcia-app/kronos-v2/internal/checkpoint"
+	"github.com/jjgarcia-app/kronos-v2/internal/config"
+	"github.com/jjgarcia-app/kronos-v2/internal/embeddings"
 	"github.com/jjgarcia-app/kronos-v2/internal/hooks"
 	"github.com/jjgarcia-app/kronos-v2/internal/platform"
 	"github.com/jjgarcia-app/kronos-v2/internal/project"
 	"github.com/jjgarcia-app/kronos-v2/internal/store"
 )
+
+// fixedVectorEmbedFn devuelve el vector fijo de la tabla si el texto coincide
+// exacto, o un vector neutro por default — mismo patrón que
+// internal/judge/judge_test.go, reescrito acá porque ese helper es privado a
+// su paquete. Alcanza para controlar la similitud coseno de forma
+// determinística sin depender de Ollama.
+func fixedVectorEmbedFn(vectors map[string][]float32) embeddings.EmbeddingFunc {
+	return func(_ context.Context, text string) ([]float32, error) {
+		if v, ok := vectors[text]; ok {
+			return v, nil
+		}
+		return []float32{0.5, 0.5}, nil
+	}
+}
 
 // setupTempDataDir redirects platform.DataDir() to a fresh temp directory for
 // the duration of the test. Returns the kronos sub-directory path.
@@ -58,18 +74,39 @@ func newTestStore(t *testing.T) *store.Store {
 	return st
 }
 
-// slowSearchStore wraps a real store and blocks Search until the context is cancelled.
-// Used to test the 100ms hard-timeout in RunPromptSubmit.
+// slowSearchStore wraps a real store and blocks Search until the context is
+// cancelled. Used to test that runRecall respeta el timeout de
+// config.Recall.TimeoutMs (default 800ms) en vez de esperar a que el store
+// responda.
 type slowSearchStore struct {
 	store.Storer
 }
 
 func (s *slowSearchStore) Search(ctx context.Context, p store.SearchParams) ([]*store.SearchResult, error) {
 	select {
-	case <-time.After(500 * time.Millisecond):
+	case <-time.After(3 * time.Second):
 		return nil, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
+	}
+}
+
+// setupTempConfigDir redirige config.ConfigPath() a un directorio temporal
+// para la duración del test — mismo patrón que setupTempDataDir, pero para
+// XDG_CONFIG_HOME/APPDATA en vez de XDG_DATA_HOME/LOCALAPPDATA. Necesario
+// para poder escribir un config.json de prueba con Recall custom sin tocar
+// el config real de la máquina.
+func setupTempConfigDir(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "darwin" {
+		t.Skip("macOS ConfigDir usa ~/Library/Application Support fijo — no overrideable por env")
+	}
+	base := t.TempDir()
+	switch runtime.GOOS {
+	case "windows":
+		t.Setenv("APPDATA", base)
+	default:
+		t.Setenv("XDG_CONFIG_HOME", base)
 	}
 }
 
@@ -616,8 +653,8 @@ func TestRunPromptSubmit_FTSResults_Emitted(t *testing.T) {
 		}
 	})
 
-	if !strings.Contains(out, "[kronos]") {
-		t.Errorf("expected [kronos] output for matching prompt, got: %q", out)
+	if !strings.Contains(out, "[kronos:relevante]") {
+		t.Errorf("expected [kronos:relevante] output for matching prompt, got: %q", out)
 	}
 }
 
@@ -673,8 +710,8 @@ func TestRunPromptSubmit_NoResults_NoOutput(t *testing.T) {
 		}
 	})
 
-	if strings.Contains(out, "[kronos]") {
-		t.Errorf("unexpected [kronos] output for no-results query: %q", out)
+	if strings.Contains(out, "[kronos:relevante]") {
+		t.Errorf("unexpected [kronos:relevante] output for no-results query: %q", out)
 	}
 }
 
@@ -685,9 +722,10 @@ func TestRunPromptSubmit_Timeout_ExitsClean(t *testing.T) {
 	realSt.CreateSession(ctx, "sess-timeout", "kronos-v2", cwd)
 	realSt.PersistInjectedIDs(ctx, "sess-timeout", []string{})
 
-	// Wrap with a slow Search that blocks for 500ms — the 100ms internal timeout must cut it.
-	// Using os.Getwd() as CWD ensures project.Detect resolves via git remote (fast),
-	// so the only delay is the search path being cut by the 100ms ctx deadline.
+	// Wrap con un Search que bloquea 3s — el timeout de config.Recall (default
+	// 800ms) tiene que cortarlo bastante antes. Usar os.Getwd() como CWD
+	// asegura que project.Detect resuelva rápido vía git remote, así que la
+	// única demora real es el corte por el deadline de ctx2 en runRecall.
 	st := &slowSearchStore{Storer: realSt}
 
 	in := hooks.Input{
@@ -706,8 +744,8 @@ func TestRunPromptSubmit_Timeout_ExitsClean(t *testing.T) {
 		if err != nil {
 			t.Errorf("RunPromptSubmit returned error: %v", err)
 		}
-	case <-time.After(500 * time.Millisecond):
-		t.Error("RunPromptSubmit did not return within 500ms — 100ms timeout not enforced")
+	case <-time.After(1500 * time.Millisecond):
+		t.Error("RunPromptSubmit did not return within 1500ms — el timeout de config.Recall (800ms) no se aplicó")
 	}
 }
 
@@ -751,15 +789,166 @@ func TestRunPromptSubmit_VectorStoreNil_FallsBackToFTS(t *testing.T) {
 		Prompt:    "vectornil fallback",
 	}
 
-	// Pass nil explicitly — should fall through to FTS.
+	// Pass nil explicitly — should fall through to FTS. vs=nil es exactamente
+	// lo que devuelve embeddings.New cuando Ollama no responde (ver
+	// embeddings.AutoFunc), así que esto también cubre el caso "provider caído".
 	out := captureStdout(t, func() {
 		if err := hooks.RunPromptSubmit(ctx, in, st, nil, os.Stdout); err != nil {
 			t.Fatalf("RunPromptSubmit with nil vs: %v", err)
 		}
 	})
 
-	if !strings.Contains(out, "[kronos]") {
-		t.Errorf("expected [kronos] output from FTS fallback (nil vs): %q", out)
+	if !strings.Contains(out, "[kronos:relevante]") {
+		t.Errorf("expected [kronos:relevante] output from FTS fallback (nil vs): %q", out)
+	}
+}
+
+// TestRunPromptSubmit_HighSimilarity_InjectsRespectingCharsLimit cubre el
+// camino vectorial feliz: con un embedding fake que devuelve similitud
+// coseno 1.0 (>= min_similarity), el bloque se inyecta con formato
+// "[kronos:relevante]" y, con un chars_limit chico a propósito, no mete los
+// 3 ítems candidatos — el presupuesto corta antes.
+func TestRunPromptSubmit_HighSimilarity_InjectsRespectingCharsLimit(t *testing.T) {
+	setupTempConfigDir(t)
+	cfg := config.Default()
+	cfg.Recall.CharsLimit = 120
+	cfg.Recall.K = 3
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("cfg.Save: %v", err)
+	}
+
+	st := newTestStore(t)
+	ctx := context.Background()
+	cwd, _ := os.Getwd()
+
+	st.CreateSession(ctx, "sess-highsim", "kronos-v2", cwd)
+	st.PersistInjectedIDs(ctx, "sess-highsim", []string{})
+
+	prompt := "cómo se implementó el store de sqlite"
+	textA := "sqlite embebido observación uno"
+	textB := "sqlite embebido observación dos"
+	textC := "sqlite embebido observación tres"
+
+	obsA, _ := st.SaveObservation(ctx, store.SaveParams{Type: store.TypeDecision, Title: "obs uno", Content: textA, Project: "kronos-v2"})
+	obsB, _ := st.SaveObservation(ctx, store.SaveParams{Type: store.TypeDecision, Title: "obs dos", Content: textB, Project: "kronos-v2"})
+	obsC, _ := st.SaveObservation(ctx, store.SaveParams{Type: store.TypeDecision, Title: "obs tres", Content: textC, Project: "kronos-v2"})
+
+	vs, err := embeddings.NewInMemory(fixedVectorEmbedFn(map[string][]float32{
+		prompt: {1, 0},
+		textA:  {1, 0},
+		textB:  {1, 0},
+		textC:  {1, 0},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, o := range []*store.Observation{obsA, obsB, obsC} {
+		if err := vs.Index(ctx, o.ID, o.Content); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	in := hooks.Input{SessionID: "sess-highsim", CWD: cwd, Prompt: prompt}
+
+	out := captureStdout(t, func() {
+		if err := hooks.RunPromptSubmit(ctx, in, st, vs, os.Stdout); err != nil {
+			t.Fatalf("RunPromptSubmit: %v", err)
+		}
+	})
+
+	if !strings.Contains(out, "[kronos:relevante]") {
+		t.Fatalf("esperaba bloque de relevancia, salida: %q", out)
+	}
+	if len(out) > 200 {
+		t.Errorf("chars_limit=120 debería acotar el bloque, salió %d chars: %q", len(out), out)
+	}
+	if strings.Count(out, "- decision:") >= 3 {
+		t.Errorf("chars_limit=120 debería haber cortado antes de meter los 3 ítems: %q", out)
+	}
+}
+
+// TestRunPromptSubmit_LowSimilarity_NoInjection cubre el caso donde la
+// similitud vectorial queda por debajo de min_similarity (0.72 default) —
+// con fallback_fts desactivado para aislar el camino vectorial, no debe
+// inyectarse nada.
+func TestRunPromptSubmit_LowSimilarity_NoInjection(t *testing.T) {
+	setupTempConfigDir(t)
+	cfg := config.Default()
+	cfg.Recall.FallbackFTS = false
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("cfg.Save: %v", err)
+	}
+
+	st := newTestStore(t)
+	ctx := context.Background()
+	cwd, _ := os.Getwd()
+
+	st.CreateSession(ctx, "sess-lowsim", "kronos-v2", cwd)
+	st.PersistInjectedIDs(ctx, "sess-lowsim", []string{})
+
+	prompt := "consulta totalmente no relacionada"
+	obsText := "contenido de una observación distinta"
+	obs, _ := st.SaveObservation(ctx, store.SaveParams{Type: store.TypeDecision, Title: "obs no relacionada", Content: obsText, Project: "kronos-v2"})
+
+	vs, err := embeddings.NewInMemory(fixedVectorEmbedFn(map[string][]float32{
+		prompt:  {0, 1},
+		obsText: {1, 0}, // ortogonal → similitud coseno 0.0, por debajo del umbral
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := vs.Index(ctx, obs.ID, obs.Content); err != nil {
+		t.Fatal(err)
+	}
+
+	in := hooks.Input{SessionID: "sess-lowsim", CWD: cwd, Prompt: prompt}
+
+	out := captureStdout(t, func() {
+		if err := hooks.RunPromptSubmit(ctx, in, st, vs, os.Stdout); err != nil {
+			t.Fatalf("RunPromptSubmit: %v", err)
+		}
+	})
+
+	if strings.Contains(out, "[kronos:relevante]") {
+		t.Errorf("similitud por debajo del umbral no debería inyectar nada: %q", out)
+	}
+}
+
+// TestRunPromptSubmit_RecallDisabled_NoInjection cubre recall.enabled=false:
+// el hook debe comportarse exactamente como sin esta feature (nada de bloque
+// de relevancia), aunque exista una observación que matchearía por FTS.
+func TestRunPromptSubmit_RecallDisabled_NoInjection(t *testing.T) {
+	setupTempConfigDir(t)
+	cfg := config.Default()
+	cfg.Recall.Enabled = false
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("cfg.Save: %v", err)
+	}
+
+	st := newTestStore(t)
+	ctx := context.Background()
+	cwd, _ := os.Getwd()
+
+	st.CreateSession(ctx, "sess-recalloff", "kronos-v2", cwd)
+	st.PersistInjectedIDs(ctx, "sess-recalloff", []string{})
+
+	st.SaveObservation(ctx, store.SaveParams{
+		Type:    store.TypeDecision,
+		Title:   "sqlite store architecture",
+		Content: "We chose SQLite because it is embedded and needs no network roundtrip.",
+		Project: "kronos-v2",
+	})
+
+	in := hooks.Input{SessionID: "sess-recalloff", CWD: cwd, Prompt: "sqlite store"}
+
+	out := captureStdout(t, func() {
+		if err := hooks.RunPromptSubmit(ctx, in, st, nil, os.Stdout); err != nil {
+			t.Fatalf("RunPromptSubmit: %v", err)
+		}
+	})
+
+	if out != "" {
+		t.Errorf("recall.enabled=false debería dejar la salida sin cambios (vacía acá): %q", out)
 	}
 }
 
