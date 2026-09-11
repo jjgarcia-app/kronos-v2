@@ -27,6 +27,7 @@ func TestRun_ReturnsAllChecks(t *testing.T) {
 	wantNames := []string{
 		"Config file",
 		"Base de datos",
+		"Observaciones",
 		"Ollama",
 		"Modelo embeddings",
 		"Hooks Claude Code",

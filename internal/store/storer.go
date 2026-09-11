@@ -61,5 +61,13 @@ type Storer interface {
 	// tiempo de sesiones solapadas (forks, subagentes en background).
 	Timesheet(ctx context.Context, from, to time.Time, project string) (*TimesheetReport, error)
 
+	// ListRelations expone el listado de relaciones (memory_relations) en la
+	// interfaz genérica — antes solo existía en *Store, y tanto mem_doctor
+	// como el aviso de backlog en SessionStart alcanzaban el buffer SQLite
+	// local a mano (LocalStore()/localStoreOf()), sin importar el estado del
+	// primary. En DualStore es primary-first (ver dual_store.go), igual que
+	// el resto de las lecturas.
+	ListRelations(ctx context.Context, project, status string, limit, offset int) ([]Relation, error)
+
 	Close() error
 }

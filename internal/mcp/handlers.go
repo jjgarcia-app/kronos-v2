@@ -803,28 +803,30 @@ func (s *Server) handleMemMergeProjects(ctx context.Context, req mcpgo.CallToolR
 }
 
 func (s *Server) handleMemDoctor(ctx context.Context, _ mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
-	ls := s.localStore()
-
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "## Diagnóstico Kronos\n\n")
 
-	if ls != nil {
-		st, err := ls.Stats(ctx)
-		if err != nil {
-			fmt.Fprintf(&sb, "**Store**: ERROR — %s\n", err)
-		} else {
-			fmt.Fprintf(&sb, "**Store**: OK — %d obs, %d sesiones, %d proyectos\n",
-				st.TotalObservations, st.TotalSessions, len(st.Projects))
-		}
-
-		rels, _ := ls.ListRelations(ctx, "", store.JudgmentPending, 100, 0)
-		if len(rels) > 0 {
-			fmt.Fprintf(&sb, "**Relaciones pendientes**: %d (usar mem_judge para resolverlas)\n", len(rels))
-		} else {
-			fmt.Fprintf(&sb, "**Relaciones pendientes**: ninguna\n")
-		}
+	// s.store (no s.localStore()): Stats()/ListRelations() son primary-aware
+	// en DualStore — igual que el fix ya aplicado a mem_stats. Antes esto
+	// leía SIEMPRE el buffer SQLite local sin importar el estado del primary
+	// (mem_doctor mostraba 849 obs/3 relaciones pendientes del buffer,
+	// mientras mem_stats, ya primary-first, mostraba 880 obs reales de
+	// Postgres — un diagnóstico que miente sobre qué backend está mirando).
+	st, err := s.store.Stats(ctx)
+	if err != nil {
+		fmt.Fprintf(&sb, "**Store**: ERROR — %s\n", err)
 	} else {
-		fmt.Fprintf(&sb, "**Store**: no disponible\n")
+		fmt.Fprintf(&sb, "**Store**: OK — %d obs, %d sesiones, %d proyectos\n",
+			st.TotalObservations, st.TotalSessions, len(st.Projects))
+	}
+
+	rels, relErr := s.store.ListRelations(ctx, "", store.JudgmentPending, 100, 0)
+	if relErr != nil {
+		fmt.Fprintf(&sb, "**Relaciones pendientes**: ERROR — %s\n", relErr)
+	} else if len(rels) > 0 {
+		fmt.Fprintf(&sb, "**Relaciones pendientes**: %d (usar mem_judge para resolverlas)\n", len(rels))
+	} else {
+		fmt.Fprintf(&sb, "**Relaciones pendientes**: ninguna\n")
 	}
 
 	if d, ok := s.store.(pendingCounter); ok {
