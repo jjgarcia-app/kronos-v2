@@ -27,6 +27,11 @@ El chequeo 4 trabaja sobre el proyecto fixture `kronos-bench` del vault: guarda
 la nota original, hace la prueba y la restaura al terminar. Solo avanza el
 contador `revision` de esa nota.
 
+Los chequeos 1 a 3 crean sesiones sintéticas (prefijo `verify-`) en la base real,
+porque los hooks solo se pueden ejercitar de verdad con payloads reales. El
+script las marca como borradas al terminar (`deleted_at`, reversible), así no
+ensucian las estadísticas de sesiones.
+
 ## Qué NO verifica
 
   - **Si la memoria es útil**: eso no se mide con un script, se mide con trabajo
