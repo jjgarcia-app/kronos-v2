@@ -77,6 +77,17 @@ type CoreConfig struct {
 	CharsLimit        int  `json:"chars_limit"`
 	MaxItems          int  `json:"max_items"`
 	IncludeCheckpoint bool `json:"include_checkpoint"`
+	// MaxGlobalChars: presupuesto máximo, en chars, para observaciones
+	// scope=global dentro del bloque core (se renderizan comprimidas: tipo +
+	// título, sin "Qué: ..."). Medido en benchmark 2026-09-11: sin este tope,
+	// 9 observaciones globales sin comprimir ocupaban ~1890/2000 chars —
+	// el bloque entero, y eran todas de OTRO proyecto.
+	MaxGlobalChars int `json:"max_global_chars"`
+	// ProjectMinChars: reserva mínima, en chars, para contenido del
+	// proyecto actual — limita cuánto de lo que sobra puede gastar la
+	// sección global antes de dejarle lugar al proyecto (ver
+	// internal/hooks/core_block.go).
+	ProjectMinChars int `json:"project_min_chars"`
 }
 
 // RecallConfig controla la inyección por relevancia en UserPromptSubmit (ver
@@ -189,6 +200,8 @@ func Default() Config {
 			CharsLimit:        2000,
 			MaxItems:          12,
 			IncludeCheckpoint: true,
+			MaxGlobalChars:    800,
+			ProjectMinChars:   600,
 		},
 		Recall: RecallConfig{
 			Enabled: true,
@@ -468,6 +481,18 @@ func (c *Config) Set(key, value string) error {
 			c.Core.MaxItems = n
 		case "include_checkpoint":
 			c.Core.IncludeCheckpoint = parseBool(value)
+		case "max_global_chars":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return fmt.Errorf("invalid int: %s", value)
+			}
+			c.Core.MaxGlobalChars = n
+		case "project_min_chars":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return fmt.Errorf("invalid int: %s", value)
+			}
+			c.Core.ProjectMinChars = n
 		default:
 			return fmt.Errorf("unknown core field: %s", field)
 		}
