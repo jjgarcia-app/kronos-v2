@@ -46,9 +46,23 @@ func newTestStore(t *testing.T) *store.Store {
 	f.Close()
 	t.Cleanup(func() { os.Remove(f.Name()) })
 
-	s, err := store.New(f.Name())
-	if err != nil {
-		t.Fatalf("store.New: %v", err)
+	// store.New hace migraciones + PRAGMAs (WAL, busy_timeout) y escribe en el
+	// filesystem: con la máquina saturada (benchmark de 8 sesiones de Claude
+	// Code en paralelo, Ollama al 150% CPU) esto fallaba de forma intermitente
+	// y el test se veía como flaky en la suite completa mientras pasaba siempre
+	// en solitario. Un reintento con backoff acota el ruido del entorno sin
+	// tocar el comportamiento del producto.
+	var s *store.Store
+	var lastErr error
+	for i := 0; i < 3; i++ {
+		s, lastErr = store.New(f.Name())
+		if lastErr == nil {
+			break
+		}
+		time.Sleep(time.Duration(50*(i+1)) * time.Millisecond)
+	}
+	if lastErr != nil {
+		t.Fatalf("store.New (3 intentos): %v", lastErr)
 	}
 	t.Cleanup(func() { s.Close() })
 	return s
