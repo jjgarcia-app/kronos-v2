@@ -149,6 +149,40 @@ type RecallConfig struct {
 	// no llega a MinFTSResults. Default true — es la mejora oportunista, pero
 	// puede desactivarse en máquinas donde ni vale la pena el intento.
 	VectorOnFTSMiss bool `json:"vector_on_fts_miss"`
+	// MinMatchedTerms: con la query FTS armada por OR (ver runRecall), un
+	// resultado puede matchear con un solo término de tres — demasiado débil
+	// para inyectarlo como si fuera relevante. Medido en la ronda 2 del
+	// benchmark: "alfresco aspect remove" (3 términos) con el AND implícito
+	// anterior daba 0 filas porque exigía los tres en la misma observación;
+	// con OR puro cualquier observación que mencione UNA vez "aspect" ya
+	// entra, ruido igual de malo que el AND. La guarda de precisión: para
+	// prompts con ≥3 términos significativos, exigir que al menos
+	// MinMatchedTerms (verificados contra título+contenido, no solo lo que
+	// reporta el motor FTS) estén presentes. Prompts de 1-2 términos —
+	// "postgres driver"— no tienen margen para exigir 2, así que ahí alcanza
+	// con 1. Default 2.
+	MinMatchedTerms int `json:"min_matched_terms"`
+	// TotalBudgetMs es el techo real de tiempo para FTS+vector combinados en
+	// runRecall — reemplaza en la práctica a TimeoutMs como el límite que de
+	// verdad importa (se usa min(TimeoutMs, TotalBudgetMs) como deadline de
+	// ctx2, así que TimeoutMs sigue siendo compatible para quien ya lo tenía
+	// customizado más chico). Medido: un hook de UserPromptSubmit que tarda
+	// 1500ms en el peor caso (default viejo de TimeoutMs) se siente en cada
+	// prompt del usuario; 400ms es el punto donde FTS (milisegundos) más un
+	// intento vectorial corto todavía entran sin que el turno se note lento.
+	TotalBudgetMs int `json:"total_budget_ms"`
+	// VectorProbeMs es el umbral de la sonda barata que decide si el
+	// proveedor de embeddings "viene caliente": si la ÚLTIMA llamada real
+	// (ver embeddings.VectorStore.LastLatency) tardó más que esto, se asume
+	// que Ollama está lento AHORA (carga compartida con el daemon u otras
+	// sesiones, medido entre 800ms y 6s en esta máquina) y se saltea el
+	// intento vectorial en vez de gastar el presupuesto entero esperándolo.
+	// Es una sonda barata a propósito: no dispara una llamada nueva, solo lee
+	// la duración de la llamada anterior — un round-trip real (aunque sea
+	// solo para medir) costaría lo mismo que el intento que se quiere evitar.
+	// Sin datos previos (primera llamada del proceso) se asume caliente.
+	// Default 300ms.
+	VectorProbeMs int `json:"vector_probe_ms"`
 }
 
 // ConsolidationConfig controla la consolidación de duplicados semánticos
@@ -263,6 +297,9 @@ func Default() Config {
 			FallbackFTS:     true,
 			MinFTSResults:   1,
 			VectorOnFTSMiss: true,
+			MinMatchedTerms: 2,
+			TotalBudgetMs:   400,
+			VectorProbeMs:   300,
 		},
 		Consolidation: ConsolidationConfig{
 			Enabled:            false,
@@ -603,6 +640,24 @@ func (c *Config) Set(key, value string) error {
 			c.Recall.MinFTSResults = n
 		case "vector_on_fts_miss":
 			c.Recall.VectorOnFTSMiss = parseBool(value)
+		case "min_matched_terms":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return fmt.Errorf("invalid int: %s", value)
+			}
+			c.Recall.MinMatchedTerms = n
+		case "total_budget_ms":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return fmt.Errorf("invalid int: %s", value)
+			}
+			c.Recall.TotalBudgetMs = n
+		case "vector_probe_ms":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return fmt.Errorf("invalid int: %s", value)
+			}
+			c.Recall.VectorProbeMs = n
 		default:
 			return fmt.Errorf("unknown recall field: %s", field)
 		}
