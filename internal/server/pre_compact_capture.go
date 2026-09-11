@@ -44,6 +44,7 @@ func (srv *Server) handlePreCompactCapture(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	st := srv.st
+	cfg := srv.captureConfig()
 	go func() {
 		ctx := context.Background()
 		// getCaptureLLM adentro de la goroutine, no antes de responder:
@@ -52,6 +53,6 @@ func (srv *Server) handlePreCompactCapture(w http.ResponseWriter, r *http.Reques
 		// respuesta 202 de la request que disparó esto.
 		llmClient := srv.getCaptureLLM(ctx)
 		_ = hooks.RunPreCompactCapture(ctx, st, llmClient, in.SessionID, in.TranscriptPath, in.CWD)
-		_ = hooks.MaybeUpdateDigest(ctx, st, llmClient, in.SessionID, in.TranscriptPath, in.CWD, true)
+		_ = hooks.MaybeUpdateDigest(ctx, st, cfg, llmClient, in.SessionID, in.TranscriptPath, in.CWD, true)
 	}()
 }

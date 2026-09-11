@@ -1,0 +1,111 @@
+package doctor
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/jjgarcia-app/kronos-v2/internal/config"
+	"github.com/jjgarcia-app/kronos-v2/internal/llm"
+	"github.com/jjgarcia-app/kronos-v2/internal/platform"
+	"github.com/jjgarcia-app/kronos-v2/internal/store"
+)
+
+// checkAutoDigest reporta el estado del digest automático por sesión (ver
+// internal/hooks/digest.go, MaybeUpdateDigest): cuándo se guardó el último y
+// de qué sesión, y si el cortacircuitos del LLM local está abierto. Motivado
+// por un bug real: el digest nunca funcionó en producción (0 observaciones
+// creadas por el mecanismo automático) sin que nada lo reportara — este
+// check existe para que un digest roto se note en `kronos doctor` en vez de
+// descubrirse meses después leyendo la base a mano.
+func checkAutoDigest(ctx context.Context, cfg config.Config) Check {
+	if !cfg.Digest.Enabled {
+		return Check{Name: "Digest automático", Detail: "digest.enabled=false — desactivado", Status: StatusWarn}
+	}
+
+	dbPath, err := platform.DBPath()
+	if err != nil {
+		return Check{Name: "Digest automático", Detail: "no se pudo resolver la ruta del buffer local", Status: StatusWarn}
+	}
+	if cfg.DB.SQLitePath != "" {
+		dbPath = cfg.DB.SQLitePath
+	}
+	buffer, err := store.New(dbPath)
+	if err != nil {
+		return Check{Name: "Digest automático", Detail: "no se pudo abrir DB local", Status: StatusWarn}
+	}
+	defer buffer.Close()
+
+	latest, err := buffer.LatestByType(ctx, store.TypeSession)
+	if err != nil {
+		return Check{Name: "Digest automático", Detail: fmt.Sprintf("error leyendo el último digest: %v", err), Status: StatusWarn}
+	}
+
+	detail := "sin datos — todavía no se guardó ningún digest automático"
+	if latest != nil {
+		detail = fmt.Sprintf("último hace %s (sesión %s)", formatDuration(time.Since(latest.UpdatedAt)), shortSessionID(latest))
+	}
+
+	status := StatusOK
+	if breakerDetail, open := breakerStatus(cfg); breakerDetail != "" {
+		detail += " | " + breakerDetail
+		if open {
+			status = StatusWarn
+		}
+	}
+
+	return Check{Name: "Digest automático", Detail: detail, Status: status}
+}
+
+// breakerStatus lee (sin modificar) el estado del cortacircuitos del LLM
+// local — mismo archivo que consultan/actualizan internal/llm.Breaker desde
+// el daemon y desde cada proceso de hook. "" si no se pudo resolver el data
+// dir (no hay nada que reportar, no es un fallo del check).
+func breakerStatus(cfg config.Config) (detail string, open bool) {
+	dataDir, err := platform.DataDir()
+	if err != nil {
+		return "", false
+	}
+	openFor := time.Duration(cfg.LLM.BreakerMinutes) * time.Minute
+	b := llm.NewBreaker(llm.DefaultBreakerPath(dataDir), cfg.LLM.BreakerFailures, openFor)
+	st := b.State()
+
+	if st.ConsecutiveFailures == 0 && st.OpenUntil.IsZero() {
+		return "cortacircuitos LLM: cerrado, sin fallos registrados", false
+	}
+
+	open = !st.OpenUntil.IsZero() && time.Now().Before(st.OpenUntil)
+	if open {
+		return fmt.Sprintf("cortacircuitos LLM: ABIERTO hasta %s — %d fallos consecutivos, último: %s",
+			st.OpenUntil.Format(time.RFC3339), st.ConsecutiveFailures, st.LastError), true
+	}
+	return fmt.Sprintf("cortacircuitos LLM: cerrado (%d fallos consecutivos registrados)", st.ConsecutiveFailures), false
+}
+
+func shortSessionID(obs *store.Observation) string {
+	id := obs.SessionID
+	if id == "" {
+		id = strings.TrimPrefix(obs.TopicKey, "session/")
+	}
+	if len(id) > 8 {
+		id = id[:8]
+	}
+	if id == "" {
+		return "desconocida"
+	}
+	return id
+}
+
+func formatDuration(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return "menos de 1 minuto"
+	case d < time.Hour:
+		return fmt.Sprintf("%d min", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%.1f h", d.Hours())
+	default:
+		return fmt.Sprintf("%.1f días", d.Hours()/24)
+	}
+}

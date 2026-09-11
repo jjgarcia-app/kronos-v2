@@ -54,7 +54,8 @@ func (srv *Server) handlePromptSubmit(w http.ResponseWriter, r *http.Request) {
 	// de decidir si vale la pena lanzar la goroutine — IsDigestDue evita
 	// spawnear una goroutine + tocar el LLM client en CADA prompt cuando la
 	// gran mayoría de las veces todavía no corresponde actualizar.
-	if in.SessionID != "" && in.TranscriptPath != "" && hooks.IsDigestDue(r.Context(), srv.st, in.SessionID, in.CWD) {
+	cfg := srv.captureConfig()
+	if in.SessionID != "" && in.TranscriptPath != "" && hooks.IsDigestDue(r.Context(), srv.st, cfg, in.SessionID, in.CWD) {
 		st := srv.st
 		sessionID, transcriptPath, cwd := in.SessionID, in.TranscriptPath, in.CWD
 		go func() {
@@ -64,7 +65,7 @@ func (srv *Server) handlePromptSubmit(w http.ResponseWriter, r *http.Request) {
 			// reintentar el ping a Ollama (ver Server.getCaptureLLM), ese
 			// costo no debe demorar nada del lado de la request original.
 			llmClient := srv.getCaptureLLM(ctx)
-			_ = hooks.MaybeUpdateDigest(ctx, st, llmClient, sessionID, transcriptPath, cwd, false)
+			_ = hooks.MaybeUpdateDigest(ctx, st, cfg, llmClient, sessionID, transcriptPath, cwd, false)
 		}()
 	}
 }

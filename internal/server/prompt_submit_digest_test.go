@@ -34,7 +34,7 @@ func TestHandlePromptSubmit_TriggersDigestUpdate(t *testing.T) {
 		})
 	}))
 	defer llmSrv.Close()
-	srv.SetCaptureLLM(llm.NewClient(llmSrv.URL, "llama3.2:1b"), config.Config{})
+	srv.SetCaptureLLM(llm.NewClient(llmSrv.URL, "llama3.2:1b"), config.Default())
 
 	cwd := t.TempDir()
 	st, ok := srv.st.(*store.Store)
@@ -47,8 +47,9 @@ func TestHandlePromptSubmit_TriggersDigestUpdate(t *testing.T) {
 	}
 
 	transcriptPath := filepath.Join(t.TempDir(), "transcript.jsonl")
+	prompt := `{"type":"user","message":{"role":"user","content":"arreglá el bug real que encontramos"}}` + "\n"
 	line := `{"type":"assistant","message":{"role":"assistant","content":"encontré y arreglé la causa raíz de un bug real, con suficiente texto para pasar el umbral mínimo del excerpt"}}` + "\n"
-	if err := os.WriteFile(transcriptPath, []byte(strings.Repeat(line, 5)), 0o644); err != nil {
+	if err := os.WriteFile(transcriptPath, []byte(prompt+strings.Repeat(line, 5)), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
