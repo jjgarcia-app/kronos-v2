@@ -67,6 +67,18 @@ type LLMConfig struct {
 	BaseURL  string `json:"base_url"`
 }
 
+// CoreConfig controla el bloque siempre-presente que SessionStart inyecta
+// en cada arranque (ver internal/hooks/core_block.go). Existe porque medido
+// en producción, mem_search se llamó 60 veces sobre 9.470 prompts (0,63%):
+// pedirle al agente que consulte memoria a mano no funciona, así que el
+// contexto relevante tiene que aparecer solo, acotado por presupuesto.
+type CoreConfig struct {
+	Enabled           bool `json:"enabled"`
+	CharsLimit        int  `json:"chars_limit"`
+	MaxItems          int  `json:"max_items"`
+	IncludeCheckpoint bool `json:"include_checkpoint"`
+}
+
 type Config struct {
 	DB         DBConfig         `json:"db"`
 	Embeddings EmbeddingsConfig `json:"embeddings"`
@@ -75,6 +87,7 @@ type Config struct {
 	Nudge      NudgeConfig      `json:"nudge"`
 	Secrets    SecretsConfig    `json:"secrets"`
 	Export     ExportConfig     `json:"export"`
+	Core       CoreConfig       `json:"core"`
 	APIToken   string           `json:"api_token"`
 }
 
@@ -105,6 +118,12 @@ func Default() Config {
 		},
 		Export: ExportConfig{
 			DefaultOutput: "~/kronos-vault",
+		},
+		Core: CoreConfig{
+			Enabled:           true,
+			CharsLimit:        2000,
+			MaxItems:          12,
+			IncludeCheckpoint: true,
 		},
 	}
 }
@@ -320,6 +339,27 @@ func (c *Config) Set(key, value string) error {
 			c.Export.Enabled = parseBool(value)
 		default:
 			return fmt.Errorf("unknown export field: %s", field)
+		}
+	case "core":
+		switch field {
+		case "enabled":
+			c.Core.Enabled = parseBool(value)
+		case "chars_limit":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return fmt.Errorf("invalid int: %s", value)
+			}
+			c.Core.CharsLimit = n
+		case "max_items":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return fmt.Errorf("invalid int: %s", value)
+			}
+			c.Core.MaxItems = n
+		case "include_checkpoint":
+			c.Core.IncludeCheckpoint = parseBool(value)
+		default:
+			return fmt.Errorf("unknown core field: %s", field)
 		}
 	case "root":
 		switch field {

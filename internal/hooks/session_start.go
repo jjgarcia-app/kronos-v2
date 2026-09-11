@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	"github.com/jjgarcia-app/kronos-v2/internal/checkpoint"
+	"github.com/jjgarcia-app/kronos-v2/internal/config"
 	"github.com/jjgarcia-app/kronos-v2/internal/platform"
 	"github.com/jjgarcia-app/kronos-v2/internal/project"
 	"github.com/jjgarcia-app/kronos-v2/internal/store"
@@ -83,6 +84,8 @@ const maxContinuityItems = 3
 // between RunSessionStart's normal path and RunPostCompaction — both leave
 // the agent with no usable transcript unless kronos hands it something here.
 func injectContinuity(ctx context.Context, st store.Storer, projName, sessionID string) {
+	printCoreBlock(ctx, st, projName)
+
 	if dataDir, err := platform.DataDir(); err == nil {
 		if cp, err := checkpoint.Load(dataDir, projName); err == nil && cp != nil {
 			fmt.Printf("[kronos] active task: %s | next: %s\n", cp.Task, cp.NextStep)
@@ -116,6 +119,28 @@ func injectContinuity(ctx context.Context, st store.Storer, projName, sessionID 
 	}
 
 	_ = st.PersistInjectedIDs(ctx, sessionID, injectedIDs)
+}
+
+// printCoreBlock imprime el bloque siempre-presente (ver core_block.go)
+// antes de los items sueltos de injectContinuity. Carga la config con
+// config.Load() en cada llamada — barato (un archivo chico local) y evita
+// que un config.json editado a mano por Jerry requiera reiniciar nada más
+// que la próxima sesión. Best-effort total: config rota, store caído o
+// cfg.Core.Enabled=false simplemente no imprimen nada, nunca fallan el hook.
+func printCoreBlock(ctx context.Context, st store.Storer, projName string) {
+	cfg, _ := config.Load()
+	if !cfg.Core.Enabled {
+		return
+	}
+	block, err := BuildCoreBlock(ctx, st, projName, CoreBlockOptions{
+		CharsLimit:        cfg.Core.CharsLimit,
+		MaxItems:          cfg.Core.MaxItems,
+		IncludeCheckpoint: cfg.Core.IncludeCheckpoint,
+	})
+	if err != nil || block == "" {
+		return
+	}
+	fmt.Println(block)
 }
 
 func containsID(ids []string, id string) bool {
