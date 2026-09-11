@@ -127,6 +127,7 @@ func runServeWithStop(stopCh <-chan struct{}, args ...string) error {
 
 	if daemonMode {
 		go runBackupLoop(ctx)
+		startConsolidationLoopIfEnabled(ctx, mcpSrv.LocalStoreForJudge(), mcpSrv.RelationsDetector(), cfg)
 		fmt.Fprintf(os.Stderr, "kronos daemon listo — MCP en http://127.0.0.1:%d/mcp\n", port)
 		<-ctx.Done()
 		return nil

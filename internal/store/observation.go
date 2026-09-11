@@ -92,7 +92,7 @@ func (s *Store) SaveObservation(ctx context.Context, p SaveParams) (*Observation
 		return s.GetObservation(ctx, id)
 	}
 
-	res, err := s.db.ExecContext(ctx,
+	res, err := s.exec(ctx,
 		`INSERT OR IGNORE INTO observations
 			(id, sync_id, session_id, type, title, content, tool_name, project, scope, topic_key,
 			 normalized_hash, revision_count, duplicate_count, last_seen_at, created_at, updated_at)
@@ -286,11 +286,16 @@ func (s *Store) RenameProject(ctx context.Context, from, to string) (int64, erro
 // Satisfies store.Storer.
 func (s *Store) CountObservations(ctx context.Context, project string) (int, error) {
 	var row *sql.Row
+	// s.queryRow (no s.db.QueryRowContext) — aplica rebind de "?" a "$N".
+	// CountObservations corre en cada arranque de sesión (SessionStart imprime
+	// el conteo); contra un primary Postgres real el "?" literal rompía con
+	// "syntax error at or near AND" (pgx no lo traduce), lo que marcaba el
+	// primary como caído y dejaba a DualStore leyendo el buffer SQLite congelado.
 	if project != "" {
-		row = s.db.QueryRowContext(ctx,
+		row = s.queryRow(ctx,
 			`SELECT COUNT(*) FROM observations WHERE project = ? AND deleted_at IS NULL`, project)
 	} else {
-		row = s.db.QueryRowContext(ctx,
+		row = s.queryRow(ctx,
 			`SELECT COUNT(*) FROM observations WHERE deleted_at IS NULL`)
 	}
 	var n int
@@ -344,6 +349,21 @@ func (s *Store) updateObservation(ctx context.Context, id int64, title, content,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("update observation: %w", err)
+	}
+	return s.GetObservation(ctx, id)
+}
+
+// IncrementRevisionCount sube revision_count en 1 sin tocar title/content/hash.
+// Usado por la consolidación de duplicados semánticos (kronos gc --consolidate)
+// para reflejar que la observación superviviente absorbió una duplicada, sin
+// pasar por updateObservation (que recalcularía el hash y pisaría el contenido).
+func (s *Store) IncrementRevisionCount(ctx context.Context, id int64) (*Observation, error) {
+	_, err := s.exec(ctx,
+		`UPDATE observations SET revision_count = revision_count + 1, updated_at = ? WHERE id = ?`,
+		now(), id,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("increment revision count: %w", err)
 	}
 	return s.GetObservation(ctx, id)
 }

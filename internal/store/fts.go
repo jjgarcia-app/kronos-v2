@@ -29,7 +29,7 @@ func (s *Store) searchSQLite(ctx context.Context, p SearchParams) ([]*SearchResu
 	var err error
 
 	if p.Project != "" {
-		sqlRows, err = s.db.QueryContext(ctx, `
+		sqlRows, err = s.query(ctx, `
 			SELECT o.id, o.sync_id, o.session_id, o.type, o.title, o.content, o.tool_name,
 			       o.project, o.scope, o.topic_key, o.normalized_hash,
 			       o.revision_count, o.duplicate_count, o.created_at, o.updated_at, o.deleted_at,
@@ -44,7 +44,7 @@ func (s *Store) searchSQLite(ctx context.Context, p SearchParams) ([]*SearchResu
 			query, p.Project, p.Limit,
 		)
 	} else {
-		sqlRows, err = s.db.QueryContext(ctx, `
+		sqlRows, err = s.query(ctx, `
 			SELECT o.id, o.sync_id, o.session_id, o.type, o.title, o.content, o.tool_name,
 			       o.project, o.scope, o.topic_key, o.normalized_hash,
 			       o.revision_count, o.duplicate_count, o.created_at, o.updated_at, o.deleted_at,

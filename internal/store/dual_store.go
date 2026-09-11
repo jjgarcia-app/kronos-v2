@@ -139,6 +139,13 @@ func NewDualFromDSN(buffer *Store, pgDSN string) (*DualStore, error) {
 // mem_save, succeeded ~1min later once syncLoop's first retry ran).
 const primaryRetryTTL = 5 * time.Second
 
+// dsLog escribe una línea de log de dual-store a stderr con timestamp
+// RFC3339 al inicio — sin esto no había forma de medir cada cuánto
+// parpadea el primary ni de correlacionarlo con otros eventos del daemon.
+func dsLog(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, "%s "+format+"\n", append([]any{time.Now().Format(time.RFC3339)}, args...)...)
+}
+
 func (d *DualStore) isPrimaryDown() bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -153,20 +160,25 @@ func (d *DualStore) isPrimaryDown() bool {
 	// away. A failed attempt just re-arms the TTL below.
 	conn, err := NewPostgres(d.primaryDSN)
 	if err != nil {
+		dsLog("warn: dual-store: retry desde read path falló, primary sigue caído: %v", err)
 		d.downSince = time.Now()
 		return true
 	}
-	fmt.Fprintln(os.Stderr, "info: dual-store: primary restablecido (retry desde read path)")
+	dsLog("info: dual-store: primary restablecido (retry desde read path)")
 	d.primary = conn
 	d.down = false
 	return false
 }
 
-func (d *DualStore) markDown() {
+// markDown registra la caída del primary con el error real que la provocó
+// (timeout, breaker, auth, TLS, connection reset, etc.) — antes solo se
+// imprimía "primary caído" sin la causa, lo que hacía imposible diagnosticar
+// por qué el daemon estaba parpadeando entre Postgres y el buffer local.
+func (d *DualStore) markDown(err error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if !d.down {
-		fmt.Fprintln(os.Stderr, "warn: dual-store: primary caído, usando buffer local hasta reconectar")
+		dsLog("warn: dual-store: primary caído, usando buffer local hasta reconectar: %v", err)
 	}
 	d.down = true
 	d.downSince = time.Now()
@@ -176,7 +188,7 @@ func (d *DualStore) markUp(p *Store) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.down {
-		fmt.Fprintln(os.Stderr, "info: dual-store: primary restablecido (sync loop)")
+		dsLog("info: dual-store: primary restablecido (sync loop)")
 	}
 	d.primary = p
 	d.down = false
@@ -194,7 +206,7 @@ func (d *DualStore) SaveObservation(ctx context.Context, p SaveParams) (*Observa
 		if err == nil {
 			return obs, nil
 		}
-		d.markDown()
+		d.markDown(err)
 	}
 	obs, err := d.buffer.SaveObservation(ctx, p)
 	if err != nil && isFKError(err) && p.SessionID != "" {
@@ -222,7 +234,7 @@ func (d *DualStore) UpdateObservation(ctx context.Context, p UpdateParams) (*Obs
 		if err == nil {
 			return obs, nil
 		}
-		d.markDown()
+		d.markDown(err)
 	}
 	obs, err := d.buffer.UpdateObservation(ctx, p)
 	if err != nil {
@@ -234,10 +246,11 @@ func (d *DualStore) UpdateObservation(ctx context.Context, p UpdateParams) (*Obs
 
 func (d *DualStore) DeleteObservation(ctx context.Context, id int64) error {
 	if !d.isPrimaryDown() {
-		if err := d.primary.DeleteObservation(ctx, id); err == nil {
+		if err := d.primary.DeleteObservation(ctx, id); err != nil {
+			d.markDown(err)
+		} else {
 			return nil
 		}
-		d.markDown()
 	}
 	if err := d.buffer.DeleteObservation(ctx, id); err != nil {
 		return err
@@ -267,7 +280,7 @@ func (d *DualStore) CreateSession(ctx context.Context, id, project, directory st
 		if err == nil {
 			return sess, nil
 		}
-		d.markDown()
+		d.markDown(err)
 	}
 	sess, err := d.buffer.CreateSession(ctx, id, project, directory)
 	if err != nil {
@@ -287,10 +300,11 @@ func (d *DualStore) EndSession(ctx context.Context, id, summary string) error {
 		return d.buffer.EndSession(ctx, id, summary)
 	}
 	if !d.isPrimaryDown() {
-		if err := d.primary.EndSession(ctx, id, summary); err == nil {
+		if err := d.primary.EndSession(ctx, id, summary); err != nil {
+			d.markDown(err)
+		} else {
 			return nil
 		}
-		d.markDown()
 	}
 	if err := d.buffer.EndSession(ctx, id, summary); err != nil {
 		return err
@@ -305,10 +319,16 @@ func (d *DualStore) RecordToolUse(ctx context.Context, sessionID, project, toolN
 		return d.buffer.RecordToolUse(ctx, sessionID, project, toolName)
 	}
 	if !d.isPrimaryDown() {
-		if err := d.primary.RecordToolUse(ctx, sessionID, project, toolName); err == nil {
+		if err := d.primary.RecordToolUse(ctx, sessionID, project, toolName); err != nil {
+			// Mismo caso que SavePrompt: un FK de tool_usage.session_id no es
+			// una falla de conexión y no debe degradar el primary a 5 s de
+			// lecturas desde el buffer.
+			if !isFKError(err) {
+				d.markDown(err)
+			}
+		} else {
 			return nil
 		}
-		d.markDown()
 	}
 	if err := d.buffer.RecordToolUse(ctx, sessionID, project, toolName); err != nil {
 		return err
@@ -323,10 +343,22 @@ func (d *DualStore) SavePrompt(ctx context.Context, sessionID, project, content 
 		return d.buffer.SavePrompt(ctx, sessionID, project, content)
 	}
 	if !d.isPrimaryDown() {
-		if err := d.primary.SavePrompt(ctx, sessionID, project, content); err == nil {
+		if err := d.primary.SavePrompt(ctx, sessionID, project, content); err != nil {
+			// Un error de integridad referencial (la sesión todavía no existe
+			// en el primary — típicamente porque se creó en el buffer durante
+			// una caída, o porque el hook corrió sin SessionStart) NO es una
+			// falla de conexión. Marcarlo como caída degradaba TODAS las
+			// lecturas al buffer durante 5 s por cada prompt de una sesión
+			// desincronizada: medido en producción el 2026-09-11 03:07, era una
+			// de las causas del parpadeo y de que la memoria devolviera datos
+			// congelados. Se registra, se escribe en el buffer, y el primary
+			// sigue sano para leer.
+			if !isFKError(err) {
+				d.markDown(err)
+			}
+		} else {
 			return nil
 		}
-		d.markDown()
 	}
 	err := d.buffer.SavePrompt(ctx, sessionID, project, content)
 	if err != nil && isFKError(err) && sessionID != "" {
@@ -353,7 +385,7 @@ func (d *DualStore) GetObservation(ctx context.Context, id int64) (*Observation,
 			return obs, nil
 		}
 		if err != nil {
-			d.markDown()
+			d.markDown(err)
 		}
 		// err == nil && obs == nil: primary está sano pero no tiene esta fila
 		// (puede existir solo en buffer — ej. drift de IDs entre SQLite y
@@ -371,7 +403,7 @@ func (d *DualStore) GetByTopicKey(ctx context.Context, project, topicKey string)
 			return obs, nil
 		}
 		if err != nil {
-			d.markDown()
+			d.markDown(err)
 		}
 	}
 	return d.buffer.GetByTopicKey(ctx, project, topicKey)
@@ -383,7 +415,7 @@ func (d *DualStore) ListObservations(ctx context.Context, project string, limit,
 		if err == nil {
 			return obs, nil
 		}
-		d.markDown()
+		d.markDown(err)
 	}
 	return d.buffer.ListObservations(ctx, project, limit, offset)
 }
@@ -394,7 +426,7 @@ func (d *DualStore) ListAll(ctx context.Context, project string) ([]*Observation
 		if err == nil {
 			return obs, nil
 		}
-		d.markDown()
+		d.markDown(err)
 	}
 	return d.buffer.ListAll(ctx, project)
 }
@@ -405,7 +437,7 @@ func (d *DualStore) ListSessionObservations(ctx context.Context, sessionID strin
 		if err == nil {
 			return obs, nil
 		}
-		d.markDown()
+		d.markDown(err)
 	}
 	return d.buffer.ListSessionObservations(ctx, sessionID)
 }
@@ -417,7 +449,7 @@ func (d *DualStore) GetSession(ctx context.Context, id string) (*Session, error)
 			return sess, nil
 		}
 		if err != nil {
-			d.markDown()
+			d.markDown(err)
 		}
 	}
 	return d.buffer.GetSession(ctx, id)
@@ -430,7 +462,7 @@ func (d *DualStore) GetActiveSession(ctx context.Context, project string) (*Sess
 			return sess, nil
 		}
 		if err != nil {
-			d.markDown()
+			d.markDown(err)
 		}
 	}
 	return d.buffer.GetActiveSession(ctx, project)
@@ -442,7 +474,7 @@ func (d *DualStore) ListSessions(ctx context.Context, project string, limit int)
 		if err == nil {
 			return sessions, nil
 		}
-		d.markDown()
+		d.markDown(err)
 	}
 	return d.buffer.ListSessions(ctx, project, limit)
 }
@@ -453,7 +485,7 @@ func (d *DualStore) Search(ctx context.Context, p SearchParams) ([]*SearchResult
 		if err == nil {
 			return results, nil
 		}
-		d.markDown()
+		d.markDown(err)
 	}
 	return d.buffer.Search(ctx, p)
 }
@@ -464,7 +496,7 @@ func (d *DualStore) Stats(ctx context.Context) (*Stats, error) {
 		if err == nil {
 			return st, nil
 		}
-		d.markDown()
+		d.markDown(err)
 	}
 	return d.buffer.Stats(ctx)
 }
@@ -475,7 +507,7 @@ func (d *DualStore) Timesheet(ctx context.Context, from, to time.Time, project s
 		if err == nil {
 			return ts, nil
 		}
-		d.markDown()
+		d.markDown(err)
 	}
 	return d.buffer.Timesheet(ctx, from, to, project)
 }
@@ -492,7 +524,7 @@ func (d *DualStore) AllSessions(ctx context.Context, limit int) ([]*Session, err
 		if err == nil {
 			return sessions, nil
 		}
-		d.markDown()
+		d.markDown(err)
 	}
 	return d.buffer.AllSessions(ctx, limit)
 }
@@ -503,17 +535,18 @@ func (d *DualStore) TimelineObservations(ctx context.Context, obsID int64, n int
 		if err == nil {
 			return obs, nil
 		}
-		d.markDown()
+		d.markDown(err)
 	}
 	return d.buffer.TimelineObservations(ctx, obsID, n)
 }
 
 func (d *DualStore) PersistInjectedIDs(ctx context.Context, sessionID string, ids []string) error {
 	if !d.isPrimaryDown() {
-		if err := d.primary.PersistInjectedIDs(ctx, sessionID, ids); err == nil {
+		if err := d.primary.PersistInjectedIDs(ctx, sessionID, ids); err != nil {
+			d.markDown(err)
+		} else {
 			return nil
 		}
-		d.markDown()
 	}
 	return d.buffer.PersistInjectedIDs(ctx, sessionID, ids)
 }
@@ -524,7 +557,7 @@ func (d *DualStore) LoadInjectedIDs(ctx context.Context, sessionID string) ([]st
 		if err == nil {
 			return ids, nil
 		}
-		d.markDown()
+		d.markDown(err)
 	}
 	return d.buffer.LoadInjectedIDs(ctx, sessionID)
 }
@@ -535,7 +568,7 @@ func (d *DualStore) CountObservations(ctx context.Context, project string) (int,
 		if err == nil {
 			return n, nil
 		}
-		d.markDown()
+		d.markDown(err)
 	}
 	return d.buffer.CountObservations(ctx, project)
 }
@@ -581,7 +614,7 @@ func (d *DualStore) TouchSessionActivity(ctx context.Context, id, project string
 			return nil
 		}
 		if err != nil {
-			d.markDown()
+			d.markDown(err)
 		}
 	}
 	if err := d.buffer.TouchSessionActivity(ctx, id, project); err != nil {
@@ -607,7 +640,7 @@ func (d *DualStore) IncrementSearchCount(ctx context.Context, sessionID string) 
 			return nil
 		}
 		if err != nil {
-			d.markDown()
+			d.markDown(err)
 		}
 	}
 	if err := d.buffer.IncrementSearchCount(ctx, sessionID); err != nil {
@@ -616,6 +649,28 @@ func (d *DualStore) IncrementSearchCount(ctx context.Context, sessionID string) 
 	type searchCountPayload struct{ SessionID string }
 	_ = d.queue.enqueue("increment_search_count", searchCountPayload{sessionID})
 	return nil
+}
+
+// ListRelations expone primary-first el listado de relaciones — usado por
+// mem_doctor (internal/mcp/handlers.go) y por el aviso de backlog de
+// SessionStart (internal/hooks/session_start.go). Antes ambos alcanzaban el
+// buffer SQLite local a mano vía LocalStore()/localStoreOf(), sin importar
+// si el primary estaba sano: mem_doctor reportaba 849 obs/3 relaciones
+// pendientes leídas del buffer mientras mem_stats (ya primary-first) mostraba
+// 880 obs reales, y el primary ni siquiera tenía filas en memory_relations.
+// FindCandidates (que crea las filas pending) solo corre en SQLite — en un
+// backend Postgres sano esto normalmente devuelve vacío, que es lo correcto:
+// refleja el estado real del primary en vez de mentir con datos viejos del
+// buffer que nadie más puede limpiar.
+func (d *DualStore) ListRelations(ctx context.Context, project, status string, limit, offset int) ([]Relation, error) {
+	if !d.isPrimaryDown() {
+		rels, err := d.primary.ListRelations(ctx, project, status, limit, offset)
+		if err == nil {
+			return rels, nil
+		}
+		d.markDown(err)
+	}
+	return d.buffer.ListRelations(ctx, project, status, limit, offset)
 }
 
 // LocalStore retorna el Store SQLite local (buffer).
@@ -688,7 +743,7 @@ func (d *DualStore) FlushPendingVerbose(ctx context.Context) (bool, error) {
 		}
 		for _, e := range entries {
 			if err := d.replayEntry(ctx, primary, e); err != nil {
-				d.markDown()
+				d.markDown(err)
 				return false, fmt.Errorf("replay %s: %w", e.EntityType, err)
 			}
 			_ = d.queue.delete(e.ID)
@@ -720,7 +775,7 @@ func (d *DualStore) FlushPending(ctx context.Context) bool {
 		}
 		for _, e := range entries {
 			if err := d.replayEntry(ctx, primary, e); err != nil {
-				d.markDown()
+				d.markDown(err)
 				return false
 			}
 			_ = d.queue.delete(e.ID)

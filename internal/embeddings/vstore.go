@@ -30,7 +30,18 @@ type VectorStore struct {
 // New opens (or creates) a persistent vector store at dataDir.
 // Returns (nil, nil) when no embedding provider is available — callers
 // must treat a nil *VectorStore as "embeddings disabled".
+//
+// La instancia se cachea por proceso (ver cache.go, vectorStoreCacheTTL): un
+// segundo llamado con el mismo dataDir dentro de la ventana de TTL reusa el
+// *VectorStore ya abierto en vez de releer el índice de chromem desde disco
+// — relevante para el daemon compartido, que puede recrear el store en más
+// de un punto de arranque, y para llamadas repetidas dentro de un mismo
+// proceso corto.
 func New(ctx context.Context, dataDir string) (*VectorStore, error) {
+	if vs, ok := cachedVectorStore(dataDir); ok {
+		return vs, nil
+	}
+
 	fn, provider, err := AutoFunc(ctx)
 	if err != nil {
 		return nil, nil // graceful: no provider, not an error for the caller
@@ -46,12 +57,14 @@ func New(ctx context.Context, dataDir string) (*VectorStore, error) {
 		return nil, fmt.Errorf("create collection: %w", err)
 	}
 
-	return &VectorStore{
+	vs := &VectorStore{
 		db:         db,
 		collection: col,
 		embedFn:    fn,
 		provider:   provider,
-	}, nil
+	}
+	storeCachedVectorStore(dataDir, vs)
+	return vs, nil
 }
 
 // NewInMemory creates an in-memory vector store with the given embedding function.

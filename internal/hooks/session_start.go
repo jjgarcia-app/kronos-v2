@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	"github.com/jjgarcia-app/kronos-v2/internal/checkpoint"
+	"github.com/jjgarcia-app/kronos-v2/internal/config"
 	"github.com/jjgarcia-app/kronos-v2/internal/platform"
 	"github.com/jjgarcia-app/kronos-v2/internal/project"
 	"github.com/jjgarcia-app/kronos-v2/internal/store"
@@ -83,6 +84,8 @@ const maxContinuityItems = 3
 // between RunSessionStart's normal path and RunPostCompaction — both leave
 // the agent with no usable transcript unless kronos hands it something here.
 func injectContinuity(ctx context.Context, st store.Storer, projName, sessionID string) {
+	printCoreBlock(ctx, st, projName)
+
 	if dataDir, err := platform.DataDir(); err == nil {
 		if cp, err := checkpoint.Load(dataDir, projName); err == nil && cp != nil {
 			fmt.Printf("[kronos] active task: %s | next: %s\n", cp.Task, cp.NextStep)
@@ -118,6 +121,28 @@ func injectContinuity(ctx context.Context, st store.Storer, projName, sessionID 
 	_ = st.PersistInjectedIDs(ctx, sessionID, injectedIDs)
 }
 
+// printCoreBlock imprime el bloque siempre-presente (ver core_block.go)
+// antes de los items sueltos de injectContinuity. Carga la config con
+// config.Load() en cada llamada — barato (un archivo chico local) y evita
+// que un config.json editado a mano por Jerry requiera reiniciar nada más
+// que la próxima sesión. Best-effort total: config rota, store caído o
+// cfg.Core.Enabled=false simplemente no imprimen nada, nunca fallan el hook.
+func printCoreBlock(ctx context.Context, st store.Storer, projName string) {
+	cfg, _ := config.Load()
+	if !cfg.Core.Enabled {
+		return
+	}
+	block, err := BuildCoreBlock(ctx, st, projName, CoreBlockOptions{
+		CharsLimit:        cfg.Core.CharsLimit,
+		MaxItems:          cfg.Core.MaxItems,
+		IncludeCheckpoint: cfg.Core.IncludeCheckpoint,
+	})
+	if err != nil || block == "" {
+		return
+	}
+	fmt.Println(block)
+}
+
 func containsID(ids []string, id string) bool {
 	for _, existing := range ids {
 		if existing == id {
@@ -146,11 +171,14 @@ func printBacklogWarnings(ctx context.Context, st store.Storer, proj string) {
 			fmt.Printf("[kronos] aviso: %d operaciones sin sincronizar a PostgreSQL (correr `kronos sync --pg-flush` o revisar `mem_doctor`)\n", pending)
 		}
 	}
-	ls := localStoreOf(st)
-	if ls == nil {
-		return
-	}
-	rels, err := ls.ListRelations(ctx, proj, store.JudgmentPending, backlogRelationsThreshold+1, 0)
+	// st.ListRelations (no localStoreOf(st)): ListRelations ya es
+	// primary-first en DualStore (ver internal/store/dual_store.go), igual
+	// que el resto de las lecturas de Storer. Antes esto pasaba por
+	// localStoreOf para llegar a mano al buffer SQLite local, sin importar
+	// el estado del primary — mismo bug real que hacía que mem_doctor
+	// mostrara 3 relaciones pendientes del buffer que ya no existían (o
+	// nunca existieron) en el primary.
+	rels, err := st.ListRelations(ctx, proj, store.JudgmentPending, backlogRelationsThreshold+1, 0)
 	if err == nil && len(rels) > backlogRelationsThreshold {
 		fmt.Printf("[kronos] aviso: más de %d relaciones sin juzgar para %s (usar mem_judge, o revisar si Ollama está corriendo)\n", backlogRelationsThreshold, proj)
 	}
