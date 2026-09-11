@@ -126,7 +126,7 @@ func (s *Store) FindCandidates(ctx context.Context, savedObs *Observation, opts 
 		return nil, nil
 	}
 
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.query(ctx, `
 		SELECT o.id, o.sync_id, o.title, o.type, o.topic_key, bm25(observations_fts) as rank
 		FROM observations_fts
 		JOIN observations o ON observations_fts.rowid = o.id
@@ -211,7 +211,8 @@ func (s *Store) JudgeRelation(ctx context.Context, p JudgeRelationParams) (*Rela
 	}
 
 	ts := now()
-	_, err = s.db.ExecContext(ctx, `
+	// s.exec (no s.db.ExecContext) — aplica rebind de "?" a "$N" para Postgres.
+	_, err = s.exec(ctx, `
 		UPDATE memory_relations
 		SET relation = ?, reason = ?, evidence = ?, confidence = ?,
 		    judgment_status = 'judged',
@@ -251,7 +252,7 @@ func (s *Store) JudgeBySemantic(ctx context.Context, sourceID, targetID, relatio
 	}
 
 	if existing != nil {
-		_, err = s.db.ExecContext(ctx, `
+		_, err = s.exec(ctx, `
 			UPDATE memory_relations
 			SET relation = ?, confidence = ?, reason = ?,
 			    judgment_status = 'judged',
@@ -268,7 +269,7 @@ func (s *Store) JudgeBySemantic(ctx context.Context, sourceID, targetID, relatio
 
 	// insert nuevo
 	syncID := newSyncID()
-	_, err = s.db.ExecContext(ctx, `
+	_, err = s.exec(ctx, `
 		INSERT INTO memory_relations
 			(sync_id, source_id, target_id, relation, confidence, reason,
 			 judgment_status, marked_by_kind, marked_by_actor, marked_by_model,
@@ -305,7 +306,13 @@ func (s *Store) ListRelations(ctx context.Context, project, status string, limit
 
 	args = append(args, limit, offset)
 
-	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`
+	// s.query (no s.db.QueryContext) — aplica rebind de "?" a "$N" para
+	// Postgres. Sin esto, ListRelations contra un primary Postgres real
+	// siempre fallaba con syntax error (pgx no acepta "?"), lo que en
+	// DualStore.ListRelations se traduce en un markDown espurio y caída
+	// permanente al buffer — exactamente el bug que hacía que mem_doctor
+	// mostrara los conteos del buffer SQLite en vez del primary real.
+	rows, err := s.query(ctx, fmt.Sprintf(`
 		SELECT r.id, r.sync_id, r.source_id, r.target_id, r.relation, r.judgment_status,
 		       COALESCE(r.reason,''), COALESCE(r.confidence,0), COALESCE(r.marked_by_actor,''),
 		       COALESCE(r.marked_by_kind,''), r.created_at, r.updated_at,
@@ -355,7 +362,9 @@ func (s *Store) GetRelationStats(ctx context.Context, project string) (*Relation
 		ByRelation: make(map[string]int),
 	}
 
-	rows, err := s.db.QueryContext(ctx, `
+	// s.query (no s.db.QueryContext) — mismo motivo que ListRelations más
+	// abajo: sin rebind, "?" rompe contra Postgres con syntax error.
+	rows, err := s.query(ctx, `
 		SELECT r.judgment_status, r.relation, COUNT(*) as n
 		FROM memory_relations r
 		LEFT JOIN observations src ON src.sync_id = r.source_id
@@ -405,7 +414,7 @@ func (s *Store) insertRelationPending(ctx context.Context, sourceID, targetID st
 }
 
 func (s *Store) relationExists(ctx context.Context, sourceID, targetID string) (bool, error) {
-	row := s.db.QueryRowContext(ctx, `
+	row := s.queryRow(ctx, `
 		SELECT COUNT(*) FROM memory_relations
 		WHERE deleted_at IS NULL
 		  AND ((source_id = ? AND target_id = ?) OR (source_id = ? AND target_id = ?))`,
@@ -417,7 +426,7 @@ func (s *Store) relationExists(ctx context.Context, sourceID, targetID string) (
 }
 
 func (s *Store) findRelationBetween(ctx context.Context, sourceID, targetID string) (*Relation, error) {
-	row := s.db.QueryRowContext(ctx, `
+	row := s.queryRow(ctx, `
 		SELECT id, sync_id FROM memory_relations
 		WHERE deleted_at IS NULL
 		  AND ((source_id = ? AND target_id = ?) OR (source_id = ? AND target_id = ?))
@@ -435,8 +444,33 @@ func (s *Store) findRelationBetween(ctx context.Context, sourceID, targetID stri
 	return &r, nil
 }
 
+// RelationVerbBetween busca si ya existe una relación activa (en cualquier
+// dirección) entre dos sync_ids y devuelve su verbo. Usado por la
+// consolidación de duplicados (kronos gc --consolidate) para no reprocesar un
+// par que una corrida anterior ya marcó como supersedes — sin este chequeo,
+// correr --no-dry-run dos veces subiría revision_count del superviviente en
+// cada corrida.
+func (s *Store) RelationVerbBetween(ctx context.Context, sourceID, targetID string) (string, bool, error) {
+	row := s.queryRow(ctx, `
+		SELECT relation FROM memory_relations
+		WHERE deleted_at IS NULL
+		  AND ((source_id = ? AND target_id = ?) OR (source_id = ? AND target_id = ?))
+		LIMIT 1`,
+		sourceID, targetID, targetID, sourceID,
+	)
+	var rel string
+	err := row.Scan(&rel)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return rel, true, nil
+}
+
 func (s *Store) getRelationByID(ctx context.Context, id int64) (*Relation, error) {
-	row := s.db.QueryRowContext(ctx, `
+	row := s.queryRow(ctx, `
 		SELECT id, sync_id, source_id, target_id, relation, judgment_status,
 		       COALESCE(reason,''), COALESCE(evidence,''), COALESCE(confidence,0),
 		       COALESCE(marked_by_actor,''), COALESCE(marked_by_kind,''), COALESCE(marked_by_model,''),

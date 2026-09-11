@@ -109,6 +109,14 @@ func (s *Server) LocalStoreForJudge() *store.Store {
 	return s.localStore()
 }
 
+// RelationsDetector expone el detector de relaciones/embeddings del server —
+// usado por el daemon para correr la consolidación periódica de duplicados
+// (ver runConsolidationLoop en cmd/kronos/serve.go) sin abrir un segundo
+// vector store. nil cuando embeddings está deshabilitado.
+func (s *Server) RelationsDetector() *relations.Detector {
+	return s.rel
+}
+
 // Call invoca un handler de tool directamente — usado en tests.
 func (s *Server) Call(ctx context.Context, tool string, arguments map[string]any) (*mcpgo.CallToolResult, error) {
 	req := mcpgo.CallToolRequest{}

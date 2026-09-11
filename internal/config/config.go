@@ -26,13 +26,13 @@ type DBConfig struct {
 }
 
 type EmbeddingsConfig struct {
-	Provider        string `json:"provider"`
-	OllamaURL       string `json:"ollama_url"`
-	OllamaModel     string `json:"ollama_model"`
-	OllamaLLMModel  string `json:"ollama_llm_model"`
-	OllamaDocker    bool   `json:"ollama_docker"`
-	AnthropicKey    string `json:"anthropic_api_key"`
-	OpenAIKey       string `json:"openai_api_key"`
+	Provider       string `json:"provider"`
+	OllamaURL      string `json:"ollama_url"`
+	OllamaModel    string `json:"ollama_model"`
+	OllamaLLMModel string `json:"ollama_llm_model"`
+	OllamaDocker   bool   `json:"ollama_docker"`
+	AnthropicKey   string `json:"anthropic_api_key"`
+	OpenAIKey      string `json:"openai_api_key"`
 }
 
 type MemoryConfig struct {
@@ -67,15 +67,76 @@ type LLMConfig struct {
 	BaseURL  string `json:"base_url"`
 }
 
+// CoreConfig controla el bloque siempre-presente que SessionStart inyecta
+// en cada arranque (ver internal/hooks/core_block.go). Existe porque medido
+// en producción, mem_search se llamó 60 veces sobre 9.470 prompts (0,63%):
+// pedirle al agente que consulte memoria a mano no funciona, así que el
+// contexto relevante tiene que aparecer solo, acotado por presupuesto.
+type CoreConfig struct {
+	Enabled           bool `json:"enabled"`
+	CharsLimit        int  `json:"chars_limit"`
+	MaxItems          int  `json:"max_items"`
+	IncludeCheckpoint bool `json:"include_checkpoint"`
+}
+
+// RecallConfig controla la inyección por relevancia en UserPromptSubmit (ver
+// internal/hooks/prompt_submit.go): mismo hallazgo que motivó CoreConfig
+// (60/9.470 mem_search, 0,63%), pero acá el disparador es cada prompt del
+// usuario en vez de solo el arranque de sesión — así que el presupuesto por
+// defecto es más chico y el timeout más corto, porque esto corre con mucha
+// más frecuencia y no puede arriesgar la latencia del turno.
+//
+// Estrategia FTS-first (ver runRecall): medido en esta máquina, un embedding
+// síncrono contra Ollama tarda entre 800ms y 6s según carga (Ollama
+// compartido con el daemon y otras sesiones), mientras que FTS5 sobre las
+// observaciones existentes responde en milisegundos, sin red ni LLM de por
+// medio. Por eso FTS corre siempre primero (determinístico y rápido) y el
+// camino vectorial es una mejora oportunista que solo se paga cuando FTS no
+// encontró nada — nunca el camino principal.
+type RecallConfig struct {
+	Enabled       bool    `json:"enabled"`
+	K             int     `json:"k"`
+	MinSimilarity float64 `json:"min_similarity"`
+	CharsLimit    int     `json:"chars_limit"`
+	TimeoutMs     int     `json:"timeout_ms"`
+	// FallbackFTS habilita el camino FTS (siempre el primero en intentarse).
+	// Default true — desactivarlo solo tiene sentido para aislar el camino
+	// vectorial en pruebas.
+	FallbackFTS bool `json:"fallback_fts"`
+	// MinFTSResults es la cantidad mínima de resultados FTS para darlos por
+	// buenos e inyectarlos sin gastar un embedding. Default 1: cualquier
+	// match FTS real es preferible a esperar un round-trip a Ollama.
+	MinFTSResults int `json:"min_fts_results"`
+	// VectorOnFTSMiss controla si se intenta el camino vectorial cuando FTS
+	// no llega a MinFTSResults. Default true — es la mejora oportunista, pero
+	// puede desactivarse en máquinas donde ni vale la pena el intento.
+	VectorOnFTSMiss bool `json:"vector_on_fts_miss"`
+}
+
+// ConsolidationConfig controla la consolidación de duplicados semánticos
+// (kronos gc --consolidate y su equivalente periódico en el daemon). Apagada
+// por defecto: fusionar observaciones es una operación de juicio, no algo
+// para dejar corriendo solo sin que nadie mire el reporte primero.
+type ConsolidationConfig struct {
+	Enabled            bool    `json:"enabled"`
+	IntervalHours      int     `json:"interval_hours"`
+	Threshold          float64 `json:"threshold"`
+	RequireSameType    bool    `json:"require_same_type"`
+	RequireSameProject bool    `json:"require_same_project"`
+}
+
 type Config struct {
-	DB         DBConfig         `json:"db"`
-	Embeddings EmbeddingsConfig `json:"embeddings"`
-	LLM        LLMConfig        `json:"llm"`
-	Memory     MemoryConfig     `json:"memory"`
-	Nudge      NudgeConfig      `json:"nudge"`
-	Secrets    SecretsConfig    `json:"secrets"`
-	Export     ExportConfig     `json:"export"`
-	APIToken   string           `json:"api_token"`
+	DB            DBConfig            `json:"db"`
+	Embeddings    EmbeddingsConfig    `json:"embeddings"`
+	LLM           LLMConfig           `json:"llm"`
+	Memory        MemoryConfig        `json:"memory"`
+	Nudge         NudgeConfig         `json:"nudge"`
+	Secrets       SecretsConfig       `json:"secrets"`
+	Export        ExportConfig        `json:"export"`
+	Core          CoreConfig          `json:"core"`
+	Recall        RecallConfig        `json:"recall"`
+	Consolidation ConsolidationConfig `json:"consolidation"`
+	APIToken      string              `json:"api_token"`
 }
 
 // Default returns a Config populated with sensible defaults.
@@ -105,6 +166,45 @@ func Default() Config {
 		},
 		Export: ExportConfig{
 			DefaultOutput: "~/kronos-vault",
+		},
+		Core: CoreConfig{
+			Enabled:           true,
+			CharsLimit:        2000,
+			MaxItems:          12,
+			IncludeCheckpoint: true,
+		},
+		Recall: RecallConfig{
+			Enabled: true,
+			K:       3,
+			// 0.62: punto medio medido entre los dos mejores matches
+			// legítimos reales contra Ollama/nomic-embed-text en esta
+			// máquina — "alfresco aspect remove" dio 0.62 y "postgres
+			// driver" dio 0.66 de similitud coseno real. El default
+			// anterior (0.72) nunca disparaba con ninguno de los dos: quedaba
+			// por encima de ambos, así que el camino vectorial jamás se
+			// activaba en la práctica.
+			MinSimilarity: 0.62,
+			CharsLimit:    600,
+			// 1500ms: el round-trip real de un embedding contra Ollama en
+			// esta máquina midió entre 800ms y 6s (4-6 cores, Ollama
+			// compartido con el daemon y otras sesiones de trabajo). Con
+			// FTS-first, este timeout ya no acota el camino principal (FTS
+			// responde en milisegundos) — es presupuesto exclusivo para el
+			// intento vectorial oportunista que solo se paga si FTS no
+			// encontró nada. 800ms (default anterior, pensado para acotar
+			// TODO el recall) cortaba ese intento casi siempre antes de que
+			// Ollama llegara a responder.
+			TimeoutMs:       1500,
+			FallbackFTS:     true,
+			MinFTSResults:   1,
+			VectorOnFTSMiss: true,
+		},
+		Consolidation: ConsolidationConfig{
+			Enabled:            false,
+			IntervalHours:      24,
+			Threshold:          0.93,
+			RequireSameType:    true,
+			RequireSameProject: true,
 		},
 	}
 }
@@ -176,6 +276,12 @@ func Load() (Config, error) {
 	}
 	if cfg.Export.DefaultOutput == "" {
 		cfg.Export.DefaultOutput = def.Export.DefaultOutput
+	}
+	if cfg.Consolidation.IntervalHours == 0 {
+		cfg.Consolidation.IntervalHours = def.Consolidation.IntervalHours
+	}
+	if cfg.Consolidation.Threshold == 0 {
+		cfg.Consolidation.Threshold = def.Consolidation.Threshold
 	}
 
 	return cfg, nil
@@ -320,6 +426,91 @@ func (c *Config) Set(key, value string) error {
 			c.Export.Enabled = parseBool(value)
 		default:
 			return fmt.Errorf("unknown export field: %s", field)
+		}
+	case "core":
+		switch field {
+		case "enabled":
+			c.Core.Enabled = parseBool(value)
+		case "chars_limit":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return fmt.Errorf("invalid int: %s", value)
+			}
+			c.Core.CharsLimit = n
+		case "max_items":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return fmt.Errorf("invalid int: %s", value)
+			}
+			c.Core.MaxItems = n
+		case "include_checkpoint":
+			c.Core.IncludeCheckpoint = parseBool(value)
+		default:
+			return fmt.Errorf("unknown core field: %s", field)
+		}
+	case "recall":
+		switch field {
+		case "enabled":
+			c.Recall.Enabled = parseBool(value)
+		case "k":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return fmt.Errorf("invalid int: %s", value)
+			}
+			c.Recall.K = n
+		case "min_similarity":
+			n, err := strconv.ParseFloat(value, 64)
+			if err != nil {
+				return fmt.Errorf("invalid float: %s", value)
+			}
+			c.Recall.MinSimilarity = n
+		case "chars_limit":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return fmt.Errorf("invalid int: %s", value)
+			}
+			c.Recall.CharsLimit = n
+		case "timeout_ms":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return fmt.Errorf("invalid int: %s", value)
+			}
+			c.Recall.TimeoutMs = n
+		case "fallback_fts":
+			c.Recall.FallbackFTS = parseBool(value)
+		case "min_fts_results":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return fmt.Errorf("invalid int: %s", value)
+			}
+			c.Recall.MinFTSResults = n
+		case "vector_on_fts_miss":
+			c.Recall.VectorOnFTSMiss = parseBool(value)
+		default:
+			return fmt.Errorf("unknown recall field: %s", field)
+		}
+	case "consolidation":
+		switch field {
+		case "enabled":
+			c.Consolidation.Enabled = parseBool(value)
+		case "interval_hours":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return fmt.Errorf("invalid int: %s", value)
+			}
+			c.Consolidation.IntervalHours = n
+		case "threshold":
+			f, err := strconv.ParseFloat(value, 64)
+			if err != nil {
+				return fmt.Errorf("invalid float: %s", value)
+			}
+			c.Consolidation.Threshold = f
+		case "require_same_type":
+			c.Consolidation.RequireSameType = parseBool(value)
+		case "require_same_project":
+			c.Consolidation.RequireSameProject = parseBool(value)
+		default:
+			return fmt.Errorf("unknown consolidation field: %s", field)
 		}
 	case "root":
 		switch field {
