@@ -15,9 +15,24 @@ import (
 // en vez de solo su fallback.
 func initRepoWithCommit(t *testing.T, dir string) {
 	t.Helper()
+	initRepoWithCommitAt(t, dir, time.Now())
+}
+
+// initRepoWithCommitAt es igual pero con fecha explícita de autor y committer.
+// Se usa para los tests que comparan commits por antigüedad: con la fecha real
+// del reloj, dos commits seguidos pueden quedar en el mismo segundo (o el reloj
+// puede saltar hacia atrás bajo carga) y el test se vuelve una moneda al aire —
+// pasó con TestDetectFull_MultipleChildren_PicksMostRecentCommit.
+func initRepoWithCommitAt(t *testing.T, dir string, when time.Time) {
+	t.Helper()
+	fecha := when.Format(time.RFC3339)
 	run := func(args ...string) {
 		cmd := exec.Command("git", args...)
 		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_DATE="+fecha,
+			"GIT_COMMITTER_DATE="+fecha,
+		)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
@@ -236,9 +251,11 @@ func TestDetectFull_MultipleChildren_PicksMostRecentCommit(t *testing.T) {
 		t.Skip("git no disponible en PATH")
 	}
 	parent := t.TempDir()
-	initRepoWithCommit(t, filepath.Join(parent, "repo-old"))
-	time.Sleep(1100 * time.Millisecond) // %ct es en segundos — asegurar timestamps distintos
-	initRepoWithCommit(t, filepath.Join(parent, "repo-new"))
+	// Fechas explícitas, con una hora de diferencia: la antigüedad no puede
+	// depender del reloj real (dos commits seguidos caen en el mismo segundo, y
+	// bajo carga el reloj puede hasta saltar hacia atrás).
+	initRepoWithCommitAt(t, filepath.Join(parent, "repo-old"), time.Now().Add(-2*time.Hour))
+	initRepoWithCommitAt(t, filepath.Join(parent, "repo-new"), time.Now().Add(-1*time.Hour))
 
 	r := project.DetectFull(parent)
 	if r.Project != "repo-new" {

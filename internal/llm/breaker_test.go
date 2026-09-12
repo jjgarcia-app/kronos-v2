@@ -31,14 +31,30 @@ func TestBreaker_AllowsUntilThreshold(t *testing.T) {
 	}
 }
 
-func TestBreaker_ReopensAfterMinutesElapsed(t *testing.T) {
+// TestBreaker_OpensRightAfterFailure fija que un fallo abre el breaker con el
+// umbral en 1. Antes esto vivía dentro de TestBreaker_ReopensAfterMinutesElapsed
+// con openFor=10ms, y en una máquina cargada el proceso se queda sin CPU más de
+// 10ms entre el fallo y la aserción: el breaker ya había expirado y el test
+// fallaba sin ningún bug. La ventana acá es de un minuto — no puede expirar.
+func TestBreaker_OpensRightAfterFailure(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "breaker.json")
-	b := llm.NewBreaker(path, 1, 10*time.Millisecond)
+	b := llm.NewBreaker(path, 1, time.Minute)
 
 	b.RecordFailure(errors.New("timeout"))
 	if b.Allow() {
 		t.Fatal("debería estar abierto justo después del fallo")
 	}
+}
+
+// TestBreaker_ReopensAfterMinutesElapsed cubre la otra mitad: pasado openFor, el
+// breaker vuelve a permitir. Acá esperar de más nunca invalida el test (al
+// revés que en la aserción de "abierto", donde una ventana corta es una moneda
+// al aire bajo carga), así que la ventana puede ser chica.
+func TestBreaker_ReopensAfterMinutesElapsed(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "breaker.json")
+	b := llm.NewBreaker(path, 1, 10*time.Millisecond)
+
+	b.RecordFailure(errors.New("timeout"))
 	time.Sleep(30 * time.Millisecond)
 	if !b.Allow() {
 		t.Fatal("debería permitir de nuevo tras pasar openFor")
