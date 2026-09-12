@@ -218,15 +218,35 @@ type RecallConfig struct {
 	// "postgres driver"— no tienen margen para exigir 2, así que ahí alcanza
 	// con 1. Default 2.
 	MinMatchedTerms int `json:"min_matched_terms"`
-	// TotalBudgetMs es el techo real de tiempo para FTS+vector combinados en
-	// runRecall — reemplaza en la práctica a TimeoutMs como el límite que de
-	// verdad importa (se usa min(TimeoutMs, TotalBudgetMs) como deadline de
-	// ctx2, así que TimeoutMs sigue siendo compatible para quien ya lo tenía
-	// customizado más chico). Medido: un hook de UserPromptSubmit que tarda
-	// 1500ms en el peor caso (default viejo de TimeoutMs) se siente en cada
-	// prompt del usuario; 400ms es el punto donde FTS (milisegundos) más un
-	// intento vectorial corto todavía entran sin que el turno se note lento.
+	// TotalBudgetMs es el techo real de tiempo para la fase vectorial en
+	// runRecall. Medido: un hook de UserPromptSubmit que tarda 1500ms en el
+	// peor caso (default viejo de TimeoutMs) se siente en cada prompt del
+	// usuario; 400ms es el punto donde un intento vectorial corto todavía
+	// entra sin que el turno se note lento.
+	//
+	// Hasta la separación de fases (ver FTSTimeoutMs) este campo acotaba
+	// FTS+vector combinados compartiendo un mismo deadline — bug real medido:
+	// con la máquina cargada (load 9-10) el deadline se agotaba DURANTE la
+	// FTS (barata, ~2ms en Postgres) y el recall devolvía vacío aunque la FTS
+	// ya tuviera el resultado en la mano. Ahora FTS tiene su propio
+	// presupuesto (FTSTimeoutMs) y este campo acota solo lo que sigue después
+	// — el camino vectorial oportunista, que es el caro (round-trip a Ollama,
+	// 800ms-6s medidos). Regla: lo que ya se tiene, se entrega — el
+	// presupuesto solo puede recortar trabajo adicional, nunca descartar lo
+	// ya obtenido (ver runRecall/gatherRecallCandidates en
+	// internal/hooks/prompt_submit.go).
 	TotalBudgetMs int `json:"total_budget_ms"`
+	// FTSTimeoutMs es el presupuesto de tiempo EXCLUSIVO de la fase FTS,
+	// separado de TotalBudgetMs (que ahora acota solo la fase vectorial).
+	// Medido: la FTS sobre Postgres local responde en ~2ms; 1000ms (default)
+	// deja margen de sobra incluso con la máquina saturada (load 9-10), sin
+	// arriesgar nunca el resultado ya obtenido por compartir deadline con el
+	// round-trip a Ollama, que es la fase realmente cara. TimeoutMs (el
+	// límite histórico compartido) sigue actuando como techo de
+	// compatibilidad si alguien lo tenía configurado más chico que este
+	// default — nunca se relaja, solo se puede volver más estricto (ver
+	// capByLegacyTimeout en internal/hooks/prompt_submit.go).
+	FTSTimeoutMs int `json:"fts_timeout_ms"`
 	// VectorProbeMs es el umbral de la sonda barata que decide si el
 	// proveedor de embeddings "viene caliente": si la ÚLTIMA llamada real
 	// (ver embeddings.VectorStore.LastLatency) tardó más que esto, se asume
@@ -333,6 +353,21 @@ type DigestConfig struct {
 	// propio presupuesto, más chico — ver cmd/kronos/hook.go). Default
 	// 20000 (20s).
 	LLMTimeoutMs int `json:"llm_timeout_ms"`
+	// MaxFacts: cuántos hechos estructurados (bugfix/decision/config/etc,
+	// ver internal/hooks/digest.go) puede promover a observaciones propias
+	// UNA sola actualización de digest. Motivado porque el digest hoy guarda
+	// todo el conocimiento aprendido en una sesión enterrado en un único
+	// item tipo "session" — justo el tipo que la inyección automática limita
+	// a uno (core.max_session_items / recall.max_session_items) — así que
+	// ese conocimiento nunca reaparece como tal en sesiones futuras. Default
+	// 3: alcanza para lo importante de una ventana de ~20 minutos
+	// (digest.interval_minutes) sin inundar la base de hechos marginales.
+	MaxFacts int `json:"max_facts"`
+	// PromoteFacts activa la extracción de hechos estructurados en la misma
+	// llamada LLM que ya genera la prosa del digest (no agrega una llamada
+	// nueva). Default true; false vuelve al comportamiento anterior (solo el
+	// digest tipo "session", sin observaciones individuales).
+	PromoteFacts bool `json:"promote_facts"`
 }
 
 type Config struct {
@@ -433,6 +468,7 @@ func Default() Config {
 			VectorOnFTSMiss: true,
 			MinMatchedTerms: 2,
 			TotalBudgetMs:   400,
+			FTSTimeoutMs:    1000,
 			VectorProbeMs:   300,
 			MaxSessionItems: 1,
 		},
@@ -461,6 +497,8 @@ func Default() Config {
 			IntervalMinutes: 20,
 			LLMEnrichment:   true,
 			LLMTimeoutMs:    20000,
+			MaxFacts:        3,
+			PromoteFacts:    true,
 		},
 	}
 }
@@ -895,6 +933,12 @@ func (c *Config) Set(key, value string) error {
 				return fmt.Errorf("invalid int: %s", value)
 			}
 			c.Recall.TotalBudgetMs = n
+		case "fts_timeout_ms":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return fmt.Errorf("invalid int: %s", value)
+			}
+			c.Recall.FTSTimeoutMs = n
 		case "vector_probe_ms":
 			n, err := strconv.Atoi(value)
 			if err != nil {
@@ -995,6 +1039,14 @@ func (c *Config) Set(key, value string) error {
 				return fmt.Errorf("invalid int: %s", value)
 			}
 			c.Digest.LLMTimeoutMs = n
+		case "max_facts":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return fmt.Errorf("invalid int: %s", value)
+			}
+			c.Digest.MaxFacts = n
+		case "promote_facts":
+			c.Digest.PromoteFacts = parseBool(value)
 		default:
 			return fmt.Errorf("unknown digest field: %s", field)
 		}

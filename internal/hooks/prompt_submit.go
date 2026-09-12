@@ -22,15 +22,17 @@ import (
 // nudgeEveryN prompts without a save triggers a format-reminder nudge.
 const nudgeEveryN = 15
 
-// recallTimeoutFallback se usa solo si config.Recall.TimeoutMs viene en 0 —
-// no debería pasar (config.Default() ya pone 1500ms), pero un config.json
-// editado a mano no puede dejar el hook sin límite de tiempo.
-const recallTimeoutFallback = 1500 * time.Millisecond
-
-// totalBudgetFallback: mismo caso que recallTimeoutFallback pero para
-// TotalBudgetMs (config.Default() pone 400ms) — un config.json a mano no
-// puede dejar el presupuesto TOTAL de FTS+vector sin techo.
+// totalBudgetFallback se usa solo si config.Recall.TotalBudgetMs viene en 0
+// (config.Default() ya pone 400ms) — un config.json editado a mano no puede
+// dejar la fase vectorial sin presupuesto.
 const totalBudgetFallback = 400 * time.Millisecond
+
+// ftsTimeoutFallback se usa solo si config.Recall.FTSTimeoutMs viene en 0
+// (config.Default() ya pone 1000ms) — mismo caso que totalBudgetFallback
+// pero para la fase FTS. 1000ms: la FTS local mide ~2ms en Postgres, así que
+// esto es margen de sobra para una máquina saturada, nunca el límite real en
+// la práctica.
+const ftsTimeoutFallback = 1000 * time.Millisecond
 
 // trivialPromptPatterns son saludos/charla que no ameritan gastar ni FTS ni
 // un embedding — caso real medido: "hola qué hora es" trajo ruido (una
@@ -319,13 +321,13 @@ func storePromptCache(key string, items []recallItem) {
 // en el camino vectorial (800ms-6s medidos contra Ollama en esta máquina).
 // Ahora: (1) la query FTS se arma por OR con una guarda de precisión
 // (min_matched_terms verificado contra título+contenido, no lo que reporta
-// el motor) en vez de exigir AND; (2) un presupuesto TOTAL (TotalBudgetMs,
-// default 400ms) acota FTS+vector combinados, nunca solo uno de los dos; (3)
-// antes de pagar un embedding nuevo, una sonda barata (VectorProbeMs) mira
-// cuánto tardó la ÚLTIMA llamada real del proveedor y se saltea el intento
-// si viene lento, en vez de arriesgar todo el presupuesto en un round-trip
-// que probablemente no vuelva a tiempo. Ver config.RecallConfig para el
-// detalle de knobs y mediciones.
+// el motor) en vez de exigir AND; (2) FTS y vector tienen presupuestos
+// SEPARADOS (FTSTimeoutMs / TotalBudgetMs, ver gatherRecallCandidates) en vez
+// de compartir un mismo deadline; (3) antes de pagar un embedding nuevo, una
+// sonda barata (VectorProbeMs) mira cuánto tardó la ÚLTIMA llamada real del
+// proveedor y se saltea el intento si viene lento, en vez de arriesgar todo
+// el presupuesto en un round-trip que probablemente no vuelva a tiempo. Ver
+// config.RecallConfig para el detalle de knobs y mediciones.
 //
 // Fail-open total (recover propio): un panic acá nunca debe tirar abajo
 // UserPromptSubmit — en el peor caso, el usuario se queda sin el bloque de
@@ -349,26 +351,16 @@ func runRecall(ctx context.Context, in Input, st store.Storer, vs *embeddings.Ve
 		return
 	}
 
-	// Presupuesto total (punto 2 de la recalibración): min(TimeoutMs,
-	// TotalBudgetMs). TimeoutMs sigue siendo compatible para quien ya lo
-	// tenía customizado más chico que el nuevo default de TotalBudgetMs —
-	// nunca se relaja el límite, solo se puede volver más estricto. FTS
-	// corre primero adentro del mismo ctx2 y el intento vectorial, si llega
-	// a intentarse, hereda lo que quede: nunca se excede el presupuesto
-	// total, sea cual sea la combinación de los dos caminos.
-	timeout := time.Duration(rc.TimeoutMs) * time.Millisecond
-	if timeout <= 0 {
-		timeout = recallTimeoutFallback
-	}
-	totalBudget := time.Duration(rc.TotalBudgetMs) * time.Millisecond
-	if totalBudget <= 0 {
-		totalBudget = totalBudgetFallback
-	}
-	if totalBudget < timeout {
-		timeout = totalBudget
-	}
-	ctx2, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
+	// Presupuestos separados por fase (fix real: con la máquina cargada,
+	// load 9-10, un deadline COMPARTIDO entre FTS y vector se agotaba
+	// durante la FTS misma — barata, ~2ms en Postgres — y el recall volvía
+	// vacío aunque la FTS ya tuviera el resultado en la mano). ftsTimeout
+	// acota solo st.Search; vectorBudget acota solo el intento vectorial —
+	// gatherRecallCandidates les da un context.WithTimeout propio a cada
+	// una, así que lo que la FTS ya devolvió nunca se pierde por lo que
+	// tarde (o falle) el camino vectorial después.
+	ftsTimeout := ftsTimeoutFor(rc)
+	vectorBudget := vectorBudgetFor(rc)
 
 	k := rc.K
 	if k <= 0 {
@@ -397,7 +389,7 @@ func runRecall(ctx context.Context, in Input, st store.Storer, vs *embeddings.Ve
 	cacheKey := promptCacheKey(st, projName, in.Prompt)
 	candidates, cached := loadPromptCache(cacheKey)
 	if !cached {
-		candidates = gatherRecallCandidates(ctx2, in.Prompt, st, vs, projName, pq, rc, k, minFTSResults)
+		candidates = gatherRecallCandidates(ctx, in.Prompt, st, vs, projName, pq, rc, k, minFTSResults, ftsTimeout, vectorBudget)
 		storePromptCache(cacheKey, candidates)
 	}
 
@@ -431,29 +423,82 @@ func runRecall(ctx context.Context, in Input, st store.Storer, vs *embeddings.Ve
 	_ = st.PersistInjectedIDs(ctx, in.SessionID, merged)
 }
 
+// ftsTimeoutFor resuelve config.RecallConfig.FTSTimeoutMs con su default
+// (ftsTimeoutFallback) y el techo de compatibilidad de TimeoutMs (ver
+// capByLegacyTimeout) — separado para que runRecall no repita el cálculo.
+func ftsTimeoutFor(rc config.RecallConfig) time.Duration {
+	t := time.Duration(rc.FTSTimeoutMs) * time.Millisecond
+	if t <= 0 {
+		t = ftsTimeoutFallback
+	}
+	return capByLegacyTimeout(t, rc)
+}
+
+// vectorBudgetFor resuelve config.RecallConfig.TotalBudgetMs (ahora exclusivo
+// de la fase vectorial, ver comentario del campo) con su default
+// (totalBudgetFallback) y el mismo techo de compatibilidad que ftsTimeoutFor.
+func vectorBudgetFor(rc config.RecallConfig) time.Duration {
+	t := time.Duration(rc.TotalBudgetMs) * time.Millisecond
+	if t <= 0 {
+		t = totalBudgetFallback
+	}
+	return capByLegacyTimeout(t, rc)
+}
+
+// capByLegacyTimeout aplica recall.timeout_ms — el límite compartido de antes
+// de separar FTS y vector en presupuestos propios — como techo de
+// compatibilidad: quien ya lo tenía configurado más chico que los nuevos
+// defaults por fase sigue con ese límite más estricto en cada fase. Nunca
+// relaja: si TimeoutMs no está seteado (<=0) o es más laxo que el default de
+// la fase, no cambia nada.
+func capByLegacyTimeout(phase time.Duration, rc config.RecallConfig) time.Duration {
+	legacy := time.Duration(rc.TimeoutMs) * time.Millisecond
+	if legacy > 0 && legacy < phase {
+		return legacy
+	}
+	return phase
+}
+
 // gatherRecallCandidates ejecuta la estrategia FTS-first + vector oportunista
 // y devuelve los candidatos que pasaron su guarda de precisión — SIN el
 // filtro de ya-inyectado, que aplica el caller (ver runRecall) fresco en cada
 // llamada, incluso cuando esta lista viene del cache por prompt normalizado.
-func gatherRecallCandidates(ctx2 context.Context, prompt string, st store.Storer, vs *embeddings.VectorStore, projName string, pq promptQuery, rc config.RecallConfig, k, minFTSResults int) []recallItem {
+//
+// ftsTimeout y vectorBudget son presupuestos INDEPENDIENTES, cada uno con su
+// propio context.WithTimeout derivado directamente de ctx (no encadenado uno
+// del otro): la regla "lo que ya se tiene, se entrega" se sostiene porque una
+// vez que la fase FTS terminó (con resultados o sin ellos), nada de lo que
+// pase después en la fase vectorial puede tocar candidates ya agregados —
+// están en la misma slice, pero la fase vectorial solo puede AGREGAR, nunca
+// truncar lo que ya está.
+func gatherRecallCandidates(ctx context.Context, prompt string, st store.Storer, vs *embeddings.VectorStore, projName string, pq promptQuery, rc config.RecallConfig, k, minFTSResults int, ftsTimeout, vectorBudget time.Duration) []recallItem {
 	var candidates []recallItem
 
 	// Estrategia 1 (siempre primero): FTS sobre las observaciones existentes
-	// — sin red, sin LLM, responde en milisegundos. Search ya cubre proyecto
-	// + global cuando Scope viene vacío (ver store.SearchParams). FallbackFTS
-	// gatea si este camino corre en absoluto (default true; false solo para
-	// aislar el camino vectorial en pruebas). Sin términos significativos
-	// (prompt de puras palabras cortas/stopwords) no hay query que armar —
-	// directo al vector.
+	// — sin red, sin LLM, responde en milisegundos (~2ms medidos en
+	// Postgres). Search ya cubre proyecto + global cuando Scope viene vacío
+	// (ver store.SearchParams). FallbackFTS gatea si este camino corre en
+	// absoluto (default true; false solo para aislar el camino vectorial en
+	// pruebas). Sin términos significativos (prompt de puras palabras
+	// cortas/stopwords) no hay query que armar — directo al vector.
 	if rc.FallbackFTS && len(pq.orTerms) > 0 {
 		needed := minMatchedTermsFor(len(pq.sigTerms), rc.MinMatchedTerms)
-		ftsRes, err := st.Search(ctx2, store.SearchParams{
+
+		ftsCtx, cancel := context.WithTimeout(ctx, ftsTimeout)
+		start := time.Now()
+		ftsRes, err := st.Search(ftsCtx, store.SearchParams{
 			Query:   pq.ftsQuery(),
 			Project: projName,
 			Limit:   k,
 		})
+		cancel()
 		if err != nil {
-			slog.Debug("runRecall: FTS error", "err", err)
+			if ftsCtx.Err() != nil {
+				slog.Debug("runRecall: fase FTS cortada por timeout",
+					"elapsed_ms", time.Since(start).Milliseconds(), "fts_timeout_ms", ftsTimeout.Milliseconds())
+			} else {
+				slog.Debug("runRecall: FTS error", "err", err)
+			}
 		}
 		for _, r := range ftsRes {
 			matched := countMatchedTerms(pq.sigTerms, r.Title, r.Content)
@@ -468,23 +513,25 @@ func gatherRecallCandidates(ctx2 context.Context, prompt string, st store.Storer
 	}
 
 	// Estrategia 2 (solo si FTS no alcanzó el mínimo): búsqueda vectorial
-	// oportunista, gateada por presupuesto Y por la sonda de proveedor
-	// caliente/frío antes de pagar el round-trip.
+	// oportunista, gateada por su propio presupuesto (independiente del de
+	// FTS) y por la sonda de proveedor caliente/frío antes de pagar el
+	// round-trip. Lo que candidates ya tiene de la fase FTS queda intacto sea
+	// cual sea el resultado de acá — esta fase solo puede agregar.
 	if len(candidates) < minFTSResults && rc.VectorOnFTSMiss && vs != nil {
-		if ctx2.Err() != nil {
-			slog.Debug("runRecall: sin presupuesto restante, se saltea el intento vectorial", "err", ctx2.Err())
-			return candidates
-		}
 		if last, ok := vs.LastLatency(); ok && last > vectorProbeThreshold(rc) {
 			slog.Debug("runRecall: proveedor de embeddings viene lento (sonda), se saltea el intento vectorial",
 				"last_latency_ms", last.Milliseconds(), "probe_ms", rc.VectorProbeMs)
 			return candidates
 		}
 
-		sims, err := vs.Similar(ctx2, prompt, k, 0, float32(rc.MinSimilarity))
+		vectorCtx, cancel := context.WithTimeout(ctx, vectorBudget)
+		defer cancel()
+		start := time.Now()
+		sims, err := vs.Similar(vectorCtx, prompt, k, 0, float32(rc.MinSimilarity))
 		if err != nil {
-			if ctx2.Err() != nil {
-				slog.Debug("runRecall: presupuesto total agotado en el camino vectorial", "total_budget_ms", rc.TotalBudgetMs)
+			if vectorCtx.Err() != nil {
+				slog.Debug("runRecall: fase vectorial cortada por presupuesto",
+					"elapsed_ms", time.Since(start).Milliseconds(), "total_budget_ms", vectorBudget.Milliseconds())
 			} else {
 				slog.Debug("runRecall: vector search error", "err", err)
 			}
@@ -498,7 +545,7 @@ func gatherRecallCandidates(ctx2 context.Context, prompt string, st store.Storer
 			if seen[id] {
 				continue
 			}
-			obs, err := st.GetObservation(ctx2, s.ObsID)
+			obs, err := st.GetObservation(vectorCtx, s.ObsID)
 			if err != nil || obs == nil {
 				continue
 			}

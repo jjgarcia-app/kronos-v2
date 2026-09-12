@@ -723,10 +723,11 @@ func TestRunPromptSubmit_Timeout_ExitsClean(t *testing.T) {
 	realSt.CreateSession(ctx, "sess-timeout", "kronos-v2", cwd)
 	realSt.PersistInjectedIDs(ctx, "sess-timeout", []string{})
 
-	// Wrap con un Search que bloquea 3s — el timeout de config.Recall (default
-	// 1500ms) tiene que cortarlo bastante antes. Usar os.Getwd() como CWD
-	// asegura que project.Detect resuelva rápido vía git remote, así que la
-	// única demora real es el corte por el deadline de ctx2 en runRecall.
+	// Wrap con un Search que bloquea 3s — el timeout de la fase FTS
+	// (config.Recall.FTSTimeoutMs, default 1000ms) tiene que cortarlo bastante
+	// antes. Usar os.Getwd() como CWD asegura que project.Detect resuelva
+	// rápido vía git remote, así que la única demora real es el corte por el
+	// deadline de la fase FTS en gatherRecallCandidates.
 	st := &slowSearchStore{Storer: realSt}
 
 	in := hooks.Input{

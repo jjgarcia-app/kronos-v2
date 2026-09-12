@@ -442,12 +442,12 @@ func TestRunPromptSubmit_VectorProbe_HotAttemptsColdSkips(t *testing.T) {
 		if got := f.count(); got != callsAfterIndex {
 			t.Errorf("proveedor frío no debería haber intentado un embed nuevo para el prompt — antes %d, ahora %d", callsAfterIndex, got)
 		}
-		if elapsed > time.Second {
+		if elapsed > 10*time.Second {
 			// Igual que en el test de cache: la prueba determinista de que la
 			// sonda evitó el round-trip lento es que f.count() no cambió (arriba).
-			// Esta cota es un backstop para una regresión gruesa, no un
-			// presupuesto de latencia — bajo carga de suite, 300ms se superaba
-			// con el comportamiento correcto (450ms medidos con load >7).
+			// Esta cota es un backstop para una regresión gruesa (colgarse), no un
+			// presupuesto de latencia: la máquina cargada (load 9-10) hacía tardar
+			// 1.83 s al handler correcto, así que 300 ms y 1 s fallaban sin bug.
 			t.Errorf("elapsed=%v — la sonda debería evitar pagar el round-trip lento (500ms) por completo", elapsed)
 		}
 	})

@@ -90,3 +90,58 @@ func TestUpdateDigest_OllamaUnreachable_ReturnsError(t *testing.T) {
 		t.Fatal("esperaba error cuando Ollama es inalcanzable")
 	}
 }
+
+// TestUpdateDigest_ParsesFacts_SameCall confirma que "facts" se extrae de la
+// MISMA respuesta que "content" — ningún round-trip extra al backend (ver
+// Tarea B: la promoción de hechos no agrega una llamada nueva).
+func TestUpdateDigest_ParsesFacts_SameCall(t *testing.T) {
+	srv := ollamaGenerateStub(t, `{"content":"resumen","facts":[{"type":"bugfix","title":"t","content":"c"}]}`)
+	defer srv.Close()
+
+	c := llm.NewClient(srv.URL, "llama3.2:1b")
+	d, err := c.UpdateDigest(context.Background(), "", "excerpt")
+	if err != nil {
+		t.Fatalf("UpdateDigest: %v", err)
+	}
+	if len(d.Facts) != 1 || d.Facts[0].Type != "bugfix" || d.Facts[0].Title != "t" || d.Facts[0].Content != "c" {
+		t.Errorf("Facts = %+v", d.Facts)
+	}
+}
+
+// TestUpdateDigest_MalformedFacts_ContentSurvives confirma la tolerancia de
+// parseo: "facts" con una forma inesperada (acá, un string en vez de un
+// array de objetos) se descarta en silencio, pero Content sigue parseando
+// bien — el parseo de facts no debe poder tirar abajo lo que ya funcionaba.
+func TestUpdateDigest_MalformedFacts_ContentSurvives(t *testing.T) {
+	srv := ollamaGenerateStub(t, `{"content":"resumen valido","facts":"esto no es un array"}`)
+	defer srv.Close()
+
+	c := llm.NewClient(srv.URL, "llama3.2:1b")
+	d, err := c.UpdateDigest(context.Background(), "", "excerpt")
+	if err != nil {
+		t.Fatalf("UpdateDigest no debería fallar por facts malformado: %v", err)
+	}
+	if d.Content != "resumen valido" {
+		t.Errorf("Content = %q, want %q", d.Content, "resumen valido")
+	}
+	if d.Facts != nil {
+		t.Errorf("Facts = %+v, want nil (descartado por parseo inválido)", d.Facts)
+	}
+}
+
+// TestUpdateDigest_NoFactsField_ContentParsesFine confirma compatibilidad
+// hacia atrás: una respuesta sin "facts" (un modelo que no lo soporta, o un
+// stub de test viejo) sigue parseando Content normalmente, con Facts nil.
+func TestUpdateDigest_NoFactsField_ContentParsesFine(t *testing.T) {
+	srv := ollamaGenerateStub(t, `{"content":"resumen sin facts"}`)
+	defer srv.Close()
+
+	c := llm.NewClient(srv.URL, "llama3.2:1b")
+	d, err := c.UpdateDigest(context.Background(), "", "excerpt")
+	if err != nil {
+		t.Fatalf("UpdateDigest: %v", err)
+	}
+	if d.Content != "resumen sin facts" || d.Facts != nil {
+		t.Errorf("d = %+v", d)
+	}
+}
