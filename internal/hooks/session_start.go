@@ -218,10 +218,9 @@ func printBacklogWarnings(ctx context.Context, st store.Storer, proj string) {
 			fmt.Printf("[kronos] aviso: %d operaciones sin sincronizar a PostgreSQL (correr `kronos sync --pg-flush` o revisar `mem_doctor`)\n", pending)
 		}
 	}
-	// st.ListRelations (no localStoreOf(st)): ListRelations ya es
-	// primary-first en DualStore (ver internal/store/dual_store.go), igual
-	// que el resto de las lecturas de Storer. Antes esto pasaba por
-	// localStoreOf para llegar a mano al buffer SQLite local, sin importar
+	// st.ListRelations: ListRelations ya es primary-first en DualStore (ver
+	// internal/store/dual_store.go), igual que el resto de las lecturas de
+	// Storer. Antes esto pasaba por el buffer SQLite local a mano, sin importar
 	// el estado del primary — mismo bug real que hacía que mem_doctor
 	// mostrara 3 relaciones pendientes del buffer que ya no existían (o
 	// nunca existieron) en el primary.
@@ -231,14 +230,7 @@ func printBacklogWarnings(ctx context.Context, st store.Storer, proj string) {
 	}
 }
 
-// localStoreOf resuelve el *store.Store SQLite subyacente sea cual sea el
-// backend — mismo patrón que internal/mcp.Server.localStore().
-func localStoreOf(st store.Storer) *store.Store {
-	if ls, ok := st.(interface{ LocalStore() *store.Store }); ok {
-		return ls.LocalStore()
-	}
-	if s, ok := st.(*store.Store); ok {
-		return s
-	}
-	return nil
-}
+// localStoreOf resolvía el *store.Store SQLite subyacente sea cual sea el
+// backend (mismo patrón que internal/mcp.Server.localStore()). Se eliminó
+// cuando ListRelations pasó a ser primary-first: no quedaba ningún llamador y
+// el linter del CI lo marcaba como código muerto.

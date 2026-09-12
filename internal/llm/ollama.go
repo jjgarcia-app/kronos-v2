@@ -195,19 +195,20 @@ func (c *Client) recordUsage(result string) {
 // generación (cortacircuitos, guardián de carga) y arma la función a diferir
 // que reporta el resultado final al cortacircuitos y al contador de uso —
 // saca a las tres llamadas (JudgeRelation, ExtractFinding, UpdateDigest) de
-// tener que repetir el mismo bookkeeping. Si abort != nil, el caller debe
-// devolverlo sin llamar al backend ni diferir finish (que viene nil en ese
-// caso): el salteo ya quedó contado acá.
-func (c *Client) beginGeneration() (abort error, finish func(err error)) {
+// tener que repetir el mismo bookkeeping. Devuelve la función primero y el
+// error último (ST1008): si abort != nil, el caller debe devolverlo sin llamar
+// al backend ni diferir finish (que viene nil en ese caso): el salteo ya quedó
+// contado acá.
+func (c *Client) beginGeneration() (finish func(err error), abort error) {
 	if c.breaker != nil && !c.breaker.Allow() {
 		c.recordUsage(UsageResultSkippedBreaker)
-		return errBreakerOpen, nil
+		return nil, errBreakerOpen
 	}
 	if err := c.checkLoadGuard(); err != nil {
 		c.recordUsage(UsageResultSkippedLoad)
-		return err, nil
+		return nil, err
 	}
-	return nil, func(err error) {
+	return func(err error) {
 		if c.breaker != nil {
 			if err != nil {
 				c.breaker.RecordFailure(err)
@@ -220,7 +221,7 @@ func (c *Client) beginGeneration() (abort error, finish func(err error)) {
 		} else {
 			c.recordUsage(UsageResultOK)
 		}
-	}
+	}, nil
 }
 
 // logLoadSkipOnce loguea en debug que se salteó una llamada por carga alta —
@@ -322,7 +323,7 @@ func (b *ollamaBackend) generate(ctx context.Context, prompt string, numPredict 
 // two observations that have already been screened by cosine similarity.
 // Returns nil (no error) when Ollama is unavailable — callers should fall back gracefully.
 func (c *Client) JudgeRelation(ctx context.Context, aTitle, aContent, bTitle, bContent string, similarity float32) (result *JudgeResult, err error) {
-	abort, finish := c.beginGeneration()
+	finish, abort := c.beginGeneration()
 	if abort != nil {
 		return nil, abort
 	}
@@ -371,7 +372,7 @@ type Finding struct {
 // the model finds nothing, same fail-open contract as JudgeRelation: callers
 // treat both "Ollama unavailable" and "nothing found" as "skip, don't save".
 func (c *Client) ExtractFinding(ctx context.Context, excerpt string) (finding *Finding, err error) {
-	abort, finish := c.beginGeneration()
+	finish, abort := c.beginGeneration()
 	if abort != nil {
 		return nil, abort
 	}
@@ -452,7 +453,7 @@ type digestRawResponse struct {
 // (captura antes de compactar, fallback local del hook) pasan 0 a propósito
 // para no alargar una espera que sí le importa al usuario.
 func (c *Client) UpdateDigest(ctx context.Context, previousDigest, excerpt string, timeout time.Duration) (update *DigestUpdate, err error) {
-	abort, finish := c.beginGeneration()
+	finish, abort := c.beginGeneration()
 	if abort != nil {
 		return nil, abort
 	}

@@ -176,7 +176,7 @@ func TestTailFacts_LargeTranscript_OnlyReadsTail(t *testing.T) {
 	// > 8MB para forzar el camino de lectura por ventana desde el final.
 	filler := strings.Repeat("x", 2000)
 	for i := 0; i < 5000; i++ {
-		sb.WriteString(fmt.Sprintf(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"relleno %d %s"}]}}`, i, filler))
+		fmt.Fprintf(&sb, `{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"relleno %d %s"}]}}`, i, filler)
 		sb.WriteString("\n")
 	}
 	sb.WriteString(`{"type":"user","message":{"role":"user","content":"prompt final real, el que importa"}}` + "\n")

@@ -561,23 +561,19 @@ func gatherRecallCandidates(ctx context.Context, prompt string, st store.Storer,
 	return candidates
 }
 
-// rankAndDedupeRecallItems ordena por (términos matcheados, similitud) —
-// mismo criterio para candidatos de FTS y de vector, así ninguno le gana al
-// otro solo por venir de un camino distinto — y colapsa títulos solapados
-// ≥70% en tokens significativos (mismas función y umbral que usa el bloque
-// core para deduplicar — ver internal/hooks/core_block.go, titleOverlap /
-// titleOverlapThreshold / significantTitleTokens), antes de cortar en k.
-func rankAndDedupeRecallItems(items []recallItem, k int) []recallItem {
-	return rankAndDedupeRecallItemsOpts(items, k, defaultRecallMaxSessionItems)
-}
-
 // defaultRecallMaxSessionItems: cuántos resúmenes de sesión puede inyectar el
 // recall por prompt. Uno: sirven para "¿qué veníamos haciendo?", no para
 // desplazar el conocimiento real del proyecto.
 const defaultRecallMaxSessionItems = 1
 
-// rankAndDedupeRecallItemsOpts es la versión con tope de sesión configurable
-// (ver config.RecallConfig.MaxSessionItems). Los items de tipo session van
+// rankAndDedupeRecallItemsOpts ordena por (términos matcheados, similitud) —
+// mismo criterio para candidatos de FTS y de vector, así ninguno le gana al
+// otro solo por venir de un camino distinto — y colapsa títulos solapados
+// ≥70% en tokens significativos (mismas función y umbral que usa el bloque
+// core para deduplicar — ver internal/hooks/core_block.go, titleOverlap /
+// titleOverlapThreshold / significantTitleTokens), antes de cortar en k.
+// Es la versión con tope de sesión configurable (ver
+// config.RecallConfig.MaxSessionItems). Los items de tipo session van
 // SIEMPRE al final, sin importar cuántos términos matcheen: medido contra la
 // base real (2026-09-11), type=session era el tipo MÁS inyectado de todos (76
 // items, ~19% del total inyectado), y un resumen de sesión que gana por

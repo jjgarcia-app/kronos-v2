@@ -10,19 +10,15 @@ import (
 	"github.com/jjgarcia-app/kronos-v2/internal/project"
 )
 
-// initRepoWithCommit crea un repo git real en dir con un commit vacío,
-// para poder ejercitar la heurística real de pickMostLikely (git log -1)
-// en vez de solo su fallback.
-func initRepoWithCommit(t *testing.T, dir string) {
-	t.Helper()
-	initRepoWithCommitAt(t, dir, time.Now())
-}
-
-// initRepoWithCommitAt es igual pero con fecha explícita de autor y committer.
-// Se usa para los tests que comparan commits por antigüedad: con la fecha real
-// del reloj, dos commits seguidos pueden quedar en el mismo segundo (o el reloj
-// puede saltar hacia atrás bajo carga) y el test se vuelve una moneda al aire —
-// pasó con TestDetectFull_MultipleChildren_PicksMostRecentCommit.
+// initRepoWithCommitAt crea un repo git real en dir con un commit vacío (para
+// poder ejercitar la heurística real de pickMostLikely, git log -1, en vez de
+// solo su fallback), con fecha explícita de autor y committer. Es la única
+// variante: los tests que comparan commits por antigüedad necesitan fechas
+// distintas —con la fecha real del reloj dos commits seguidos caen en el mismo
+// segundo, o el reloj puede saltar hacia atrás bajo carga, y el test se vuelve
+// una moneda al aire (pasó con
+// TestDetectFull_MultipleChildren_PicksMostRecentCommit)— y los que no comparan
+// pasan time.Now().
 func initRepoWithCommitAt(t *testing.T, dir string, when time.Time) {
 	t.Helper()
 	fecha := when.Format(time.RFC3339)
