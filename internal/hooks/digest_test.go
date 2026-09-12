@@ -760,11 +760,11 @@ func TestMaybeUpdateDigest_EnrichmentTimesOut_SavesDeterministicAndMarksPending(
 	path := writeTestTranscript(t, []string{
 		`{"type":"user","message":{"role":"user","content":"investigando un pico de carga que hizo fallar el enriquecimiento del digest, con texto de sobra para pasar el umbral mínimo del excerpt que exige TailExcerpt antes de siquiera intentar la llamada al LLM"}}`,
 	})
-	srv, _ := slowOllamaStub(t, 200*time.Millisecond, `{"content":"no debería llegar a usarse"}`)
+	srv, _ := slowOllamaStub(t, 500*time.Millisecond, `{"content":"no debería llegar a usarse"}`)
 	defer srv.Close()
 
 	cfg := config.Default()
-	cfg.Digest.TimeoutMs = 20 // imposible de cumplir con el stub de 200ms — fuerza el timeout
+	cfg.Digest.TimeoutMs = 5 // imposible de cumplir con el stub de 500ms — fuerza el timeout con margen amplio
 	llmClient := llm.NewClient(srv.URL, "llama3.2:1b")
 
 	if err := hooks.MaybeUpdateDigest(ctx, st, cfg, llmClient, "s1", path, "/tmp/kronos-v2", false); err != nil {
@@ -860,21 +860,41 @@ func TestMaybeUpdateDigest_RetrySucceeds_PromotesFactAndClearsPending(t *testing
 	}
 }
 
+// erroringOllamaStub responde 500 SIN demora — a diferencia de
+// slowOllamaStub (pensado para el timeout), esta falla es determinística:
+// no depende de que un timeout gane una carrera contra la máquina bajo
+// carga, así que sirve para contar llamadas con un tope exacto sin
+// aserciones de reloj.
+func erroringOllamaStub(t *testing.T) (*httptest.Server, *int) {
+	t.Helper()
+	calls := 0
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	return srv, &calls
+}
+
 // TestMaybeUpdateDigest_RetriesExhausted_StopsAttemptingLLM confirma el
 // tope: tras digestPendingMaxAttempts fallos consecutivos del enriquecimiento
 // para la misma sesión, se deja de reintentar antes de que toque el
 // intervalo normal de nuevo — no tiene sentido seguir golpeando un LLM que
-// ya falló repetidas veces para esta sesión puntual.
+// ya falló repetidas veces para esta sesión puntual. La falla es
+// determinística (500 instantáneo, ver erroringOllamaStub), no un timeout:
+// contar llamadas exactas no debe depender de ganarle una carrera al reloj
+// en una máquina bajo carga.
 func TestMaybeUpdateDigest_RetriesExhausted_StopsAttemptingLLM(t *testing.T) {
 	isolatedDataDir(t)
 	st := newTestStore(t)
 	ctx := context.Background()
 
-	srv, calls := slowOllamaStub(t, 100*time.Millisecond, `{"content":"no debería llegar a usarse"}`)
+	srv, calls := erroringOllamaStub(t)
 	defer srv.Close()
 
 	cfg := config.Default()
-	cfg.Digest.TimeoutMs = 10 // imposible de cumplir — cada intento falla por timeout
 	llmClient := llm.NewClient(srv.URL, "llama3.2:1b")
 
 	path := writeTestTranscript(t, []string{
