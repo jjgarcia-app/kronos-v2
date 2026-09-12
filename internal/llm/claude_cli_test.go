@@ -28,7 +28,7 @@ func TestClaudeCLIBackend_Generate_ReturnsTrimmedStdout(t *testing.T) {
 	cli := writeFakeCLI(t, "#!/bin/sh\ncat\n")
 	b := &claudeCLIBackend{cliPath: cli, model: "haiku", configDir: t.TempDir(), timeout: 5 * time.Second}
 
-	out, err := b.generate(context.Background(), `{"hello":"world"}`, 100)
+	out, err := b.generate(context.Background(), `{"hello":"world"}`, 100, 0)
 	if err != nil {
 		t.Fatalf("generate: %v", err)
 	}
@@ -48,7 +48,7 @@ echo "$CLAUDE_CONFIG_DIR"
 	configDir := t.TempDir()
 	b := &claudeCLIBackend{cliPath: cli, model: "haiku", configDir: configDir, timeout: 5 * time.Second}
 
-	out, err := b.generate(context.Background(), "prompt", 100)
+	out, err := b.generate(context.Background(), "prompt", 100, 0)
 	if err != nil {
 		t.Fatalf("generate: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestClaudeCLIBackend_Generate_NonZeroExit_ReturnsStderrInError(t *testing.T
 	cli := writeFakeCLI(t, "#!/bin/sh\necho 'auth inválida' >&2\nexit 1\n")
 	b := &claudeCLIBackend{cliPath: cli, model: "haiku", configDir: t.TempDir(), timeout: 5 * time.Second}
 
-	_, err := b.generate(context.Background(), "prompt", 100)
+	_, err := b.generate(context.Background(), "prompt", 100, 0)
 	if err == nil {
 		t.Fatal("esperaba error por exit code != 0")
 	}
@@ -75,7 +75,7 @@ func TestClaudeCLIBackend_Generate_TimeoutKillsProcess(t *testing.T) {
 	b := &claudeCLIBackend{cliPath: cli, model: "haiku", configDir: t.TempDir(), timeout: 100 * time.Millisecond}
 
 	start := time.Now()
-	_, err := b.generate(context.Background(), "prompt", 100)
+	_, err := b.generate(context.Background(), "prompt", 100, 0)
 	elapsed := time.Since(start)
 
 	if err == nil {
@@ -89,6 +89,48 @@ func TestClaudeCLIBackend_Generate_TimeoutKillsProcess(t *testing.T) {
 	// lo matáramos.
 	if elapsed > 3*time.Second {
 		t.Errorf("el proceso debería haberse matado cerca del timeout (100ms + WaitDelay), tardó %s", elapsed)
+	}
+}
+
+// TestClaudeCLIBackend_Generate_TimeoutParamOverridesShorter confirma que el
+// parámetro timeout de generate() pisa el timeout con el que se construyó el
+// backend cuando es MÁS CORTO — necesario para que un caller pueda acotar
+// una llamada puntual sin tocar el timeout general del cliente.
+func TestClaudeCLIBackend_Generate_TimeoutParamOverridesShorter(t *testing.T) {
+	cli := writeFakeCLI(t, "#!/bin/sh\nsleep 5\necho deberia-no-verse\n")
+	// b.timeout=5s (generoso) pero se pide timeout=100ms para esta llamada.
+	b := &claudeCLIBackend{cliPath: cli, model: "haiku", configDir: t.TempDir(), timeout: 5 * time.Second}
+
+	start := time.Now()
+	_, err := b.generate(context.Background(), "prompt", 100, 100*time.Millisecond)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("esperaba timeout — el parámetro debería haber acotado la llamada a 100ms, no a los 5s del backend")
+	}
+	if !strings.Contains(err.Error(), "timeout") {
+		t.Errorf("el error debería mencionar el timeout, got: %v", err)
+	}
+	if elapsed > 3*time.Second {
+		t.Errorf("debería haberse cortado cerca de 100ms (override), tardó %s", elapsed)
+	}
+}
+
+// TestClaudeCLIBackend_Generate_TimeoutParamOverridesLonger confirma el caso
+// que motiva digest.timeout_ms: un caller puede pedir MÁS tiempo del que
+// tiene configurado el backend (llm.timeout_ms) para una llamada puntual —
+// acá el backend tiene 100ms (moriría con el timeout general) pero la
+// llamada pide 3s, tiempo de sobra para que el script de 300ms termine bien.
+func TestClaudeCLIBackend_Generate_TimeoutParamOverridesLonger(t *testing.T) {
+	cli := writeFakeCLI(t, "#!/bin/sh\nsleep 0.3\necho listo\n")
+	b := &claudeCLIBackend{cliPath: cli, model: "haiku", configDir: t.TempDir(), timeout: 100 * time.Millisecond}
+
+	out, err := b.generate(context.Background(), "prompt", 100, 3*time.Second)
+	if err != nil {
+		t.Fatalf("con el timeout pisado a 3s no debería fallar por el b.timeout de 100ms: %v", err)
+	}
+	if out != "listo" {
+		t.Errorf("out = %q", out)
 	}
 }
 
@@ -127,7 +169,7 @@ func TestClaudeCLIBackend_Generate_RecordsLastFailureOnError(t *testing.T) {
 	failurePath := filepath.Join(t.TempDir(), "llm-last-failure.json")
 	b := &claudeCLIBackend{cliPath: cli, model: "haiku", configDir: t.TempDir(), timeout: 5 * time.Second, lastFailurePath: failurePath}
 
-	if _, err := b.generate(context.Background(), "prompt", 100); err == nil {
+	if _, err := b.generate(context.Background(), "prompt", 100, 0); err == nil {
 		t.Fatal("esperaba error")
 	}
 

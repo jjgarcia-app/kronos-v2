@@ -108,3 +108,37 @@ func TestCheckAutoDigest_BreakerOpen_WarnsWithDetail(t *testing.T) {
 type errTestBreaker struct{}
 
 func (errTestBreaker) Error() string { return "fallo simulado de prueba" }
+
+// TestCheckAutoDigest_PendingEnrichment_ReportsCount confirma que un
+// enriquecimiento por LLM pendiente de reintento (ver internal/llm.
+// DigestPending, tema del reintento tras timeout) se ve en la línea del
+// digest de `kronos doctor` — sin esto, un pico de carga que hizo fallar el
+// enriquecimiento queda invisible hasta que alguien nota que faltan hechos
+// tipados.
+func TestCheckAutoDigest_PendingEnrichment_ReportsCount(t *testing.T) {
+	cfg := digestTestConfig(t)
+	dataDir, err := platform.DataDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending := llm.NewDigestPending(llm.DefaultDigestPendingPath(dataDir))
+	pending.MarkFailed("s1")
+	pending.MarkFailed("s2")
+
+	report := doctor.Run(context.Background(), cfg)
+	check := findCheck(t, report, "Digest automático")
+	if !strings.Contains(check.Detail, "enriquecimiento pendiente: 2 sesiones") {
+		t.Errorf("Detail = %q, esperaba mención de 2 sesiones con enriquecimiento pendiente", check.Detail)
+	}
+}
+
+// TestCheckAutoDigest_NoPending_OmitsDetail confirma que sin pendientes no
+// se agrega ruido a la línea del digest.
+func TestCheckAutoDigest_NoPending_OmitsDetail(t *testing.T) {
+	cfg := digestTestConfig(t)
+	report := doctor.Run(context.Background(), cfg)
+	check := findCheck(t, report, "Digest automático")
+	if strings.Contains(check.Detail, "enriquecimiento pendiente") {
+		t.Errorf("Detail = %q, no debería mencionar pendientes sin ninguno", check.Detail)
+	}
+}

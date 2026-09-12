@@ -75,8 +75,12 @@ type claudeCLIBackend struct {
 	lastFailurePath string
 }
 
-func (b *claudeCLIBackend) generate(ctx context.Context, prompt string, _ int) (string, error) {
-	genCtx, cancel := context.WithTimeout(ctx, b.timeout)
+func (b *claudeCLIBackend) generate(ctx context.Context, prompt string, _ int, timeout time.Duration) (string, error) {
+	effectiveTimeout := b.timeout
+	if timeout > 0 {
+		effectiveTimeout = timeout
+	}
+	genCtx, cancel := context.WithTimeout(ctx, effectiveTimeout)
 	defer cancel()
 
 	// --output-format text: nada de JSON envolvente que parsear del lado del
@@ -112,7 +116,7 @@ func (b *claudeCLIBackend) generate(ctx context.Context, prompt string, _ int) (
 	recordLastFailure(b.lastFailurePath, claudeCLIProvider, kind, advice)
 
 	if timedOut {
-		return "", fmt.Errorf("claude cli: excedió el timeout de %s — %s", b.timeout, advice)
+		return "", fmt.Errorf("claude cli: excedió el timeout de %s — %s", effectiveTimeout, advice)
 	}
 	return "", fmt.Errorf("claude cli (%s) falló [%s]: %s — %w — stderr: %s",
 		b.cliPath, kind, advice, runErr, truncate(strings.TrimSpace(stderr.String()), 500))

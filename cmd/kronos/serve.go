@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -184,6 +185,20 @@ func buildMCPServer(ctx context.Context, cfg config.Config, st store.Storer, dat
 // redirectLogsToFile manda stdout/stderr del proceso a un archivo — usado en
 // modo daemon, donde no hay consola que lea nada. Rotación simple: si el
 // archivo ya pesa más de 10MB, se corre a .1 antes de abrir el nuevo.
+//
+// Bug real (medido con el binario desplegado v2.18.14): reasignar la
+// variable os.Stderr de acá no alcanza para que los WARN del daemon
+// (abstención por falta de credenciales de Claude Code, timeout del LLM,
+// ver internal/llm) terminen en daemon.log. El logger por default de
+// log/slog se arma una sola vez, en un init() del propio paquete que corre
+// ANTES de este código (al arrancar el binario) — ese handler ya capturó el
+// *os.File que era os.Stderr en ese momento, y reasignar la variable después
+// no lo cambia: sigue escribiendo al stderr original del proceso, que en
+// modo daemon (detached, sin consola) nadie lee. Por eso el logger se arma
+// de nuevo acá, apuntando directo al archivo ya abierto — con
+// slog.NewTextHandler(f, nil) se reproduce el mismo formato y nivel
+// (TextHandler, Info) que traía el handler por default, solo que sí escribe
+// donde dice daemon.log.
 func redirectLogsToFile(path string) error {
 	const maxSize = 10 * 1024 * 1024
 	if info, err := os.Stat(path); err == nil && info.Size() > maxSize {
@@ -195,6 +210,7 @@ func redirectLogsToFile(path string) error {
 	}
 	os.Stdout = f
 	os.Stderr = f
+	slog.SetDefault(slog.New(slog.NewTextHandler(f, nil)))
 	return nil
 }
 

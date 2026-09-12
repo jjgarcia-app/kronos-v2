@@ -57,7 +57,32 @@ func checkAutoDigest(ctx context.Context, cfg config.Config) Check {
 
 	detail += " | " + llmProviderStatus(cfg)
 
+	if pendingDetail := digestPendingDetail(); pendingDetail != "" {
+		detail += " | " + pendingDetail
+	}
+
 	return Check{Name: "Digest automático", Detail: detail, Status: status}
+}
+
+// digestPendingDetail reporta cuántas sesiones tienen un enriquecimiento por
+// LLM pendiente de reintento (ver internal/llm.DigestPending) — sin esto, un
+// pico de carga que hace fallar el enriquecimiento (ver
+// internal/hooks.MaybeUpdateDigest) queda invisible hasta que alguien nota
+// que faltan hechos tipados. No es una cuota ni un bloqueo, solo
+// información: "" si no se pudo resolver el data dir o no hay pendientes.
+func digestPendingDetail() string {
+	dataDir, err := platform.DataDir()
+	if err != nil {
+		return ""
+	}
+	n := llm.NewDigestPending(llm.DefaultDigestPendingPath(dataDir)).Count()
+	if n == 0 {
+		return ""
+	}
+	if n == 1 {
+		return "enriquecimiento pendiente: 1 sesión"
+	}
+	return fmt.Sprintf("enriquecimiento pendiente: %d sesiones", n)
 }
 
 // llmProviderStatus arma el fragmento "proveedor: X, modelo: Y[, guardián de

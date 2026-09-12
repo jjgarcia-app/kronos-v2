@@ -29,10 +29,11 @@ const totalBudgetFallback = 400 * time.Millisecond
 
 // ftsTimeoutFallback se usa solo si config.Recall.FTSTimeoutMs viene en 0
 // (config.Default() ya pone 1000ms) — mismo caso que totalBudgetFallback
-// pero para la fase FTS. 1000ms: la FTS local mide ~2ms en Postgres, así que
-// esto es margen de sobra para una máquina saturada, nunca el límite real en
-// la práctica.
-const ftsTimeoutFallback = 1000 * time.Millisecond
+// pero para la fase FTS. 5000ms: la FTS local mide ~2ms en Postgres, así que
+// esto es margen para una máquina saturada (bajo load 9-15 con 1000ms un test
+// del recall seguía fallando porque la fase se cortaba y el bloque salía
+// vacío); el límite real en la práctica nunca se toca.
+const ftsTimeoutFallback = 5000 * time.Millisecond
 
 // trivialPromptPatterns son saludos/charla que no ameritan gastar ni FTS ni
 // un embedding — caso real medido: "hola qué hora es" trajo ruido (una
