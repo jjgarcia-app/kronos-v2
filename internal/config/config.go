@@ -348,11 +348,17 @@ type DigestConfig struct {
 	// determinística (útil para máquinas donde el LLM local no sirve, o
 	// para desactivar el costo de Ollama sin perder el digest).
 	LLMEnrichment bool `json:"llm"`
-	// LLMTimeoutMs acota cuánto puede tardar el intento de enriquecimiento
-	// por LLM en el daemon (los procesos de hook de vida corta usan su
-	// propio presupuesto, más chico — ver cmd/kronos/hook.go). Default
-	// 20000 (20s).
-	LLMTimeoutMs int `json:"llm_timeout_ms"`
+	// TimeoutMs acota cuánto puede tardar el intento de enriquecimiento por
+	// LLM en la actualización periódica del digest, que corre async en el
+	// daemon (ver internal/hooks.MaybeUpdateDigest / internal/server/
+	// prompt_submit.go) — deliberadamente MÁS ALTO que llm.timeout_ms (30s)
+	// porque nada del lado del usuario espera este resultado. Medido en
+	// producción: con la máquina a load ~5,7 la llamada real tardó 9-18s,
+	// pero en un pico de carga (~9) superó los 30s de llm.timeout_ms y el
+	// enriquecimiento se perdía ese ciclo. Default 60000 (60s). Los caminos
+	// interactivos (captura antes de compactar, fallback local del hook)
+	// siguen usando llm.timeout_ms — ahí sí importa no demorar al usuario.
+	TimeoutMs int `json:"timeout_ms"`
 	// MaxFacts: cuántos hechos estructurados (bugfix/decision/config/etc,
 	// ver internal/hooks/digest.go) puede promover a observaciones propias
 	// UNA sola actualización de digest. Motivado porque el digest hoy guarda
@@ -496,7 +502,7 @@ func Default() Config {
 			Enabled:         true,
 			IntervalMinutes: 20,
 			LLMEnrichment:   true,
-			LLMTimeoutMs:    20000,
+			TimeoutMs:       60000,
 			MaxFacts:        3,
 			PromoteFacts:    true,
 		},
@@ -1033,12 +1039,12 @@ func (c *Config) Set(key, value string) error {
 			c.Digest.IntervalMinutes = n
 		case "llm":
 			c.Digest.LLMEnrichment = parseBool(value)
-		case "llm_timeout_ms":
+		case "timeout_ms":
 			n, err := strconv.Atoi(value)
 			if err != nil {
 				return fmt.Errorf("invalid int: %s", value)
 			}
-			c.Digest.LLMTimeoutMs = n
+			c.Digest.TimeoutMs = n
 		case "max_facts":
 			n, err := strconv.Atoi(value)
 			if err != nil {

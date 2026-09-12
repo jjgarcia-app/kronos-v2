@@ -9,6 +9,7 @@ import (
 
 	"github.com/jjgarcia-app/kronos-v2/internal/config"
 	"github.com/jjgarcia-app/kronos-v2/internal/llm"
+	"github.com/jjgarcia-app/kronos-v2/internal/platform"
 	"github.com/jjgarcia-app/kronos-v2/internal/project"
 	"github.com/jjgarcia-app/kronos-v2/internal/secrets"
 	"github.com/jjgarcia-app/kronos-v2/internal/store"
@@ -53,12 +54,54 @@ func digestInterval(cfg config.Config) time.Duration {
 	return time.Duration(minutes) * time.Minute
 }
 
+// digestDefaultTimeoutMs es el fallback cuando cfg.Digest.TimeoutMs no está
+// seteado (config vieja, o Digest{} zero-value en un test) — mismo valor que
+// el default de config.Default().Digest.TimeoutMs.
+const digestDefaultTimeoutMs = 60000
+
+// DigestEnrichTimeout expone el presupuesto que MaybeUpdateDigest le da al
+// intento de enriquecimiento por LLM (digest.timeout_ms, default 60s) en la
+// actualización periódica (force=false) — la que corre async en el daemon
+// (ver internal/server/prompt_submit.go) y puede permitirse esperar más que
+// el resto de las llamadas de generación porque nada del lado del usuario
+// depende de su resultado. internal/server/prompt_submit.go la usa para
+// dimensionar el timeout de la goroutine que envuelve la llamada completa,
+// así ese límite externo no corta la espera antes de que digest.timeout_ms
+// tenga chance de vencer. Los caminos interactivos (captura antes de
+// compactar, fallback local del hook) llaman a MaybeUpdateDigest con
+// force=true y NO pasan por este timeout — usan el general de llm.timeout_ms.
+func DigestEnrichTimeout(cfg config.Config) time.Duration {
+	ms := cfg.Digest.TimeoutMs
+	if ms <= 0 {
+		ms = digestDefaultTimeoutMs
+	}
+	return time.Duration(ms) * time.Millisecond
+}
+
+// digestPendingStore resuelve el almacén de reintentos de enriquecimiento
+// pendientes (ver internal/llm.DigestPending) contra el data dir real — nil
+// si no se pudo resolver, lo que es inofensivo porque todos sus métodos son
+// nil-safe (se comportan como "sin pendientes"/no-op, ver digest_pending.go).
+func digestPendingStore() *llm.DigestPending {
+	dataDir, err := platform.DataDir()
+	if err != nil {
+		return nil
+	}
+	return llm.NewDigestPending(llm.DefaultDigestPendingPath(dataDir))
+}
+
 // IsDigestDue chequea, sin tocar el LLM ni leer el transcript, si
 // corresponde intentar actualizar el digest de una sesión — barato (una
-// lectura a la base), pensado para llamarse en cada prompt sin costo real.
+// lectura a la base más un archivo chico), pensado para llamarse en cada
+// prompt sin costo real. Una sesión con un enriquecimiento pendiente de
+// reintento (ver MaybeUpdateDigest) está due sin importar el intervalo
+// normal, para que el reintento no tenga que esperar a que venza de nuevo.
 func IsDigestDue(ctx context.Context, st store.Storer, cfg config.Config, sessionID, cwd string) bool {
 	if sessionID == "" || !cfg.Digest.Enabled {
 		return false
+	}
+	if digestPendingStore().Due(sessionID) {
+		return true
 	}
 	proj := project.Detect(cwd)
 	existing, err := st.GetByTopicKey(ctx, proj.Name, digestTopicKey(sessionID))
@@ -87,7 +130,16 @@ func IsDigestDue(ctx context.Context, st store.Storer, cfg config.Config, sessio
 // runPreCompactHook / handlePreCompactCapture): justo antes de que el
 // transcript completo desaparezca es el único momento donde vale la pena
 // refrescar aunque hayan pasado menos minutos que digestInterval desde la
-// última actualización.
+// última actualización. Estos caminos son interactivos (le importan al
+// usuario, no corren desacoplados en el daemon): el enriquecimiento por LLM
+// que disparan usa el timeout general (llm.timeout_ms), no digest.timeout_ms
+// — ver el comentario de DigestEnrichTimeout.
+//
+// Un enriquecimiento pendiente de reintento (ver DigestPending) también
+// salta digestInterval, igual que force — sin esperar a que venza de nuevo,
+// el reintento ocurre en la primera oportunidad. A diferencia de force, este
+// caso SÍ usa digest.timeout_ms: el reintento sigue siendo la actualización
+// periódica async del daemon, solo que adelantada.
 //
 // Fail-open en cada paso: nunca debe interrumpir el hot path de
 // UserPromptSubmit por esto. llmClient puede ser nil (Ollama no disponible,
@@ -99,13 +151,15 @@ func MaybeUpdateDigest(ctx context.Context, st store.Storer, cfg config.Config, 
 
 	proj := project.Detect(cwd)
 	topicKey := digestTopicKey(sessionID)
+	pending := digestPendingStore()
 
 	existing, err := st.GetByTopicKey(ctx, proj.Name, topicKey)
 	if err != nil {
 		return nil
 	}
-	if !force && existing != nil && time.Since(existing.UpdatedAt) < digestInterval(cfg) {
-		return nil // todavía no toca
+	retryingEnrichment := !force && pending.Due(sessionID)
+	if !force && !retryingEnrichment && existing != nil && time.Since(existing.UpdatedAt) < digestInterval(cfg) {
+		return nil // todavía no toca, y no hay un reintento de enriquecimiento esperando
 	}
 
 	tailFacts, _ := transcript.TailFacts(transcriptPath, digestMaxEvents)
@@ -118,14 +172,26 @@ func MaybeUpdateDigest(ctx context.Context, st store.Storer, cfg config.Config, 
 	var facts []llm.DigestFact
 
 	if cfg.Digest.LLMEnrichment && llmClient != nil {
+		enrichTimeout := time.Duration(0) // 0 = timeout general (llm.timeout_ms) — camino interactivo (force)
+		if !force {
+			enrichTimeout = DigestEnrichTimeout(cfg)
+		}
 		// Misma llamada, mismo round-trip: update.Facts viene de la MISMA
 		// respuesta del LLM que ya genera la prosa (ver
 		// llm.Client.UpdateDigest) — no se agrega una llamada nueva, así que
 		// el contador de uso sigue subiendo en 1 por actualización de
 		// digest, no en 2.
-		if update := tryDigestLLMEnrichment(ctx, llmClient, existing, transcriptPath, sessionID); update != nil {
+		update, failed := tryDigestLLMEnrichment(ctx, llmClient, existing, transcriptPath, sessionID, enrichTimeout)
+		switch {
+		case update != nil:
 			content = update.Content + "\n\n" + deterministic
 			facts = update.Facts
+			pending.Clear(sessionID)
+		case failed:
+			// No se pierde nada: el determinístico se guarda igual más abajo.
+			// Queda anotado para reintentar el enriquecimiento en el próximo
+			// MaybeUpdateDigest de esta sesión, sin esperar a digestInterval.
+			pending.MarkFailed(sessionID)
 		}
 	}
 
@@ -253,14 +319,20 @@ func ensureSession(ctx context.Context, st store.Storer, sessionID, proj, cwd st
 // tryDigestLLMEnrichment intenta la prosa (y los hechos standalone, misma
 // llamada — ver llm.Client.UpdateDigest) del LLM sobre el excerpt de texto
 // plano (TailExcerpt, no Facts de transcript.TailFacts, que es algo
-// distinto: hechos determinísticos del transcript, no del LLM) — devuelve
-// nil ante cualquier falla o respuesta vacía/sin cambios, logueando cada
-// falla real (motivo + tiempo transcurrido) para que un LLM roto deje de
-// fallar en silencio como pasaba antes.
-func tryDigestLLMEnrichment(ctx context.Context, llmClient *llm.Client, existing *store.Observation, transcriptPath, sessionID string) *llm.DigestUpdate {
+// distinto: hechos determinísticos del transcript, no del LLM).
+//
+// Devuelve (nil, false) cuando no había nada real que resumir todavía o el
+// LLM respondió pero sin nada nuevo que aportar — ninguno de los dos es una
+// falla, así que no ameritan anotar la sesión para reintento. Devuelve
+// (nil, true) únicamente cuando la llamada al LLM en sí falló o se pasó de
+// tiempo (timeout incluido) — MaybeUpdateDigest usa ese true para anotar el
+// enriquecimiento pendiente (ver DigestPending) y reintentarlo en la próxima
+// oportunidad. Cada falla real se loguea (motivo + tiempo transcurrido) para
+// que un LLM roto deje de fallar en silencio como pasaba antes.
+func tryDigestLLMEnrichment(ctx context.Context, llmClient *llm.Client, existing *store.Observation, transcriptPath, sessionID string, timeout time.Duration) (update *llm.DigestUpdate, failed bool) {
 	excerpt, err := transcript.TailExcerpt(transcriptPath, excerptMaxChars)
 	if err != nil || len(strings.TrimSpace(excerpt)) < minExcerptChars {
-		return nil // nada real que resumir en prosa todavía
+		return nil, false // nada real que resumir en prosa todavía
 	}
 
 	previous := ""
@@ -269,22 +341,22 @@ func tryDigestLLMEnrichment(ctx context.Context, llmClient *llm.Client, existing
 	}
 
 	start := time.Now()
-	update, err := llmClient.UpdateDigest(ctx, previous, excerpt)
+	result, err := llmClient.UpdateDigest(ctx, previous, excerpt, timeout)
 	elapsed := time.Since(start)
 	if err != nil {
 		slog.Warn("digest: la actualización por LLM falló, se guarda solo el determinístico",
 			"session_id", sessionID, "elapsed", elapsed, "error", err)
-		return nil
+		return nil, true
 	}
-	if update == nil {
-		return nil
+	if result == nil {
+		return nil, false
 	}
-	prose := strings.TrimSpace(update.Content)
+	prose := strings.TrimSpace(result.Content)
 	if prose == "" || prose == strings.TrimSpace(previous) {
-		return nil // el LLM dijo "nada nuevo" — no aporta sobre el determinístico
+		return nil, false // el LLM dijo "nada nuevo" — no aporta sobre el determinístico
 	}
-	update.Content = prose
-	return update
+	result.Content = prose
+	return result, false
 }
 
 // renderDeterministicDigest arma el digest sin LLM a partir de los hechos

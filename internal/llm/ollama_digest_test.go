@@ -32,7 +32,7 @@ func TestUpdateDigest_FirstUpdate_ParsesContent(t *testing.T) {
 	defer srv.Close()
 
 	c := llm.NewClient(srv.URL, "llama3.2:1b")
-	d, err := c.UpdateDigest(context.Background(), "", "assistant: encontré la causa raíz del bug")
+	d, err := c.UpdateDigest(context.Background(), "", "assistant: encontré la causa raíz del bug", 0)
 	if err != nil {
 		t.Fatalf("UpdateDigest: %v", err)
 	}
@@ -50,7 +50,7 @@ func TestUpdateDigest_IncludesPreviousDigestInPrompt(t *testing.T) {
 	defer srv.Close()
 
 	c := llm.NewClient(srv.URL, "llama3.2:1b")
-	if _, err := c.UpdateDigest(context.Background(), "resumen anterior real", "nuevo excerpt"); err != nil {
+	if _, err := c.UpdateDigest(context.Background(), "resumen anterior real", "nuevo excerpt", 0); err != nil {
 		t.Fatalf("UpdateDigest: %v", err)
 	}
 	if !strings.Contains(gotPrompt, "resumen anterior real") {
@@ -63,7 +63,7 @@ func TestUpdateDigest_EmptyContent_ReturnsNil(t *testing.T) {
 	defer srv.Close()
 
 	c := llm.NewClient(srv.URL, "llama3.2:1b")
-	d, err := c.UpdateDigest(context.Background(), "previo", "excerpt")
+	d, err := c.UpdateDigest(context.Background(), "previo", "excerpt", 0)
 	if err != nil {
 		t.Fatalf("UpdateDigest: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestUpdateDigest_MalformedInnerJSON_ReturnsError(t *testing.T) {
 	defer srv.Close()
 
 	c := llm.NewClient(srv.URL, "llama3.2:1b")
-	_, err := c.UpdateDigest(context.Background(), "previo", "excerpt")
+	_, err := c.UpdateDigest(context.Background(), "previo", "excerpt", 0)
 	if err == nil {
 		t.Fatal("esperaba error por JSON interno malformado")
 	}
@@ -85,7 +85,7 @@ func TestUpdateDigest_MalformedInnerJSON_ReturnsError(t *testing.T) {
 
 func TestUpdateDigest_OllamaUnreachable_ReturnsError(t *testing.T) {
 	c := llm.NewClient("http://127.0.0.1:1", "llama3.2:1b")
-	_, err := c.UpdateDigest(context.Background(), "previo", "excerpt")
+	_, err := c.UpdateDigest(context.Background(), "previo", "excerpt", 0)
 	if err == nil {
 		t.Fatal("esperaba error cuando Ollama es inalcanzable")
 	}
@@ -99,7 +99,7 @@ func TestUpdateDigest_ParsesFacts_SameCall(t *testing.T) {
 	defer srv.Close()
 
 	c := llm.NewClient(srv.URL, "llama3.2:1b")
-	d, err := c.UpdateDigest(context.Background(), "", "excerpt")
+	d, err := c.UpdateDigest(context.Background(), "", "excerpt", 0)
 	if err != nil {
 		t.Fatalf("UpdateDigest: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestUpdateDigest_MalformedFacts_ContentSurvives(t *testing.T) {
 	defer srv.Close()
 
 	c := llm.NewClient(srv.URL, "llama3.2:1b")
-	d, err := c.UpdateDigest(context.Background(), "", "excerpt")
+	d, err := c.UpdateDigest(context.Background(), "", "excerpt", 0)
 	if err != nil {
 		t.Fatalf("UpdateDigest no debería fallar por facts malformado: %v", err)
 	}
@@ -137,7 +137,7 @@ func TestUpdateDigest_NoFactsField_ContentParsesFine(t *testing.T) {
 	defer srv.Close()
 
 	c := llm.NewClient(srv.URL, "llama3.2:1b")
-	d, err := c.UpdateDigest(context.Background(), "", "excerpt")
+	d, err := c.UpdateDigest(context.Background(), "", "excerpt", 0)
 	if err != nil {
 		t.Fatalf("UpdateDigest: %v", err)
 	}

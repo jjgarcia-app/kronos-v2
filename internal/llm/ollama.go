@@ -51,8 +51,16 @@ type JudgeResult struct {
 // `claude -p`, ver claude_cli.go). Client no sabe ni le importa cuál de los
 // dos tiene: arma el prompt, respeta el cortacircuitos y el guardián de
 // carga, y delega el "conseguime texto crudo" acá.
+//
+// timeout permite pisar, para esta llamada puntual, el timeout con el que se
+// construyó el backend (llm.timeout_ms) — 0 deja el comportamiento de
+// siempre (el timeout del backend). Lo usa UpdateDigest para la actualización
+// periódica del digest, que corre async en el daemon y puede permitirse
+// esperar más que el resto de las llamadas de generación (ver
+// digest.timeout_ms en internal/hooks/digest.go) sin tocar el timeout
+// general del cliente.
 type generateBackend interface {
-	generate(ctx context.Context, prompt string, numPredict int) (string, error)
+	generate(ctx context.Context, prompt string, numPredict int, timeout time.Duration) (string, error)
 }
 
 // pinger es un backend que puede verificar su propia disponibilidad antes de
@@ -260,7 +268,12 @@ func (b *ollamaBackend) ping(ctx context.Context) error {
 	return nil
 }
 
-func (b *ollamaBackend) generate(ctx context.Context, prompt string, numPredict int) (string, error) {
+func (b *ollamaBackend) generate(ctx context.Context, prompt string, numPredict int, timeout time.Duration) (string, error) {
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
 	payload, err := json.Marshal(map[string]any{
 		"model":  b.model,
 		"prompt": prompt,
@@ -317,7 +330,7 @@ func (c *Client) JudgeRelation(ctx context.Context, aTitle, aContent, bTitle, bC
 
 	prompt := buildJudgePrompt(aTitle, aContent, bTitle, bContent, similarity)
 
-	raw, err := c.backend.generate(ctx, prompt, 200)
+	raw, err := c.backend.generate(ctx, prompt, 200, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -366,7 +379,7 @@ func (c *Client) ExtractFinding(ctx context.Context, excerpt string) (finding *F
 
 	prompt := buildExtractPrompt(excerpt)
 
-	raw, err := c.backend.generate(ctx, prompt, 400)
+	raw, err := c.backend.generate(ctx, prompt, 400, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -431,7 +444,14 @@ type digestRawResponse struct {
 //
 // Returns (nil, nil) on any failure or empty response — same fail-open
 // contract as ExtractFinding/JudgeRelation.
-func (c *Client) UpdateDigest(ctx context.Context, previousDigest, excerpt string) (update *DigestUpdate, err error) {
+//
+// timeout pisa, solo para esta llamada, el timeout general del backend
+// (llm.timeout_ms) — 0 deja el comportamiento de siempre. Lo pasa
+// internal/hooks.MaybeUpdateDigest con digest.timeout_ms cuando corre la
+// actualización periódica async en el daemon; los caminos interactivos
+// (captura antes de compactar, fallback local del hook) pasan 0 a propósito
+// para no alargar una espera que sí le importa al usuario.
+func (c *Client) UpdateDigest(ctx context.Context, previousDigest, excerpt string, timeout time.Duration) (update *DigestUpdate, err error) {
 	abort, finish := c.beginGeneration()
 	if abort != nil {
 		return nil, abort
@@ -440,7 +460,7 @@ func (c *Client) UpdateDigest(ctx context.Context, previousDigest, excerpt strin
 
 	prompt := buildDigestPrompt(previousDigest, excerpt)
 
-	raw, err := c.backend.generate(ctx, prompt, 600)
+	raw, err := c.backend.generate(ctx, prompt, 600, timeout)
 	if err != nil {
 		return nil, err
 	}

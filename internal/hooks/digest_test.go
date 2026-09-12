@@ -6,15 +6,34 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/jjgarcia-app/kronos-v2/internal/config"
 	"github.com/jjgarcia-app/kronos-v2/internal/hooks"
 	"github.com/jjgarcia-app/kronos-v2/internal/llm"
+	"github.com/jjgarcia-app/kronos-v2/internal/platform"
 	"github.com/jjgarcia-app/kronos-v2/internal/store"
 )
+
+// isolatedDataDir aísla platform.DataDir() (de donde cuelga el archivo de
+// reintentos pendientes de enriquecimiento, ver internal/llm.DigestPending)
+// con un HOME/XDG_DATA_HOME temporales — sin esto, estos tests leerían y
+// escribirían el estado real del usuario que corre la suite.
+func isolatedDataDir(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "data"))
+	dataDir, err := platform.DataDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dataDir
+}
 
 func ollamaDigestStub(t *testing.T, inner string) *httptest.Server {
 	t.Helper()
@@ -702,5 +721,177 @@ func TestMaybeUpdateDigest_MalformedFactsJSON_KeepsContent(t *testing.T) {
 	}
 	if obs == nil || !strings.Contains(obs.Content, "resumen en prosa pese a facts malformado") {
 		t.Errorf("el contenido en prosa debería haberse guardado igual, got: %+v", obs)
+	}
+}
+
+// --- Tema 1: reintento del enriquecimiento tras timeout/pico de carga ---
+
+// slowOllamaStub simula un LLM que tarda más de lo que digest.timeout_ms le
+// permite — para forzar el mismo error de contexto vencido que un pico de
+// carga real produce contra claude-cli, sin depender de un CLI real.
+func slowOllamaStub(t *testing.T, delay time.Duration, inner string) (*httptest.Server, *int) {
+	t.Helper()
+	calls := 0
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		time.Sleep(delay)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"response": inner})
+	}))
+	return srv, &calls
+}
+
+// TestMaybeUpdateDigest_EnrichmentTimesOut_SavesDeterministicAndMarksPending
+// confirma la propiedad central del Tema 1: un enriquecimiento que se pasa
+// del presupuesto de digest.timeout_ms no pierde nada (el determinístico se
+// guarda igual, fail-open de siempre) y además deja la sesión anotada para
+// reintentar en la próxima oportunidad, sin esperar a que venza
+// digest.interval_minutes de nuevo.
+func TestMaybeUpdateDigest_EnrichmentTimesOut_SavesDeterministicAndMarksPending(t *testing.T) {
+	dataDir := isolatedDataDir(t)
+	st := newTestStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateSession(ctx, "s1", "kronos-v2", "/tmp/kronos-v2"); err != nil {
+		t.Fatal(err)
+	}
+	path := writeTestTranscript(t, []string{
+		`{"type":"user","message":{"role":"user","content":"investigando un pico de carga que hizo fallar el enriquecimiento del digest, con texto de sobra para pasar el umbral mínimo del excerpt que exige TailExcerpt antes de siquiera intentar la llamada al LLM"}}`,
+	})
+	srv, _ := slowOllamaStub(t, 200*time.Millisecond, `{"content":"no debería llegar a usarse"}`)
+	defer srv.Close()
+
+	cfg := config.Default()
+	cfg.Digest.TimeoutMs = 20 // imposible de cumplir con el stub de 200ms — fuerza el timeout
+	llmClient := llm.NewClient(srv.URL, "llama3.2:1b")
+
+	if err := hooks.MaybeUpdateDigest(ctx, st, cfg, llmClient, "s1", path, "/tmp/kronos-v2", false); err != nil {
+		t.Fatalf("un timeout del LLM no debería propagarse como error: %v", err)
+	}
+
+	obs, err := st.GetByTopicKey(ctx, "kronos-v2", "session/s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if obs == nil || !strings.Contains(obs.Content, "pico de carga que hizo fallar") {
+		t.Fatalf("el determinístico debería haberse guardado igual pese al timeout, got: %+v", obs)
+	}
+
+	pending := llm.NewDigestPending(llm.DefaultDigestPendingPath(dataDir))
+	if !pending.Due("s1") {
+		t.Error("tras un timeout del enriquecimiento, la sesión debería quedar anotada como pendiente de reintento")
+	}
+	if !hooks.IsDigestDue(ctx, st, cfg, "s1", "/tmp/kronos-v2") {
+		t.Error("con un reintento pendiente, IsDigestDue debería dar true aunque el digest se acaba de actualizar")
+	}
+}
+
+// TestMaybeUpdateDigest_RetrySucceeds_PromotesFactAndClearsPending confirma
+// el segundo tramo del Tema 1: en el siguiente MaybeUpdateDigest de una
+// sesión con enriquecimiento pendiente, se reintenta AUNQUE todavía no toque
+// digest.interval_minutes — y si esta vez el LLM responde bien, se promueve
+// el hecho tipado (mismo promoteDigestFacts de siempre) y se limpia el
+// pendiente, sin duplicar la observación de digest (mismo topic_key).
+func TestMaybeUpdateDigest_RetrySucceeds_PromotesFactAndClearsPending(t *testing.T) {
+	dataDir := isolatedDataDir(t)
+	st := newTestStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateSession(ctx, "s1", "kronos-v2", "/tmp/kronos-v2"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simula el estado que deja un ciclo anterior fallido: el determinístico
+	// ya guardado (recién, no vencido) y la sesión marcada como pendiente.
+	first, err := st.SaveObservation(ctx, store.SaveParams{
+		Type: store.TypeSession, Title: "Resumen de sesión s1 (automático)",
+		Content: "## En qué se viene trabajando (automático, sin LLM)\n- prompt viejo", Project: "kronos-v2", TopicKey: "session/s1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending := llm.NewDigestPending(llm.DefaultDigestPendingPath(dataDir))
+	pending.MarkFailed("s1")
+
+	path := writeTestTranscript(t, []string{
+		`{"type":"user","message":{"role":"user","content":"por qué falla el build, llevo media hora viendo este error y no encuentro qué lo está causando"}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":"la causa era un import circular entre internal/foo e internal/bar, lo saqué a un paquete nuevo internal/shared"}}`,
+	})
+	srv := ollamaDigestStub(t, `{"content":"Investigado y arreglado import circular (reintento exitoso)",
+		"facts": [{"type":"bugfix","title":"Fix import circular entre foo y bar","content":"Qué: import circular. Por qué: paquetes acoplados. Cómo aplicar: separar en internal/shared."}]}`)
+	defer srv.Close()
+	llmClient := llm.NewClient(srv.URL, "llama3.2:1b")
+
+	// force=false y el digest recién se guardó (no venció digestInterval) —
+	// sin el reintento pendiente, MaybeUpdateDigest lo saltaría por "todavía
+	// no toca".
+	if err := hooks.MaybeUpdateDigest(ctx, st, config.Default(), llmClient, "s1", path, "/tmp/kronos-v2", false); err != nil {
+		t.Fatalf("MaybeUpdateDigest: %v", err)
+	}
+
+	obs, err := st.GetByTopicKey(ctx, "kronos-v2", "session/s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if obs.ID != first.ID {
+		t.Errorf("ID cambió de %d a %d — el reintento debería actualizar la misma observación (upsert), no crear una nueva", first.ID, obs.ID)
+	}
+	if !strings.Contains(obs.Content, "reintento exitoso") {
+		t.Errorf("Content no tiene la prosa del reintento: %q", obs.Content)
+	}
+
+	allObs, err := st.ListAll(ctx, "kronos-v2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fact *store.Observation
+	for _, o := range allObs {
+		if o.Type == store.TypeBugfix {
+			fact = o
+		}
+	}
+	if fact == nil {
+		t.Fatalf("esperaba una observación tipo bugfix promovida por el reintento, got: %+v", allObs)
+	}
+
+	if pending.Due("s1") {
+		t.Error("tras un reintento exitoso, el pendiente debería haberse limpiado")
+	}
+}
+
+// TestMaybeUpdateDigest_RetriesExhausted_StopsAttemptingLLM confirma el
+// tope: tras digestPendingMaxAttempts fallos consecutivos del enriquecimiento
+// para la misma sesión, se deja de reintentar antes de que toque el
+// intervalo normal de nuevo — no tiene sentido seguir golpeando un LLM que
+// ya falló repetidas veces para esta sesión puntual.
+func TestMaybeUpdateDigest_RetriesExhausted_StopsAttemptingLLM(t *testing.T) {
+	isolatedDataDir(t)
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	srv, calls := slowOllamaStub(t, 100*time.Millisecond, `{"content":"no debería llegar a usarse"}`)
+	defer srv.Close()
+
+	cfg := config.Default()
+	cfg.Digest.TimeoutMs = 10 // imposible de cumplir — cada intento falla por timeout
+	llmClient := llm.NewClient(srv.URL, "llama3.2:1b")
+
+	path := writeTestTranscript(t, []string{
+		`{"type":"user","message":{"role":"user","content":"texto de sobra para pasar el umbral mínimo del excerpt en cada intento del reintento de enriquecimiento, repetido varias veces para asegurar con margen de sobra que supere ampliamente los 200 caracteres que exige TailExcerpt antes de intentar la llamada"}}`,
+	})
+
+	// 4 llamadas seguidas, sin que pase tiempo real entre ellas: la primera
+	// es due porque no hay digest previo; las siguientes 2 son due solo
+	// porque el pendiente sigue vigente (no por el intervalo, que no venció);
+	// la 4ta ya no debería ni intentar el LLM.
+	for i := 0; i < 4; i++ {
+		if err := hooks.MaybeUpdateDigest(ctx, st, cfg, llmClient, "s1", path, "/tmp/kronos-v2", false); err != nil {
+			t.Fatalf("llamada %d: %v", i+1, err)
+		}
+	}
+
+	if *calls != 3 {
+		t.Errorf("llamadas al LLM = %d, want 3 (tope de reintentos alcanzado, la 4ta no debería haber llamado)", *calls)
 	}
 }

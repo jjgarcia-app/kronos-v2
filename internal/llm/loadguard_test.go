@@ -15,7 +15,7 @@ type countingBackend struct {
 	calls int
 }
 
-func (b *countingBackend) generate(ctx context.Context, prompt string, numPredict int) (string, error) {
+func (b *countingBackend) generate(ctx context.Context, prompt string, numPredict int, timeout time.Duration) (string, error) {
 	b.calls++
 	return `{"content":"ok"}`, nil
 }
@@ -28,7 +28,7 @@ type remoteBackend struct {
 	calls int
 }
 
-func (b *remoteBackend) generate(ctx context.Context, prompt string, numPredict int) (string, error) {
+func (b *remoteBackend) generate(ctx context.Context, prompt string, numPredict int, timeout time.Duration) (string, error) {
 	b.calls++
 	return `{"found":false}`, nil
 }
