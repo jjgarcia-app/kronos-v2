@@ -80,6 +80,9 @@ const (
 	defaultCoreBlockMaxPerType   = 3
 	defaultCoreBlockMaxItemChars = 110
 	defaultCoreBlockStaleDays    = 90
+	// defaultCoreBlockMaxSessionItems: cuántos items de tipo session entran al
+	// bloque por defecto. Uno: el checkpoint ya cubre "dónde quedamos".
+	defaultCoreBlockMaxSessionItems = 1
 )
 
 // titleOverlapThreshold: fracción mínima de tokens significativos
@@ -149,6 +152,13 @@ type CoreBlockOptions struct {
 	// distingue hoy entre una decisión vigente y una de hace meses que
 	// puede haber cambiado. 0 usa el default (ver defaultCoreBlockStaleDays).
 	StaleDays int
+	// MaxSessionItems: tope de items de tipo session (resúmenes del agente y
+	// digests automáticos) dentro del bloque. 0 usa el default (ver
+	// defaultCoreBlockMaxSessionItems = 1): el bloque ya trae el checkpoint
+	// ("dónde quedamos"), así que un segundo resumen de sesión le roba lugar a
+	// conocimiento real. Medido contra la base real: type=session era el tipo
+	// MÁS inyectado de todos (76 items, ~19% del total inyectado).
+	MaxSessionItems int
 }
 
 // CoreBlockMeta trae metadata del armado que no forma parte del texto
@@ -438,6 +448,24 @@ func buildCoreBlock(ctx context.Context, st store.Storer, project string, opts C
 	// global, relleno al final) sobre TODO el bloque, no por sección — un
 	// contador compartido evita que, por ejemplo, 3 [architecture] de
 	// proyecto más 3 [architecture] globales sumen 6 items del mismo tipo.
+	//
+	// Antes del tope general va el tope de sesión (type=session): el bloque ya
+	// trae el checkpoint, y los resúmenes de sesión entraban por el relleno sin
+	// tope propio — medido en producción, era el tipo MÁS inyectado de todos.
+	// Se aplica con su propio contador para no mezclarlo con el general.
+	maxSession := opts.MaxSessionItems
+	if maxSession <= 0 {
+		maxSession = defaultCoreBlockMaxSessionItems
+	}
+	sessionCounts := make(map[store.ObservationType]int, 1)
+	var droppedSession int
+	projectPriority, droppedSession = capItemsOfType(projectPriority, store.TypeSession, maxSession, sessionCounts)
+	omissions.maxPerType += droppedSession
+	globalCandidates, droppedSession = capItemsOfType(globalCandidates, store.TypeSession, maxSession, sessionCounts)
+	omissions.maxPerType += droppedSession
+	projectFill, droppedSession = capItemsOfType(projectFill, store.TypeSession, maxSession, sessionCounts)
+	omissions.maxPerType += droppedSession
+
 	typeCounts := make(map[store.ObservationType]int, 4)
 	var dropped int
 	projectPriority, dropped = filterMaxPerType(projectPriority, opts.MaxPerType, typeCounts)
@@ -631,6 +659,32 @@ func coreItemFromObs(o *store.Observation, now time.Time, staleDays, maxItemChar
 // hilo de trabajo del día. Sin este tope, un tipo con mucha actividad
 // reciente desplaza a preferencias, decisiones u otros tipos que aportan
 // más variedad al perfil del proyecto.
+
+// capItemsOfType aplica un tope específico a UN tipo (p. ej. resúmenes de
+// sesión), usando un contador propio — se aplica antes de filterMaxPerType
+// para que ambos topes compongan sin pisarse. Los items de otros tipos pasan
+// sin tocarse.
+func capItemsOfType(items []coreItem, typ store.ObservationType, max int, counts map[store.ObservationType]int) ([]coreItem, int) {
+	if max <= 0 || len(items) == 0 {
+		return items, 0
+	}
+	kept := make([]coreItem, 0, len(items))
+	dropped := 0
+	for _, it := range items {
+		if it.obsType != typ {
+			kept = append(kept, it)
+			continue
+		}
+		if counts[typ] >= max {
+			dropped++
+			continue
+		}
+		counts[typ]++
+		kept = append(kept, it)
+	}
+	return kept, dropped
+}
+
 func filterMaxPerType(items []coreItem, maxPerType int, counts map[store.ObservationType]int) ([]coreItem, int) {
 	if maxPerType <= 0 || len(items) == 0 {
 		return items, 0

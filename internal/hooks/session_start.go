@@ -180,6 +180,7 @@ func printCoreBlock(ctx context.Context, st store.Storer, projName string) []str
 		ProjectMinChars:   cfg.Core.ProjectMinChars,
 		MaxPerType:        cfg.Core.MaxPerType,
 		MaxItemChars:      cfg.Core.MaxItemChars,
+		MaxSessionItems:   cfg.Core.MaxSessionItems,
 		StaleDays:         cfg.Core.StaleDays,
 	})
 	if err != nil || block == "" {
