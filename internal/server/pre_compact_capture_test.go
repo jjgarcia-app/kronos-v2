@@ -35,8 +35,10 @@ func TestHandlePreCompactCapture_WrongMethod_405(t *testing.T) {
 // un poco por más lento que sea Ollama — el handler responde 202 antes de
 // hacer ningún trabajo real.
 func TestHandlePreCompactCapture_RespondsImmediately_WithoutWaitingForLLM(t *testing.T) {
+	llmDone := make(chan struct{})
 	slowOllama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(2 * time.Second)
+		close(llmDone)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"response": `{"found":false}`})
 	}))
@@ -54,9 +56,7 @@ func TestHandlePreCompactCapture_RespondsImmediately_WithoutWaitingForLLM(t *tes
 		"cwd":             "/tmp",
 	})
 
-	start := time.Now()
 	resp, err := http.Post(ts.URL+"/hooks/pre-compact-capture", "application/json", bytes.NewReader(body))
-	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,8 +65,17 @@ func TestHandlePreCompactCapture_RespondsImmediately_WithoutWaitingForLLM(t *tes
 	if resp.StatusCode != http.StatusAccepted {
 		t.Errorf("status = %d, want 202", resp.StatusCode)
 	}
-	if elapsed > 500*time.Millisecond {
-		t.Errorf("la respuesta tardó %v — debería responder antes de esperar al LLM (que tarda 2s)", elapsed)
+	// La prueba de que la respuesta no esperó al LLM no es una cota de tiempo:
+	// es que el LLM todavía está dormido (2 s) cuando la respuesta ya llegó. Con
+	// una cota de reloj, la máquina cargada (load 7-10) hacía fallar al handler
+	// correcto — el POST entero puede tardar segundos por la carga, no por
+	// esperar al LLM. Si el handler esperara, el POST volvería recién con el
+	// canal cerrado y este select caería en el primer caso.
+	select {
+	case <-llmDone:
+		t.Errorf("la respuesta volvió después de que el LLM terminó: el handler esperó al LLM en vez de responder ya")
+	default:
+		// el LLM sigue dormido: la respuesta no lo esperó
 	}
 }
 
