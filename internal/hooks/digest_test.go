@@ -3,6 +3,7 @@ package hooks_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -408,5 +409,298 @@ func TestMaybeUpdateDigest_SessionRowMissing_StillSaves(t *testing.T) {
 	}
 	if sess, err := st.GetSession(ctx, "sin-fila"); err != nil || sess == nil {
 		t.Errorf("la fila de la sesión debería haberse creado (err=%v)", err)
+	}
+}
+
+// --- Tarea B: hechos estructurados promovidos desde la misma llamada del digest ---
+
+// TestMaybeUpdateDigest_PromotesFacts_WithType confirma el comportamiento
+// central de la Tarea B: un hecho que viene en la MISMA respuesta del LLM
+// que la prosa del digest (ver llm.Client.UpdateDigest) se guarda como
+// observación PROPIA con su tipo — no enterrado en el digest tipo "session".
+func TestMaybeUpdateDigest_PromotesFacts_WithType(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateSession(ctx, "s1", "kronos-v2", "/tmp/kronos-v2"); err != nil {
+		t.Fatal(err)
+	}
+	path := writeTestTranscript(t, []string{
+		`{"type":"user","message":{"role":"user","content":"por qué falla el build, llevo media hora viendo este error y no encuentro qué lo está causando"}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":"la causa era un import circular entre internal/foo e internal/bar, lo saqué a un paquete nuevo internal/shared"}}`,
+	})
+	srv := ollamaDigestStub(t, `{"content":"Investigado y arreglado import circular",
+		"facts": [{"type":"bugfix","title":"Fix import circular entre foo y bar","content":"Qué: import circular. Por qué: paquetes acoplados. Cómo aplicar: separar en internal/shared."}]}`)
+	defer srv.Close()
+
+	llmClient := llm.NewClient(srv.URL, "llama3.2:1b")
+	if err := hooks.MaybeUpdateDigest(ctx, st, config.Default(), llmClient, "s1", path, "/tmp/kronos-v2", false); err != nil {
+		t.Fatalf("MaybeUpdateDigest: %v", err)
+	}
+
+	obs, err := st.ListAll(ctx, "kronos-v2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fact *store.Observation
+	for _, o := range obs {
+		if o.Type == store.TypeBugfix {
+			fact = o
+		}
+	}
+	if fact == nil {
+		t.Fatalf("esperaba una observación tipo bugfix promovida desde el digest, got: %+v", obs)
+	}
+	if fact.Title != "Fix import circular entre foo y bar" {
+		t.Errorf("Title = %q", fact.Title)
+	}
+	if fact.SessionID != "s1" {
+		t.Errorf("SessionID = %q, want s1", fact.SessionID)
+	}
+}
+
+// TestMaybeUpdateDigest_SingleLLMCall_NoExtraUsage confirma que promover
+// hechos no agrega una llamada nueva al LLM: es la MISMA respuesta que ya
+// generaba la prosa, así que el contador de uso sube en 1, no en 2.
+func TestMaybeUpdateDigest_SingleLLMCall_NoExtraUsage(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateSession(ctx, "s1", "kronos-v2", "/tmp/kronos-v2"); err != nil {
+		t.Fatal(err)
+	}
+	path := writeTestTranscript(t, []string{
+		`{"type":"user","message":{"role":"user","content":"investigando por qué el build falla desde ayer a la tarde, revisé el import circular entre dos paquetes internos, reproduje el error paso a paso y encontré la causa raíz después de bastante rato de revisar logs y stack traces largos"}}`,
+	})
+	srv := ollamaDigestStub(t, `{"content":"resumen","facts":[{"type":"decision","title":"Decisión de prueba con largo suficiente","content":"contenido de prueba con largo suficiente para no descartarse"}]}`)
+	defer srv.Close()
+
+	usage := llm.NewUsage(t.TempDir() + "/usage.json")
+	llmClient := llm.NewClient(srv.URL, "llama3.2:1b")
+	llmClient.SetUsage(usage)
+
+	if err := hooks.MaybeUpdateDigest(ctx, st, config.Default(), llmClient, "s1", path, "/tmp/kronos-v2", false); err != nil {
+		t.Fatalf("MaybeUpdateDigest: %v", err)
+	}
+
+	total := 0
+	for _, b := range usage.State().Buckets {
+		total += b.Count
+	}
+	if total != 1 {
+		t.Errorf("contador de uso = %d, want 1 (una sola llamada LLM por actualización de digest, con o sin hechos)", total)
+	}
+}
+
+// TestMaybeUpdateDigest_RerunSameFacts_DoesNotDuplicate confirma el dedupe:
+// re-correr el digest con el mismo hecho (mismo título+contenido) no crea
+// una fila nueva — SaveObservation ya dedupea por hash, esto verifica que
+// promoteDigestFacts lo aprovecha en vez de esquivarlo con un topic_key.
+func TestMaybeUpdateDigest_RerunSameFacts_DoesNotDuplicate(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateSession(ctx, "s1", "kronos-v2", "/tmp/kronos-v2"); err != nil {
+		t.Fatal(err)
+	}
+	path := writeTestTranscript(t, []string{
+		`{"type":"user","message":{"role":"user","content":"investigando por qué el build falla desde ayer a la tarde, revisé el import circular entre dos paquetes internos, reproduje el error paso a paso y encontré la causa raíz después de bastante rato de revisar logs y stack traces largos (segunda corrida, mismo excerpt largo para pasar el umbral otra vez)"}}`,
+	})
+	factJSON := `{"type":"config","title":"Cambio de config repetido en dos corridas","content":"contenido idéntico entre la primera y la segunda corrida del digest"}`
+	srv := ollamaDigestStub(t, `{"content":"resumen","facts":[`+factJSON+`]}`)
+	defer srv.Close()
+	llmClient := llm.NewClient(srv.URL, "llama3.2:1b")
+
+	if err := hooks.MaybeUpdateDigest(ctx, st, config.Default(), llmClient, "s1", path, "/tmp/kronos-v2", true); err != nil {
+		t.Fatalf("MaybeUpdateDigest (1): %v", err)
+	}
+	countType := func() (n int, dup int) {
+		obs, err := st.ListAll(ctx, "kronos-v2")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, o := range obs {
+			if o.Type == store.TypeConfig {
+				n++
+				dup = o.DuplicateCount
+			}
+		}
+		return
+	}
+	n1, _ := countType()
+	if n1 != 1 {
+		t.Fatalf("setup inválido: esperaba 1 hecho config tras la primera corrida, got %d", n1)
+	}
+
+	if err := hooks.MaybeUpdateDigest(ctx, st, config.Default(), llmClient, "s1", path, "/tmp/kronos-v2", true); err != nil {
+		t.Fatalf("MaybeUpdateDigest (2): %v", err)
+	}
+	n2, dup2 := countType()
+	if n2 != 1 {
+		t.Errorf("re-correr el digest con el mismo hecho creó una fila nueva — filas=%d, want 1", n2)
+	}
+	if dup2 < 2 {
+		t.Errorf("duplicate_count = %d, want >= 2 (bumpeado por el dedupe de SaveObservation)", dup2)
+	}
+}
+
+// TestMaybeUpdateDigest_DiscardsFactsWithInvalidType confirma que un tipo
+// fuera del whitelist (acá "session", justo el tipo que este cambio busca
+// dejar de sobrecargar) se descarta en vez de colarse como observación.
+func TestMaybeUpdateDigest_DiscardsFactsWithInvalidType(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateSession(ctx, "s1", "kronos-v2", "/tmp/kronos-v2"); err != nil {
+		t.Fatal(err)
+	}
+	path := writeTestTranscript(t, []string{
+		`{"type":"user","message":{"role":"user","content":"investigando por qué el build falla desde ayer a la tarde, revisé el import circular entre dos paquetes internos, reproduje el error paso a paso y encontré la causa raíz después de bastante rato de revisar logs y stack traces largos"}}`,
+	})
+	srv := ollamaDigestStub(t, `{"content":"resumen","facts":[{"type":"session","title":"Hecho con tipo invalido de sobra","content":"contenido de sobra para no descartarse por longitud"}]}`)
+	defer srv.Close()
+	llmClient := llm.NewClient(srv.URL, "llama3.2:1b")
+
+	if err := hooks.MaybeUpdateDigest(ctx, st, config.Default(), llmClient, "s1", path, "/tmp/kronos-v2", false); err != nil {
+		t.Fatalf("MaybeUpdateDigest: %v", err)
+	}
+	obs, err := st.ListAll(ctx, "kronos-v2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, o := range obs {
+		if o.Title == "Hecho con tipo invalido de sobra" {
+			t.Errorf("un hecho con type=session no debería promoverse — se coló: %+v", o)
+		}
+	}
+}
+
+// TestMaybeUpdateDigest_DiscardsTooShortFacts confirma el piso de longitud:
+// un hecho genérico/truncado ("se corrieron tests", o peor, casi vacío) no
+// vale la pena guardarlo como observación propia.
+func TestMaybeUpdateDigest_DiscardsTooShortFacts(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateSession(ctx, "s1", "kronos-v2", "/tmp/kronos-v2"); err != nil {
+		t.Fatal(err)
+	}
+	path := writeTestTranscript(t, []string{
+		`{"type":"user","message":{"role":"user","content":"investigando por qué el build falla desde ayer a la tarde, revisé el import circular entre dos paquetes internos, reproduje el error paso a paso y encontré la causa raíz después de bastante rato de revisar logs y stack traces largos"}}`,
+	})
+	srv := ollamaDigestStub(t, `{"content":"resumen","facts":[{"type":"discovery","title":"corto","content":"corto"}]}`)
+	defer srv.Close()
+	llmClient := llm.NewClient(srv.URL, "llama3.2:1b")
+
+	if err := hooks.MaybeUpdateDigest(ctx, st, config.Default(), llmClient, "s1", path, "/tmp/kronos-v2", false); err != nil {
+		t.Fatalf("MaybeUpdateDigest: %v", err)
+	}
+	obs, err := st.ListAll(ctx, "kronos-v2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, o := range obs {
+		if o.Type == store.TypeDiscovery {
+			t.Errorf("un hecho demasiado corto no debería promoverse — se coló: %+v", o)
+		}
+	}
+}
+
+// TestMaybeUpdateDigest_MaxFactsCap confirma digest.max_facts: con más
+// hechos propuestos que el tope, solo se guardan los primeros N.
+func TestMaybeUpdateDigest_MaxFactsCap(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateSession(ctx, "s1", "kronos-v2", "/tmp/kronos-v2"); err != nil {
+		t.Fatal(err)
+	}
+	path := writeTestTranscript(t, []string{
+		`{"type":"user","message":{"role":"user","content":"investigando por qué el build falla desde ayer a la tarde, revisé el import circular entre dos paquetes internos, reproduje el error paso a paso y encontré la causa raíz después de bastante rato de revisar logs y stack traces largos"}}`,
+	})
+	facts := ""
+	for i := 0; i < 5; i++ {
+		if i > 0 {
+			facts += ","
+		}
+		facts += fmt.Sprintf(`{"type":"pattern","title":"Patrón número %d con largo suficiente","content":"contenido de prueba con largo suficiente para no descartarse jamás"}`, i)
+	}
+	srv := ollamaDigestStub(t, `{"content":"resumen","facts":[`+facts+`]}`)
+	defer srv.Close()
+	llmClient := llm.NewClient(srv.URL, "llama3.2:1b")
+
+	cfg := config.Default()
+	cfg.Digest.MaxFacts = 2
+	if err := hooks.MaybeUpdateDigest(ctx, st, cfg, llmClient, "s1", path, "/tmp/kronos-v2", false); err != nil {
+		t.Fatalf("MaybeUpdateDigest: %v", err)
+	}
+	obsList, err := st.ListAll(ctx, "kronos-v2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, o := range obsList {
+		if o.Type == store.TypePattern {
+			n++
+		}
+	}
+	if n != 2 {
+		t.Errorf("con max_facts=2 y 5 hechos propuestos, se guardaron %d — want 2", n)
+	}
+}
+
+// TestMaybeUpdateDigest_PromoteFactsDisabled_NoFactsSaved confirma
+// digest.promote_facts=false: aunque el LLM proponga hechos válidos, no se
+// guarda ninguno como observación propia (el digest tipo session sí, igual
+// que siempre).
+func TestMaybeUpdateDigest_PromoteFactsDisabled_NoFactsSaved(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateSession(ctx, "s1", "kronos-v2", "/tmp/kronos-v2"); err != nil {
+		t.Fatal(err)
+	}
+	path := writeTestTranscript(t, []string{
+		`{"type":"user","message":{"role":"user","content":"investigando por qué el build falla desde ayer a la tarde, revisé el import circular entre dos paquetes internos, reproduje el error paso a paso y encontré la causa raíz después de bastante rato de revisar logs y stack traces largos"}}`,
+	})
+	srv := ollamaDigestStub(t, `{"content":"resumen","facts":[{"type":"preference","title":"Preferencia con largo suficiente","content":"contenido de prueba con largo suficiente para no descartarse"}]}`)
+	defer srv.Close()
+	llmClient := llm.NewClient(srv.URL, "llama3.2:1b")
+
+	cfg := config.Default()
+	cfg.Digest.PromoteFacts = false
+	if err := hooks.MaybeUpdateDigest(ctx, st, cfg, llmClient, "s1", path, "/tmp/kronos-v2", false); err != nil {
+		t.Fatalf("MaybeUpdateDigest: %v", err)
+	}
+	obs, err := st.ListAll(ctx, "kronos-v2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, o := range obs {
+		if o.Type == store.TypePreference {
+			t.Errorf("promote_facts=false no debería haber guardado ningún hecho, se coló: %+v", o)
+		}
+	}
+}
+
+// TestMaybeUpdateDigest_MalformedFactsJSON_KeepsContent confirma la
+// tolerancia al parseo: "facts" con una forma inesperada (acá, un string en
+// vez de un array de objetos) no debe tirar abajo el digest en prosa, que es
+// lo que ya funcionaba antes de que existiera esta sección.
+func TestMaybeUpdateDigest_MalformedFactsJSON_KeepsContent(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateSession(ctx, "s1", "kronos-v2", "/tmp/kronos-v2"); err != nil {
+		t.Fatal(err)
+	}
+	path := writeTestTranscript(t, []string{
+		`{"type":"user","message":{"role":"user","content":"investigando por qué el build falla desde ayer a la tarde, revisé el import circular entre dos paquetes internos, reproduje el error paso a paso y encontré la causa raíz después de bastante rato de revisar logs y stack traces largos"}}`,
+	})
+	srv := ollamaDigestStub(t, `{"content":"resumen en prosa pese a facts malformado","facts":"esto no es un array"}`)
+	defer srv.Close()
+	llmClient := llm.NewClient(srv.URL, "llama3.2:1b")
+
+	if err := hooks.MaybeUpdateDigest(ctx, st, config.Default(), llmClient, "s1", path, "/tmp/kronos-v2", false); err != nil {
+		t.Fatalf("facts malformado no debería hacer fallar el digest: %v", err)
+	}
+	obs, err := st.GetByTopicKey(ctx, "kronos-v2", "session/s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if obs == nil || !strings.Contains(obs.Content, "resumen en prosa pese a facts malformado") {
+		t.Errorf("el contenido en prosa debería haberse guardado igual, got: %+v", obs)
 	}
 }

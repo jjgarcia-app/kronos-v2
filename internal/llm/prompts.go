@@ -22,8 +22,11 @@ New transcript excerpt since the last update (oldest first):
 
 Extend the summary with anything new and concrete from this excerpt: what was investigated, decided, fixed, or built. Keep it dense — short bullet points, no filler, no restating obvious code. Preserve earlier content that's still relevant; drop anything superseded by newer information. If truly nothing new and substantive happened (small talk, routine back-and-forth with no real progress), return the previous summary completely unchanged.
 
+Additionally, extract up to 3 standalone facts worth remembering as their OWN piece of knowledge — not buried in a session summary — for someone querying memory in a DIFFERENT, FUTURE session, possibly weeks from now. A fact only qualifies if it will still be true and useful in 30 days: a bug and its root cause, an architecture/design decision, a config change and why, a non-obvious discovery or gotcha, a reusable pattern, or a learned preference. Do NOT propose facts for routine/ephemeral activity ("ran the tests", "read a file", "started the session") — if nothing qualifies, return an empty list. Each fact must be self-contained (title and content make sense with zero session context).
+
 Respond ONLY with valid JSON (no markdown, no explanation outside JSON):
-{"content": "<updated running summary, plain text with line breaks, en español>"}`,
+{"content": "<updated running summary, plain text with line breaks, en español>",
+ "facts": [{"type": "<bugfix|decision|config|discovery|pattern|preference>", "title": "<short searchable phrase, verb + what, en español>", "content": "<Qué: ...\nPor qué: ...\nCómo aplicar: ..., en español>"}]}`,
 		prior, truncate(excerpt, 6000),
 	)
 }

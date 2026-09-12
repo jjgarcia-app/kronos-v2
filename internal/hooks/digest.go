@@ -108,17 +108,24 @@ func MaybeUpdateDigest(ctx context.Context, st store.Storer, cfg config.Config, 
 		return nil // todavía no toca
 	}
 
-	facts, _ := transcript.TailFacts(transcriptPath, digestMaxEvents)
-	deterministic := renderDeterministicDigest(facts)
+	tailFacts, _ := transcript.TailFacts(transcriptPath, digestMaxEvents)
+	deterministic := renderDeterministicDigest(tailFacts)
 	if deterministic == "" {
 		return nil // nada real que guardar todavía (transcript vacío/ilegible)
 	}
 
 	content := deterministic
+	var facts []llm.DigestFact
 
 	if cfg.Digest.LLMEnrichment && llmClient != nil {
-		if prose := tryDigestLLMEnrichment(ctx, llmClient, existing, transcriptPath, sessionID); prose != "" {
-			content = prose + "\n\n" + deterministic
+		// Misma llamada, mismo round-trip: update.Facts viene de la MISMA
+		// respuesta del LLM que ya genera la prosa (ver
+		// llm.Client.UpdateDigest) — no se agrega una llamada nueva, así que
+		// el contador de uso sigue subiendo en 1 por actualización de
+		// digest, no en 2.
+		if update := tryDigestLLMEnrichment(ctx, llmClient, existing, transcriptPath, sessionID); update != nil {
+			content = update.Content + "\n\n" + deterministic
+			facts = update.Facts
 		}
 	}
 
@@ -144,7 +151,88 @@ func MaybeUpdateDigest(ctx context.Context, st store.Storer, cfg config.Config, 
 			"session_id", sessionID, "project", proj.Name, "err", err)
 		return err
 	}
+
+	// El digest en sí (tipo "session") se guarda siempre igual, arriba —
+	// esto es puramente aditivo: promueve lo que el LLM extrajo (si algo)
+	// como observaciones propias tipadas, sin cambiar el formato del digest.
+	if cfg.Digest.PromoteFacts && len(facts) > 0 {
+		promoteDigestFacts(ctx, st, cfg, facts, sessionID, proj.Name)
+	}
+
 	return nil
+}
+
+// digestFactTypes son los tipos de observación válidos para un hecho
+// promovido desde el digest — session/passive/intent quedan afuera a
+// propósito: session es justo el tipo que este cambio busca dejar de
+// sobrecargar, y passive/intent pertenecen a otros caminos de captura.
+var digestFactTypes = map[string]store.ObservationType{
+	"bugfix":     store.TypeBugfix,
+	"decision":   store.TypeDecision,
+	"config":     store.TypeConfig,
+	"discovery":  store.TypeDiscovery,
+	"pattern":    store.TypePattern,
+	"preference": store.TypePreference,
+}
+
+// digestFactMinTitleChars / digestFactMinContentChars: piso de longitud para
+// descartar hechos genéricos o truncados que el LLM puede devolver pese a
+// que el prompt pide "solo hechos útiles a 30 días" (ej. "se corrieron
+// tests", o un campo vacío) — no vale la pena guardarlos como observación
+// propia.
+const (
+	digestFactMinTitleChars   = 8
+	digestFactMinContentChars = 20
+)
+
+// digestDefaultMaxFacts es el fallback cuando cfg.Digest.MaxFacts no está
+// seteado (config vieja, o Digest{} zero-value en un test).
+const digestDefaultMaxFacts = 3
+
+// promoteDigestFacts guarda cada hecho propuesto por el LLM (extraído en la
+// MISMA llamada que la prosa del digest, ver llm.Client.UpdateDigest) como
+// observación PROPIA con su tipo — a diferencia del digest de sesión (tipo
+// "session", enterrado y limitado a uno por la inyección automática — ver
+// core.max_session_items / recall.max_session_items), estas SÍ reaparecen en
+// esa inyección sin ese tope.
+//
+// No confía en que el LLM sea preciso: tipos fuera del whitelist o contenido
+// demasiado corto/genérico se descartan acá (ver digestFactTypes y los pisos
+// de longitud), y el dedupe por hash de título+contenido que ya tiene
+// SaveObservation evita duplicar un hecho ya guardado en una corrida
+// anterior del digest — re-correrlo con el mismo excerpt no crea filas
+// nuevas, solo bumpea duplicate_count de las existentes.
+func promoteDigestFacts(ctx context.Context, st store.Storer, cfg config.Config, facts []llm.DigestFact, sessionID, project string) {
+	max := cfg.Digest.MaxFacts
+	if max <= 0 {
+		max = digestDefaultMaxFacts
+	}
+	saved := 0
+	for _, f := range facts {
+		if saved >= max {
+			break
+		}
+		typ, ok := digestFactTypes[strings.ToLower(strings.TrimSpace(f.Type))]
+		if !ok {
+			continue
+		}
+		title := strings.TrimSpace(f.Title)
+		content := strings.TrimSpace(f.Content)
+		if len(title) < digestFactMinTitleChars || len(content) < digestFactMinContentChars {
+			continue
+		}
+		if _, err := st.SaveObservation(ctx, store.SaveParams{
+			SessionID: sessionID,
+			Type:      typ,
+			Title:     title,
+			Content:   strings.TrimSpace(secrets.Redact(content)),
+			Project:   project,
+		}); err != nil {
+			slog.Debug("digest: no se pudo guardar hecho promovido", "title", title, "err", err)
+			continue
+		}
+		saved++
+	}
 }
 
 // ensureSession crea la fila de sesión si no existe — necesario antes de
@@ -162,15 +250,17 @@ func ensureSession(ctx context.Context, st store.Storer, sessionID, proj, cwd st
 	_, _ = st.CreateSession(ctx, sessionID, proj, cwd)
 }
 
-// tryDigestLLMEnrichment intenta la prosa del LLM sobre el excerpt de texto
-// plano (TailExcerpt, no Facts) — devuelve "" ante cualquier falla o
-// respuesta vacía/sin cambios, logueando cada falla real (motivo + tiempo
-// transcurrido) para que un LLM roto deje de fallar en silencio como pasaba
-// antes.
-func tryDigestLLMEnrichment(ctx context.Context, llmClient *llm.Client, existing *store.Observation, transcriptPath, sessionID string) string {
+// tryDigestLLMEnrichment intenta la prosa (y los hechos standalone, misma
+// llamada — ver llm.Client.UpdateDigest) del LLM sobre el excerpt de texto
+// plano (TailExcerpt, no Facts de transcript.TailFacts, que es algo
+// distinto: hechos determinísticos del transcript, no del LLM) — devuelve
+// nil ante cualquier falla o respuesta vacía/sin cambios, logueando cada
+// falla real (motivo + tiempo transcurrido) para que un LLM roto deje de
+// fallar en silencio como pasaba antes.
+func tryDigestLLMEnrichment(ctx context.Context, llmClient *llm.Client, existing *store.Observation, transcriptPath, sessionID string) *llm.DigestUpdate {
 	excerpt, err := transcript.TailExcerpt(transcriptPath, excerptMaxChars)
 	if err != nil || len(strings.TrimSpace(excerpt)) < minExcerptChars {
-		return "" // nada real que resumir en prosa todavía
+		return nil // nada real que resumir en prosa todavía
 	}
 
 	previous := ""
@@ -184,16 +274,17 @@ func tryDigestLLMEnrichment(ctx context.Context, llmClient *llm.Client, existing
 	if err != nil {
 		slog.Warn("digest: la actualización por LLM falló, se guarda solo el determinístico",
 			"session_id", sessionID, "elapsed", elapsed, "error", err)
-		return ""
+		return nil
 	}
 	if update == nil {
-		return ""
+		return nil
 	}
 	prose := strings.TrimSpace(update.Content)
 	if prose == "" || prose == strings.TrimSpace(previous) {
-		return "" // el LLM dijo "nada nuevo" — no aporta sobre el determinístico
+		return nil // el LLM dijo "nada nuevo" — no aporta sobre el determinístico
 	}
-	return prose
+	update.Content = prose
+	return update
 }
 
 // renderDeterministicDigest arma el digest sin LLM a partir de los hechos

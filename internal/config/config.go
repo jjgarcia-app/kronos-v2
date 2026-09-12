@@ -353,6 +353,21 @@ type DigestConfig struct {
 	// propio presupuesto, más chico — ver cmd/kronos/hook.go). Default
 	// 20000 (20s).
 	LLMTimeoutMs int `json:"llm_timeout_ms"`
+	// MaxFacts: cuántos hechos estructurados (bugfix/decision/config/etc,
+	// ver internal/hooks/digest.go) puede promover a observaciones propias
+	// UNA sola actualización de digest. Motivado porque el digest hoy guarda
+	// todo el conocimiento aprendido en una sesión enterrado en un único
+	// item tipo "session" — justo el tipo que la inyección automática limita
+	// a uno (core.max_session_items / recall.max_session_items) — así que
+	// ese conocimiento nunca reaparece como tal en sesiones futuras. Default
+	// 3: alcanza para lo importante de una ventana de ~20 minutos
+	// (digest.interval_minutes) sin inundar la base de hechos marginales.
+	MaxFacts int `json:"max_facts"`
+	// PromoteFacts activa la extracción de hechos estructurados en la misma
+	// llamada LLM que ya genera la prosa del digest (no agrega una llamada
+	// nueva). Default true; false vuelve al comportamiento anterior (solo el
+	// digest tipo "session", sin observaciones individuales).
+	PromoteFacts bool `json:"promote_facts"`
 }
 
 type Config struct {
@@ -482,6 +497,8 @@ func Default() Config {
 			IntervalMinutes: 20,
 			LLMEnrichment:   true,
 			LLMTimeoutMs:    20000,
+			MaxFacts:        3,
+			PromoteFacts:    true,
 		},
 	}
 }
@@ -1022,6 +1039,14 @@ func (c *Config) Set(key, value string) error {
 				return fmt.Errorf("invalid int: %s", value)
 			}
 			c.Digest.LLMTimeoutMs = n
+		case "max_facts":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return fmt.Errorf("invalid int: %s", value)
+			}
+			c.Digest.MaxFacts = n
+		case "promote_facts":
+			c.Digest.PromoteFacts = parseBool(value)
 		default:
 			return fmt.Errorf("unknown digest field: %s", field)
 		}

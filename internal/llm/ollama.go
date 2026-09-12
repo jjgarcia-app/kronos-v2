@@ -384,11 +384,32 @@ func (c *Client) ExtractFinding(ctx context.Context, excerpt string) (finding *F
 	return &f, nil
 }
 
+// DigestFact es un hecho standalone que el LLM propone extraer de la misma
+// pasada que genera la prosa del digest (ver buildDigestPrompt) — pensado
+// para guardarse como observación propia con su tipo (ver
+// internal/hooks.MaybeUpdateDigest), no enterrado en el resumen de sesión.
+type DigestFact struct {
+	Type    string `json:"type"`
+	Title   string `json:"title"`
+	Content string `json:"content"`
+}
+
 // DigestUpdate is the result of UpdateDigest — the running session summary
 // after folding in the new excerpt (may be identical to the previous
-// version if nothing substantive happened since).
+// version if nothing substantive happened since), más los hechos standalone
+// que el modelo propuso extraer en la misma respuesta.
 type DigestUpdate struct {
-	Content string `json:"content"`
+	Content string       `json:"content"`
+	Facts   []DigestFact `json:"facts"`
+}
+
+// digestRawResponse difiere el parseo de "facts" del de "content": un JSON
+// de facts con forma inesperada (el modelo no siempre respeta el schema
+// pedido) no debe tirar abajo el contenido en prosa, que es lo que ya
+// funcionaba antes de que existiera esta sección — ver UpdateDigest.
+type digestRawResponse struct {
+	Content string          `json:"content"`
+	Facts   json.RawMessage `json:"facts"`
 }
 
 // UpdateDigest asks the local LLM to extend a running per-session summary
@@ -398,6 +419,15 @@ type DigestUpdate struct {
 // going (see internal/hooks.MaybeUpdateDigest), not just once at the end,
 // so mem_search/mem_context have a running thread of what's been worked on
 // without depending on the agent remembering to call mem_save.
+//
+// En la MISMA llamada (mismo prompt, mismo round-trip — no agrega una
+// llamada nueva al contador de uso) también se le pide al modelo una lista
+// de hechos standalone (DigestFact) para promover a observaciones propias
+// con su tipo — ver buildDigestPrompt y internal/hooks.MaybeUpdateDigest.
+// Si esa sección viene con una forma inesperada, se descarta en silencio
+// (Facts queda nil) sin afectar Content: el parseo de hechos es tolerante a
+// propósito, el de Content no (una respuesta sin "content" parseable sigue
+// siendo un error real, igual que antes de que existiera esta sección).
 //
 // Returns (nil, nil) on any failure or empty response — same fail-open
 // contract as ExtractFinding/JudgeRelation.
@@ -415,14 +445,24 @@ func (c *Client) UpdateDigest(ctx context.Context, previousDigest, excerpt strin
 		return nil, err
 	}
 
-	var d DigestUpdate
-	if err := json.Unmarshal([]byte(extractJSONObject(raw)), &d); err != nil {
+	var resp digestRawResponse
+	if err := json.Unmarshal([]byte(extractJSONObject(raw)), &resp); err != nil {
 		return nil, fmt.Errorf("parse llm digest: %w", err)
 	}
-	if strings.TrimSpace(d.Content) == "" {
+	if strings.TrimSpace(resp.Content) == "" {
 		return nil, nil
 	}
-	return &d, nil
+
+	d := &DigestUpdate{Content: resp.Content}
+	if len(resp.Facts) > 0 {
+		var facts []DigestFact
+		if err := json.Unmarshal(resp.Facts, &facts); err == nil {
+			d.Facts = facts
+		}
+		// error acá se descarta a propósito (ver comentario de la función):
+		// facts con forma inesperada no deben perder el digest en prosa.
+	}
+	return d, nil
 }
 
 func truncate(s string, max int) string {
