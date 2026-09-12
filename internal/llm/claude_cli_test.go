@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -88,6 +89,57 @@ func TestClaudeCLIBackend_Generate_TimeoutKillsProcess(t *testing.T) {
 	// lo matáramos.
 	if elapsed > 3*time.Second {
 		t.Errorf("el proceso debería haberse matado cerca del timeout (100ms + WaitDelay), tardó %s", elapsed)
+	}
+}
+
+func TestClassifyClaudeCLIFailure(t *testing.T) {
+	cases := []struct {
+		name     string
+		runErr   error
+		timedOut bool
+		stderr   string
+		want     string
+	}{
+		{"no logueado", nil, false, "Not logged in · Please run /login", ClaudeCLIFailureNotLoggedIn},
+		{"flag desconocida", nil, false, "unknown flag --model", ClaudeCLIFailureIncompatible},
+		{"modelo inexistente", nil, false, "Error: invalid model 'no-existe'", ClaudeCLIFailureIncompatible},
+		{"timeout por contexto", nil, true, "", ClaudeCLIFailureTimeout},
+		{"timeout por stderr", nil, false, "request timed out", ClaudeCLIFailureTimeout},
+		{"permiso denegado por stderr", nil, false, "bash: permission denied", ClaudeCLIFailurePermission},
+		{"binario inexistente", &exec.Error{Name: "claude", Err: exec.ErrNotFound}, false, "", ClaudeCLIFailureBinaryMissing},
+		{"stderr no reconocido", nil, false, "algo raro que nunca vimos antes", ClaudeCLIFailureUnknown},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			kind, advice := classifyClaudeCLIFailure(tc.runErr, tc.timedOut, tc.stderr)
+			if kind != tc.want {
+				t.Errorf("kind = %q, want %q", kind, tc.want)
+			}
+			if advice == "" {
+				t.Error("advice no debería ser vacío")
+			}
+		})
+	}
+}
+
+func TestClaudeCLIBackend_Generate_RecordsLastFailureOnError(t *testing.T) {
+	cli := writeFakeCLI(t, "#!/bin/sh\necho 'Not logged in, please run /login' >&2\nexit 1\n")
+	failurePath := filepath.Join(t.TempDir(), "llm-last-failure.json")
+	b := &claudeCLIBackend{cliPath: cli, model: "haiku", configDir: t.TempDir(), timeout: 5 * time.Second, lastFailurePath: failurePath}
+
+	if _, err := b.generate(context.Background(), "prompt", 100); err == nil {
+		t.Fatal("esperaba error")
+	}
+
+	lf, ok := ReadLastFailure(failurePath)
+	if !ok {
+		t.Fatal("esperaba que se persistiera la última falla")
+	}
+	if lf.Kind != ClaudeCLIFailureNotLoggedIn {
+		t.Errorf("kind = %q, want %q", lf.Kind, ClaudeCLIFailureNotLoggedIn)
+	}
+	if lf.Provider != claudeCLIProvider {
+		t.Errorf("provider = %q, want %q", lf.Provider, claudeCLIProvider)
 	}
 }
 

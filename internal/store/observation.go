@@ -64,7 +64,7 @@ func (s *Store) SaveObservation(ctx context.Context, p SaveParams) (*Observation
 	// NewID() en vez de dejar que AUTOINCREMENT/BIGSERIAL lo generen — ver
 	// idgen.go. Ninguno de los dos backends rechaza un PK explícito, así que
 	// esto no cambia el resto de la lógica de inserción.
-	newID := NewID()
+	newID := idGen()
 
 	storedContent, err := s.maybeEncrypt(p.Content)
 	if err != nil {
@@ -89,61 +89,82 @@ func (s *Store) SaveObservation(ctx context.Context, p SaveParams) (*Observation
 		if err != nil {
 			return nil, fmt.Errorf("insert observation: %w", err)
 		}
-		obs, err := s.GetObservation(ctx, id)
-		if err != nil {
-			return nil, err
-		}
-		if obs == nil {
-			return nil, fmt.Errorf("insert observation: id %d insertado pero no se pudo releer", id)
-		}
-		return obs, nil
+		// No releemos la fila para devolverla: ver buildSavedObservation. El id,
+		// el sync_id, el contenido y el hash los generamos nosotros, y con
+		// SQLite la relectura inmediata podía no ver la fila recién insertada.
+		return buildSavedObservation(id, syncID, p, hash, ts), nil
 	}
 
-	res, err := s.exec(ctx,
-		`INSERT OR IGNORE INTO observations
-			(id, sync_id, session_id, type, title, content, tool_name, project, scope, topic_key,
-			 normalized_hash, revision_count, duplicate_count, last_seen_at, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, ?)`,
-		newID, syncID, nullStr(p.SessionID), string(p.Type), p.Title, storedContent,
-		p.ToolName, p.Project, string(p.Scope), p.TopicKey, hash, ts, ts, ts,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("insert observation: %w", err)
-	}
-	id, err := res.LastInsertId()
-	if err != nil {
-		return nil, fmt.Errorf("insert observation lastid: %w", err)
-	}
-	if id == 0 {
-		obs, err := s.GetObservationBySyncID(ctx, syncID)
+	// El INSERT se reintenta porque SQLite puede ignorarlo si el id choca con
+	// una fila existente: las filas insertadas SIN id explícito las numera el
+	// propio SQLite con max(id)+1, y ese valor cae justo en el siguiente id de
+	// snowflake si la inserción ocurre en el mismo milisegundo (visto en la
+	// suite completa: "UNIQUE constraint failed: observations.id", con la
+	// observación perdida en silencio — INSERT OR IGNORE no reporta error).
+	// Si el id es el problema, se reintenta con uno nuevo en vez de perder el
+	// dato; solo si además hay una fila con ese sync_id/hash se devuelve esa.
+	for intento := 0; ; intento++ {
+		res, err := s.exec(ctx,
+			`INSERT OR IGNORE INTO observations
+				(id, sync_id, session_id, type, title, content, tool_name, project, scope, topic_key,
+				 normalized_hash, revision_count, duplicate_count, last_seen_at, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, ?)`,
+			newID, syncID, nullStr(p.SessionID), string(p.Type), p.Title, storedContent,
+			p.ToolName, p.Project, string(p.Scope), p.TopicKey, hash, ts, ts, ts,
+		)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("insert observation: %w", err)
 		}
-		if obs == nil {
-			return nil, fmt.Errorf("insert observation: sync_id %s insertado pero no se pudo releer", syncID)
+		if n, rerr := res.RowsAffected(); rerr == nil && n == 0 {
+			if obs, gerr := s.GetObservationBySyncID(ctx, syncID); gerr == nil && obs != nil {
+				return obs, nil
+			}
+			if obs, gerr := s.getByHash(ctx, hash, p.Project); gerr == nil && obs != nil {
+				return obs, nil
+			}
+			if intento >= 4 {
+				return nil, fmt.Errorf("insert observation: ignorado 5 veces sin fila existente (sync_id %s)", syncID)
+			}
+			newID = idGen()
+			continue
 		}
-		return obs, nil
+		return buildSavedObservation(newID, syncID, p, hash, ts), nil
 	}
-	obs, err := s.GetObservation(ctx, id)
-	if err != nil {
-		return nil, err
+}
+
+// buildSavedObservation reconstruye la fila recién insertada con los datos que
+// generó este mismo código, sin releerla de la base.
+//
+// Por qué no releer: con SQLite y pool de conexiones, la fila recién insertada
+// puede no ser visible desde otra conexión del pool (snapshot de lectura viejo
+// con WAL), lo que daba fallos intermitentes bajo carga — "insertado pero no se
+// pudo releer" — con la observación guardada de verdad pero reportada como
+// error, y antes de ese mensaje un (nil, nil) que reventaba al llamador con un
+// nil pointer. El id, el sync_id, el contenido, el hash y el timestamp los
+// conoce quien inserta: la relectura era una dependencia innecesaria.
+func buildSavedObservation(id int64, syncID string, p SaveParams, hash, ts string) *Observation {
+	// ts viene de now() (RFC3339 UTC); el parse no puede fallar con ese formato.
+	created, perr := time.Parse(time.RFC3339, ts)
+	if perr != nil {
+		created = time.Now().UTC()
 	}
-	if obs == nil {
-		// Reintento único por sync_id: con SQLite y pool de conexiones, la fila
-		// recién insertada puede no ser visible todavía desde otra conexión bajo
-		// carga (visto en la suite completa: LastInsertId devolvía un id que no
-		// se releía). Antes esto salía como (nil, nil) y el llamador reventaba
-		// con un nil pointer — se vio como panic en un test, pero en producción
-		// el mismo camino guarda observaciones desde los hooks.
-		obs, err = s.GetObservationBySyncID(ctx, syncID)
-		if err != nil {
-			return nil, err
-		}
+	return &Observation{
+		ID:             id,
+		SyncID:         syncID,
+		SessionID:      p.SessionID,
+		Type:           p.Type,
+		Title:          p.Title,
+		Content:        p.Content,
+		ToolName:       p.ToolName,
+		Project:        p.Project,
+		Scope:          p.Scope,
+		TopicKey:       p.TopicKey,
+		NormalizedHash: hash,
+		RevisionCount:  1,
+		DuplicateCount: 1,
+		CreatedAt:      created,
+		UpdatedAt:      created,
 	}
-	if obs == nil {
-		return nil, fmt.Errorf("insert observation: id %d insertado pero no se pudo releer", id)
-	}
-	return obs, nil
 }
 
 // GetByTopicKey busca una observación por su topic_key dentro de un

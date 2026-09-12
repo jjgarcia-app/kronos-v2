@@ -13,9 +13,15 @@ import (
 const idEpoch = 1735689600000
 
 const (
-	idSaltBits    = 10 // "quién" generó — aleatorio, fijo por proceso
-	idCounterBits = 12 // "cuál" dentro del mismo milisegundo — monotónico
+	idSaltBits    = 10                 // "quién" generó — aleatorio, fijo por proceso
+	idCounterBits = 12                 // "cuál" dentro del mismo milisegundo — monotónico
+	idStride      = 16                 // hueco entre ids consecutivos del mismo milisegundo
+	idMaxSeq      = 1 << idCounterBits // techo del contador (se espera al ms siguiente)
 )
+
+// idGen es el generador de ids del store. Es una variable para que los tests
+// puedan forzar una colisión de id (ver observation_internal_test.go).
+var idGen = NewID
 
 // idSalt identifica a este proceso frente a otros que puedan estar
 // generando IDs al mismo tiempo (el daemon compartido + hooks de vida
@@ -67,9 +73,16 @@ func NewID() int64 {
 
 	ms := time.Now().UnixMilli() - idEpoch
 	if ms == idLastMs {
-		idSeq++
-		if idSeq >= 1<<idCounterBits {
-			// agotamos los 4096 IDs de este milisegundo — esperar al siguiente
+		// El contador avanza de a idStride y no de a 1: así los ids generados
+		// dejan huecos. Importa porque SQLite numera las filas insertadas sin
+		// id explícito con max(id)+1, y sin huecos ese valor cae exactamente en
+		// el siguiente id de este proceso dentro del mismo milisegundo →
+		// "UNIQUE constraint failed: observations.id" y, con INSERT OR IGNORE,
+		// la fila se perdía en silencio (bug real, visto en la suite completa).
+		// Con el hueco, los ids que asigna SQLite nunca son un id de snowflake.
+		idSeq += idStride
+		if idSeq >= idMaxSeq {
+			// agotamos los ids de este milisegundo — esperar al siguiente
 			// en vez de arriesgar overflow hacia los bits del salt.
 			for ms <= idLastMs {
 				time.Sleep(50 * time.Microsecond)

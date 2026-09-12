@@ -96,6 +96,9 @@ func llmProviderStatus(cfg config.Config) string {
 		} else {
 			detail += " | guardián de carga: desactivado"
 		}
+		if provider == "claude-cli" {
+			detail += claudeCLILastFailureDetail()
+		}
 		return detail
 	}
 
@@ -137,6 +140,25 @@ func breakerStatus(cfg config.Config) (detail string, open bool) {
 			st.OpenUntil.Format(time.RFC3339), st.ConsecutiveFailures, st.LastError), true
 	}
 	return fmt.Sprintf("cortacircuitos LLM: cerrado (%d fallos consecutivos registrados)", st.ConsecutiveFailures), false
+}
+
+// claudeCLILastFailureDetail arma " | último fallo: <clasificación> (hace X)"
+// a partir de la última falla de claude-cli clasificada y persistida (ver
+// internal/llm.ReadLastFailure) — "" si nunca falló, para no ensuciar el
+// detalle de un proveedor que viene andando bien. A diferencia de
+// breakerStatus, esto no se borra cuando el cortacircuitos cierra tras un
+// éxito: el objetivo es poder seguir viendo "último fallo: hace X" incluso
+// después de que el proveedor se recuperó.
+func claudeCLILastFailureDetail() string {
+	dataDir, err := platform.DataDir()
+	if err != nil {
+		return ""
+	}
+	lf, ok := llm.ReadLastFailure(llm.DefaultLastFailurePath(dataDir))
+	if !ok {
+		return ""
+	}
+	return fmt.Sprintf(" | último fallo: %s (hace %s)", lf.Kind, formatDuration(time.Since(lf.At)))
 }
 
 func shortSessionID(obs *store.Observation) string {
