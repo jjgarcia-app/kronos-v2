@@ -237,3 +237,50 @@ func TestNewClaudeCLIFromConfig_NoCredentials_ReturnsNil(t *testing.T) {
 		t.Fatal("esperaba nil sin credenciales de Claude Code disponibles")
 	}
 }
+
+// dataDirFor calcula el mismo data dir que platform.DataDir() vería con el
+// HOME/XDG_DATA_HOME que dejó withFakeHome — evita que el test dependa de
+// platform.DataDir directamente para no acoplarse a su firma.
+func dataDirFor(t *testing.T, home string) string {
+	t.Helper()
+	return filepath.Join(home, ".local", "share", "kronos")
+}
+
+func TestNewClaudeCLIFromConfig_NoCredentials_RegistraAbstencionSinAbrirCortacircuitos(t *testing.T) {
+	home := withFakeHome(t)
+	cfg := config.Default()
+	cfg.LLM.Provider = "claude-cli"
+
+	if c := NewClaudeCLIFromConfig(context.Background(), cfg); c != nil {
+		t.Fatal("esperaba nil sin credenciales de Claude Code disponibles")
+	}
+
+	dataDir := dataDirFor(t, home)
+
+	st := NewUsage(DefaultUsagePath(dataDir)).State()
+	total := 0
+	for _, b := range st.Buckets {
+		if b.Provider == claudeCLIProvider && b.Result == UsageResultSkippedNoCreds {
+			total += b.Count
+		}
+	}
+	if total != 1 {
+		t.Fatalf("esperaba exactamente 1 abstención skipped_no_creds contada, got %d (buckets=%+v)", total, st.Buckets)
+	}
+	if st.LastResult != UsageResultSkippedNoCreds {
+		t.Errorf("LastResult = %q, want %q", st.LastResult, UsageResultSkippedNoCreds)
+	}
+
+	lf, ok := ReadLastFailure(DefaultLastFailurePath(dataDir))
+	if !ok {
+		t.Fatal("esperaba que se persistiera la clasificación de la abstención")
+	}
+	if lf.Kind != ClaudeCLIFailureNoCreds {
+		t.Errorf("kind = %q, want %q", lf.Kind, ClaudeCLIFailureNoCreds)
+	}
+
+	b := NewBreaker(DefaultBreakerPath(dataDir), 3, time.Minute)
+	if bst := b.State(); bst.ConsecutiveFailures != 0 || !bst.OpenUntil.IsZero() {
+		t.Errorf("la abstención sin credenciales no debería tocar el cortacircuitos, got %+v", bst)
+	}
+}
