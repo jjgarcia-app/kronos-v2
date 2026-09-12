@@ -413,7 +413,7 @@ func runRecall(ctx context.Context, in Input, st store.Storer, vs *embeddings.Ve
 		items = append(items, it)
 	}
 
-	items = rankAndDedupeRecallItems(items, k)
+	items = rankAndDedupeRecallItemsOpts(items, k, rc.MaxSessionItems)
 
 	if len(items) == 0 {
 		return
@@ -520,7 +520,33 @@ func gatherRecallCandidates(ctx2 context.Context, prompt string, st store.Storer
 // core para deduplicar — ver internal/hooks/core_block.go, titleOverlap /
 // titleOverlapThreshold / significantTitleTokens), antes de cortar en k.
 func rankAndDedupeRecallItems(items []recallItem, k int) []recallItem {
+	return rankAndDedupeRecallItemsOpts(items, k, defaultRecallMaxSessionItems)
+}
+
+// defaultRecallMaxSessionItems: cuántos resúmenes de sesión puede inyectar el
+// recall por prompt. Uno: sirven para "¿qué veníamos haciendo?", no para
+// desplazar el conocimiento real del proyecto.
+const defaultRecallMaxSessionItems = 1
+
+// rankAndDedupeRecallItemsOpts es la versión con tope de sesión configurable
+// (ver config.RecallConfig.MaxSessionItems). Los items de tipo session van
+// SIEMPRE al final, sin importar cuántos términos matcheen: medido contra la
+// base real (2026-09-11), type=session era el tipo MÁS inyectado de todos (76
+// items, ~19% del total inyectado), y un resumen de sesión que gana por
+// matchedTerms tapa un bugfix o una decisión que es lo que el agente necesita.
+// Se siguen pudiendo encontrar con mem_search: esto solo ordena/limita la
+// inyección automática.
+func rankAndDedupeRecallItemsOpts(items []recallItem, k, maxSession int) []recallItem {
+	if maxSession <= 0 {
+		maxSession = defaultRecallMaxSessionItems
+	}
+	isSession := func(typ string) bool { return typ == string(store.TypeSession) }
+
 	sort.SliceStable(items, func(i, j int) bool {
+		si, sj := isSession(items[i].typ), isSession(items[j].typ)
+		if si != sj {
+			return !si // el conocimiento real primero
+		}
 		if items[i].matchedTerms != items[j].matchedTerms {
 			return items[i].matchedTerms > items[j].matchedTerms
 		}
@@ -529,7 +555,14 @@ func rankAndDedupeRecallItems(items []recallItem, k int) []recallItem {
 
 	kept := make([]recallItem, 0, len(items))
 	keptTokens := make([][]string, 0, len(items))
+	sessions := 0
 	for _, it := range items {
+		if isSession(it.typ) {
+			if sessions >= maxSession {
+				continue
+			}
+			sessions++
+		}
 		tokens := significantTitleTokens(it.title)
 		dup := false
 		for _, kt := range keptTokens {
