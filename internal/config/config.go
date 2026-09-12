@@ -246,6 +246,15 @@ type RecallConfig struct {
 	// compatibilidad si alguien lo tenía configurado más chico que este
 	// default — nunca se relaja, solo se puede volver más estricto (ver
 	// capByLegacyTimeout en internal/hooks/prompt_submit.go).
+	// FTSTimeoutMs es el presupuesto de tiempo EXCLUSIVO de la fase FTS,
+	// deliberadamente generoso: la FTS es una consulta LOCAL y barata (2 ms
+	// medidos en Postgres), pero en una máquina cargada (6 CPUs, load 9-15 con
+	// varios agentes) el proceso puede quedarse sin CPU y tardar segundos. Si se
+	// corta, el recall devuelve VACÍO aunque el resultado ya estuviera en la
+	// mano — peor que entregarlo tarde. Medido: con 1000 ms un test del recall
+	// seguía fallando bajo carga alta; con el margen de acá, la fase solo se
+	// corta si algo está realmente colgado. El presupuesto corto (400 ms) queda
+	// para la fase cara: la sonda vectorial contra Ollama.
 	FTSTimeoutMs int `json:"fts_timeout_ms"`
 	// VectorProbeMs es el umbral de la sonda barata que decide si el
 	// proveedor de embeddings "viene caliente": si la ÚLTIMA llamada real
@@ -474,7 +483,7 @@ func Default() Config {
 			VectorOnFTSMiss: true,
 			MinMatchedTerms: 2,
 			TotalBudgetMs:   400,
-			FTSTimeoutMs:    1000,
+			FTSTimeoutMs:    5000,
 			VectorProbeMs:   300,
 			MaxSessionItems: 1,
 		},
