@@ -160,6 +160,13 @@ type CoreConfig struct {
 	// MaxItemChars: tope de caracteres por línea de item (tipo + título +
 	// resumen). 0 usa el default (110).
 	MaxItemChars int `json:"max_item_chars"`
+	// MaxSessionItems: tope de items de tipo session (resúmenes del agente y
+	// digests automáticos) dentro del bloque. 0 usa el default (1): el bloque
+	// ya trae el checkpoint ("dónde quedamos"), así que más de un resumen de
+	// sesión desplaza conocimiento real. Medido 2026-09-11 contra la base real:
+	// type=session era el tipo MÁS inyectado de todos (76 items históricos,
+	// ~19% del total) y entra por la sección de relleno sin tope propio.
+	MaxSessionItems int `json:"max_session_items"`
 	// StaleDays: a partir de cuántos días sin actualización una decisión o
 	// arquitectura se marca "(antiguo)" en el bloque, para que el agente
 	// sepa que puede estar desactualizada. 0 usa el default (90).
@@ -232,6 +239,12 @@ type RecallConfig struct {
 	// Sin datos previos (primera llamada del proceso) se asume caliente.
 	// Default 300ms.
 	VectorProbeMs int `json:"vector_probe_ms"`
+	// MaxSessionItems: tope de items de tipo session que el recall puede
+	// inyectar por prompt. 0 usa el default (1). Mismo motivo que
+	// CoreConfig.MaxSessionItems: un resumen de sesión que entra al bloque
+	// relevante desplaza conocimiento real, y medido contra la base real
+	// type=session era el tipo más inyectado de todos.
+	MaxSessionItems int `json:"max_session_items"`
 }
 
 // ConsolidationConfig controla la consolidación de duplicados semánticos
@@ -390,6 +403,7 @@ func Default() Config {
 			ProjectMinChars:   600,
 			MaxPerType:        3,
 			MaxItemChars:      110,
+			MaxSessionItems:   1,
 			StaleDays:         90,
 		},
 		Recall: RecallConfig{
@@ -420,6 +434,7 @@ func Default() Config {
 			MinMatchedTerms: 2,
 			TotalBudgetMs:   400,
 			VectorProbeMs:   300,
+			MaxSessionItems: 1,
 		},
 		Consolidation: ConsolidationConfig{
 			Enabled:            false,
@@ -821,6 +836,12 @@ func (c *Config) Set(key, value string) error {
 				return fmt.Errorf("invalid int: %s", value)
 			}
 			c.Core.StaleDays = n
+		case "max_session_items":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return fmt.Errorf("invalid int: %s", value)
+			}
+			c.Core.MaxSessionItems = n
 		default:
 			return fmt.Errorf("unknown core field: %s", field)
 		}
@@ -880,6 +901,12 @@ func (c *Config) Set(key, value string) error {
 				return fmt.Errorf("invalid int: %s", value)
 			}
 			c.Recall.VectorProbeMs = n
+		case "max_session_items":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return fmt.Errorf("invalid int: %s", value)
+			}
+			c.Recall.MaxSessionItems = n
 		default:
 			return fmt.Errorf("unknown recall field: %s", field)
 		}

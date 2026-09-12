@@ -848,3 +848,44 @@ func TestRunSessionStart_CoreEnabled_PrintsCoreBlock(t *testing.T) {
 		t.Errorf("esperaba la observación global en el bloque, output:\n%s", out)
 	}
 }
+
+// TestBuildCoreBlock_CapsSessionItems cubre el tope de resúmenes de sesión:
+// medido contra la base real, type=session era el tipo MÁS inyectado de todos
+// (76 items, ~19%) y entraba por la sección de relleno sin tope propio,
+// desplazando conocimiento real. El bloque ya trae el checkpoint, así que con
+// muchos resúmenes disponibles solo debe entrar UNO, y el conocimiento
+// (bugfix/decision) tiene que seguir entrando.
+func TestBuildCoreBlock_CapsSessionItems(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	// conocimiento real
+	if _, err := st.SaveObservation(ctx, store.SaveParams{
+		Type: store.TypeBugfix, Title: "Fix del índice del tsvector", Content: "La búsqueda hacía Seq Scan.",
+		Project: "proj-ses", Scope: store.ScopeProject,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// cinco resúmenes de sesión recientes
+	for i := 0; i < 5; i++ {
+		if _, err := st.SaveObservation(ctx, store.SaveParams{
+			Type: store.TypeSession, Title: fmt.Sprintf("Resumen de sesión %d", i),
+			Content: fmt.Sprintf("En qué se venía trabajando, resumen número %d.", i),
+			Project: "proj-ses", Scope: store.ScopeProject,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	block, err := hooks.BuildCoreBlock(ctx, st, "proj-ses", hooks.CoreBlockOptions{CharsLimit: 2000, MaxItems: 12})
+	if err != nil {
+		t.Fatalf("BuildCoreBlock: %v", err)
+	}
+	sesiones := strings.Count(block, "[session]")
+	if sesiones > 1 {
+		t.Errorf("entraron %d resúmenes de sesión, el tope default es 1:\n%s", sesiones, block)
+	}
+	if !strings.Contains(block, "tsvector") {
+		t.Errorf("el bugfix real debería seguir en el bloque:\n%s", block)
+	}
+}
