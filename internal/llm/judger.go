@@ -120,6 +120,7 @@ func NewOllamaFromConfig(ctx context.Context, cfg config.Config) *Client {
 			openFor = time.Duration(minutes) * time.Minute
 		}
 		c.SetBreaker(NewBreaker(DefaultBreakerPath(dataDir), failures, openFor))
+		c.SetUsage(NewUsage(DefaultUsagePath(dataDir)))
 	}
 	pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()

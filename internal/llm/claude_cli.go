@@ -16,6 +16,11 @@ import (
 	"github.com/jjgarcia-app/kronos-v2/internal/platform"
 )
 
+// claudeCLIProvider identifica este backend en Usage/LastFailure — mismo
+// string que cfg.LLM.Provider="claude-cli", para que `kronos doctor` no
+// tenga que reconciliar dos vocabularios distintos.
+const claudeCLIProvider = "claude-cli"
+
 const (
 	// DefaultClaudeCLIPath es el binario que se ejecuta si llm.cli_path no
 	// está configurado — se resuelve por PATH, igual que si el usuario
@@ -56,6 +61,11 @@ type claudeCLIBackend struct {
 	model     string
 	configDir string
 	timeout   time.Duration
+
+	// lastFailurePath: dónde persistir la última clasificación de falla (ver
+	// diagnostics.go) — "" (Client armado directo en tests) deja el registro
+	// como no-op.
+	lastFailurePath string
 }
 
 func (b *claudeCLIBackend) generate(ctx context.Context, prompt string, _ int) (string, error) {
@@ -82,15 +92,60 @@ func (b *claudeCLIBackend) generate(ctx context.Context, prompt string, _ int) (
 	// colgado hasta que ESE proceso termine por su cuenta, no hasta el
 	// timeout configurado.
 	cmd.WaitDelay = 2 * time.Second
-	err := cmd.Run()
-	if genCtx.Err() != nil {
-		return "", fmt.Errorf("claude cli: excedió el timeout de %s", b.timeout)
+	runErr := cmd.Run()
+	timedOut := genCtx.Err() != nil
+	if runErr == nil && !timedOut {
+		return strings.TrimSpace(stdout.String()), nil
 	}
-	if err != nil {
-		return "", fmt.Errorf("claude cli (%s) falló: %w — stderr: %s",
-			b.cliPath, err, truncate(strings.TrimSpace(stderr.String()), 500))
+
+	kind, advice := classifyClaudeCLIFailure(runErr, timedOut, stderr.String())
+	slog.Warn("claude-cli: llamada de generación falló",
+		"clasificación", kind, "acción", advice, "error", runErr,
+		"stderr", truncate(strings.TrimSpace(stderr.String()), 500))
+	recordLastFailure(b.lastFailurePath, claudeCLIProvider, kind, advice)
+
+	if timedOut {
+		return "", fmt.Errorf("claude cli: excedió el timeout de %s — %s", b.timeout, advice)
 	}
-	return strings.TrimSpace(stdout.String()), nil
+	return "", fmt.Errorf("claude cli (%s) falló [%s]: %s — %w — stderr: %s",
+		b.cliPath, kind, advice, runErr, truncate(strings.TrimSpace(stderr.String()), 500))
+}
+
+// classifyClaudeCLIFailure interpreta por qué falló `claude -p` a partir del
+// error de exec y del stderr crudo — motivado por que hoy un CLI
+// actualizado, una sesión deslogueada o un modelo inexistente lucen igual
+// desde afuera (exit != 0 o timeout), y el usuario tiene que adivinar qué
+// pasó leyendo un stderr crudo en el mejor de los casos. El matching de
+// stderr es por substring, sin distinguir mayúsculas, porque los textos
+// reales del CLI pueden variar entre versiones — si no matchea ninguno, se
+// clasifica como "desconocido" con el stderr recortado en vez de fallar el
+// diagnóstico.
+func classifyClaudeCLIFailure(runErr error, timedOut bool, stderr string) (kind, advice string) {
+	low := strings.ToLower(stderr)
+
+	if timedOut || strings.Contains(low, "timed out") || strings.Contains(low, "context deadline exceeded") {
+		return ClaudeCLIFailureTimeout, "el modelo no respondió dentro de llm.timeout_ms (súbelo o usá un modelo más rápido)"
+	}
+	// exec.ErrNotFound: el nombre no se encontró recorriendo $PATH (cli_path
+	// pelado, ej. "claude"). os.ErrNotExist: cli_path es una ruta absoluta
+	// que no existe — LookPath ni se intenta en ese caso, así que el error
+	// de exec es un *PathError distinto.
+	if errors.Is(runErr, exec.ErrNotFound) || errors.Is(runErr, os.ErrNotExist) {
+		return ClaudeCLIFailureBinaryMissing, "no encuentro el CLI de claude: revisá llm.cli_path"
+	}
+	if errors.Is(runErr, os.ErrPermission) {
+		return ClaudeCLIFailurePermission, "sin permiso para ejecutar el CLI"
+	}
+	switch {
+	case strings.Contains(low, "not logged in") || strings.Contains(low, "/login"):
+		return ClaudeCLIFailureNotLoggedIn, "no hay sesión de Claude Code iniciada: corré `claude login`"
+	case strings.Contains(low, "unknown flag") || strings.Contains(low, "unrecognized") ||
+		strings.Contains(low, "invalid model") || strings.Contains(low, "model not found"):
+		return ClaudeCLIFailureIncompatible, "el CLI o el modelo configurado no son compatibles: revisá `claude --version` y llm.model"
+	case strings.Contains(low, "permission denied"):
+		return ClaudeCLIFailurePermission, "sin permiso para ejecutar el CLI"
+	}
+	return ClaudeCLIFailureUnknown, "no se pudo clasificar la falla — stderr: " + truncate(strings.TrimSpace(stderr), 300)
 }
 
 // NewClaudeCLIFromConfig arma un *Client que genera invocando `claude -p` en
@@ -134,12 +189,14 @@ func NewClaudeCLIFromConfig(ctx context.Context, cfg config.Config) *Client {
 
 	c := &Client{
 		model:         model,
+		provider:      claudeCLIProvider,
 		maxLoadPerCPU: cfg.LLM.MaxLoadPerCPU,
 		backend: &claudeCLIBackend{
-			cliPath:   cliPath,
-			model:     model,
-			configDir: configDir,
-			timeout:   time.Duration(timeoutMs) * time.Millisecond,
+			cliPath:         cliPath,
+			model:           model,
+			configDir:       configDir,
+			timeout:         time.Duration(timeoutMs) * time.Millisecond,
+			lastFailurePath: DefaultLastFailurePath(dataDir),
 		},
 	}
 
@@ -149,6 +206,7 @@ func NewClaudeCLIFromConfig(ctx context.Context, cfg config.Config) *Client {
 		openFor = time.Duration(cfg.LLM.BreakerMinutes) * time.Minute
 	}
 	c.SetBreaker(NewBreaker(DefaultBreakerPath(dataDir), failures, openFor))
+	c.SetUsage(NewUsage(DefaultUsagePath(dataDir)))
 
 	return c
 }

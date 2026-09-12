@@ -71,7 +71,12 @@ type pinger interface {
 type Client struct {
 	model   string
 	breaker *Breaker
+	usage   *Usage
 	backend generateBackend
+
+	// provider identifica este cliente en el contador de uso ("ollama" /
+	// "claude-cli", ver usage.go) — no participa de la generación en sí.
+	provider string
 
 	// maxLoadPerCPU es el umbral del guardián de carga (llm.max_load_per_cpu,
 	// ver loadguard.go) — 0 lo desactiva, que es el default para un Client
@@ -91,6 +96,15 @@ func (c *Client) SetBreaker(b *Breaker) {
 	c.breaker = b
 }
 
+// SetUsage conecta un contador de uso al cliente — igual que SetBreaker,
+// las tres llamadas de generación lo actualizan tras cada intento
+// (incluidos los salteos por cortacircuitos o carga). nil (default) deja al
+// cliente sin contador, así que un Client de test no ensucia el archivo de
+// uso real a menos que lo pida explícitamente.
+func (c *Client) SetUsage(u *Usage) {
+	c.usage = u
+}
+
 // New creates a Client with default settings (localhost:11434, llama3.2).
 func New() *Client {
 	return NewClient(DefaultBase, DefaultModel)
@@ -107,7 +121,8 @@ func NewClient(base, model string) *Client {
 		model = DefaultModel
 	}
 	return &Client{
-		model: model,
+		model:    model,
+		provider: "ollama",
 		backend: &ollamaBackend{
 			base:  base,
 			model: model,
@@ -156,6 +171,48 @@ func (c *Client) checkLoadGuard() error {
 		return errLoadTooHigh
 	}
 	return nil
+}
+
+// recordUsage cuenta un resultado de generación en el contador de uso (ver
+// usage.go) — no-op si no hay Usage conectado (Client armado con New/
+// NewClient directamente sin SetUsage, como en la mayoría de los tests).
+func (c *Client) recordUsage(result string) {
+	if c.usage == nil {
+		return
+	}
+	c.usage.Record(c.provider, result)
+}
+
+// beginGeneration corre las dos chequeas comunes a las tres llamadas de
+// generación (cortacircuitos, guardián de carga) y arma la función a diferir
+// que reporta el resultado final al cortacircuitos y al contador de uso —
+// saca a las tres llamadas (JudgeRelation, ExtractFinding, UpdateDigest) de
+// tener que repetir el mismo bookkeeping. Si abort != nil, el caller debe
+// devolverlo sin llamar al backend ni diferir finish (que viene nil en ese
+// caso): el salteo ya quedó contado acá.
+func (c *Client) beginGeneration() (abort error, finish func(err error)) {
+	if c.breaker != nil && !c.breaker.Allow() {
+		c.recordUsage(UsageResultSkippedBreaker)
+		return errBreakerOpen, nil
+	}
+	if err := c.checkLoadGuard(); err != nil {
+		c.recordUsage(UsageResultSkippedLoad)
+		return err, nil
+	}
+	return nil, func(err error) {
+		if c.breaker != nil {
+			if err != nil {
+				c.breaker.RecordFailure(err)
+			} else {
+				c.breaker.RecordSuccess()
+			}
+		}
+		if err != nil {
+			c.recordUsage(UsageResultError)
+		} else {
+			c.recordUsage(UsageResultOK)
+		}
+	}
 }
 
 // logLoadSkipOnce loguea en debug que se salteó una llamada por carga alta —
@@ -252,21 +309,11 @@ func (b *ollamaBackend) generate(ctx context.Context, prompt string, numPredict 
 // two observations that have already been screened by cosine similarity.
 // Returns nil (no error) when Ollama is unavailable — callers should fall back gracefully.
 func (c *Client) JudgeRelation(ctx context.Context, aTitle, aContent, bTitle, bContent string, similarity float32) (result *JudgeResult, err error) {
-	if c.breaker != nil && !c.breaker.Allow() {
-		return nil, errBreakerOpen
+	abort, finish := c.beginGeneration()
+	if abort != nil {
+		return nil, abort
 	}
-	if err := c.checkLoadGuard(); err != nil {
-		return nil, err
-	}
-	if c.breaker != nil {
-		defer func() {
-			if err != nil {
-				c.breaker.RecordFailure(err)
-			} else {
-				c.breaker.RecordSuccess()
-			}
-		}()
-	}
+	defer func() { finish(err) }()
 
 	prompt := buildJudgePrompt(aTitle, aContent, bTitle, bContent, similarity)
 
@@ -311,21 +358,11 @@ type Finding struct {
 // the model finds nothing, same fail-open contract as JudgeRelation: callers
 // treat both "Ollama unavailable" and "nothing found" as "skip, don't save".
 func (c *Client) ExtractFinding(ctx context.Context, excerpt string) (finding *Finding, err error) {
-	if c.breaker != nil && !c.breaker.Allow() {
-		return nil, errBreakerOpen
+	abort, finish := c.beginGeneration()
+	if abort != nil {
+		return nil, abort
 	}
-	if err := c.checkLoadGuard(); err != nil {
-		return nil, err
-	}
-	if c.breaker != nil {
-		defer func() {
-			if err != nil {
-				c.breaker.RecordFailure(err)
-			} else {
-				c.breaker.RecordSuccess()
-			}
-		}()
-	}
+	defer func() { finish(err) }()
 
 	prompt := buildExtractPrompt(excerpt)
 
@@ -365,21 +402,11 @@ type DigestUpdate struct {
 // Returns (nil, nil) on any failure or empty response — same fail-open
 // contract as ExtractFinding/JudgeRelation.
 func (c *Client) UpdateDigest(ctx context.Context, previousDigest, excerpt string) (update *DigestUpdate, err error) {
-	if c.breaker != nil && !c.breaker.Allow() {
-		return nil, errBreakerOpen
+	abort, finish := c.beginGeneration()
+	if abort != nil {
+		return nil, abort
 	}
-	if err := c.checkLoadGuard(); err != nil {
-		return nil, err
-	}
-	if c.breaker != nil {
-		defer func() {
-			if err != nil {
-				c.breaker.RecordFailure(err)
-			} else {
-				c.breaker.RecordSuccess()
-			}
-		}()
-	}
+	defer func() { finish(err) }()
 
 	prompt := buildDigestPrompt(previousDigest, excerpt)
 
@@ -396,81 +423,6 @@ func (c *Client) UpdateDigest(ctx context.Context, previousDigest, excerpt strin
 		return nil, nil
 	}
 	return &d, nil
-}
-
-func buildDigestPrompt(previousDigest, excerpt string) string {
-	prior := "No hay resumen previo — esta es la primera actualización."
-	if strings.TrimSpace(previousDigest) != "" {
-		prior = fmt.Sprintf("Resumen previo:\n---\n%s\n---", truncate(previousDigest, 3000))
-	}
-
-	return fmt.Sprintf(`You maintain a running summary of an ongoing coding session for a persistent memory system — so that later, anyone (or any agent) querying memory gets a real answer to "what has been worked on here", without re-reading the full transcript.
-
-%s
-
-New transcript excerpt since the last update (oldest first):
----
-%s
----
-
-Extend the summary with anything new and concrete from this excerpt: what was investigated, decided, fixed, or built. Keep it dense — short bullet points, no filler, no restating obvious code. Preserve earlier content that's still relevant; drop anything superseded by newer information. If truly nothing new and substantive happened (small talk, routine back-and-forth with no real progress), return the previous summary completely unchanged.
-
-Respond ONLY with valid JSON (no markdown, no explanation outside JSON):
-{"content": "<updated running summary, plain text with line breaks, en español>"}`,
-		prior, truncate(excerpt, 6000),
-	)
-}
-
-func buildExtractPrompt(excerpt string) string {
-	return fmt.Sprintf(`You are screening a coding-session transcript excerpt for a persistent memory system, right before the conversation context gets compacted (destroyed).
-
-Decide if this excerpt documents something worth remembering permanently:
-- a bug that got fixed, together with its root cause
-- an architecture, design, or implementation decision that was made
-- a non-obvious discovery: a gotcha, an unexpected behavior, a hard-won workaround
-- a configuration change and the reason for it
-
-Do NOT flag: small talk, routine unremarkable edits, restating what the code already makes obvious, work that's still in progress with no conclusion yet.
-
-Transcript excerpt (most recent turns, oldest first):
----
-%s
----
-
-Respond ONLY with valid JSON (no markdown, no explanation outside JSON).
-If nothing qualifies: {"found": false}
-If something qualifies: {"found": true, "title": "<short searchable phrase, verb + what>", "content": "<Qué: ...\nPor qué: ...\nCómo aplicar: ...>"}`,
-		truncate(excerpt, 6000),
-	)
-}
-
-func buildJudgePrompt(aTitle, aContent, bTitle, bContent string, similarity float32) string {
-	return fmt.Sprintf(
-		`You are a knowledge conflict analyzer for a persistent memory system.
-Two memory observations have %.0f%% semantic similarity and require classification.
-
-Observation A:
-Title: %s
-Content: %s
-
-Observation B:
-Title: %s
-Content: %s
-
-Classify their relationship by choosing exactly ONE verb:
-- "conflicts_with"  → contradictory or mutually exclusive information
-- "supersedes"      → A replaces/updates B with newer or more accurate info
-- "related"         → same topic, complementary, should coexist
-- "compatible"      → different aspects of a shared domain, no conflict
-- "scoped"          → A is a specific instance/subset of B (or vice versa)
-- "not_conflict"    → topically unrelated despite surface similarity
-
-Respond ONLY with valid JSON (no markdown, no explanation outside JSON):
-{"relation": "<verb>", "reason": "<one concise sentence>", "confidence": <0.0-1.0>}`,
-		float64(similarity)*100,
-		aTitle, truncate(aContent, 400),
-		bTitle, truncate(bContent, 400),
-	)
 }
 
 func truncate(s string, max int) string {

@@ -54,6 +54,7 @@ func Run(ctx context.Context, cfg config.Config) Report {
 	r.Checks = append(r.Checks, checkClaudeHooks())
 	r.Checks = append(r.Checks, checkBinaryInPath())
 	r.Checks = append(r.Checks, checkAutoDigest(ctx, cfg))
+	r.Checks = append(r.Checks, checkLLMUsage())
 	if cfg.DB.Backend == "postgres" {
 		r.Checks = append(r.Checks, checkSyncQueue(ctx))
 	}
