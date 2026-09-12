@@ -15,7 +15,7 @@ import (
 // entre corridas.
 var usageResultOrder = []string{
 	llm.UsageResultOK, llm.UsageResultError,
-	llm.UsageResultSkippedLoad, llm.UsageResultSkippedBreaker,
+	llm.UsageResultSkippedLoad, llm.UsageResultSkippedBreaker, llm.UsageResultSkippedNoCreds,
 }
 
 var usageResultLabel = map[string]string{
@@ -23,6 +23,7 @@ var usageResultLabel = map[string]string{
 	llm.UsageResultError:          "error",
 	llm.UsageResultSkippedLoad:    "saltada por carga",
 	llm.UsageResultSkippedBreaker: "saltada por cortacircuitos",
+	llm.UsageResultSkippedNoCreds: "saltada sin credenciales",
 }
 
 // checkLLMUsage reporta cuántas llamadas de generación (digest, captura

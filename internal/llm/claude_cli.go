@@ -41,6 +41,13 @@ const (
 	claudeCLIConfigDirName = "claude-cli"
 )
 
+// errNoClaudeCredentials distingue, dentro de los errores que puede devolver
+// prepareClaudeCLIConfigDir, el caso puntual de "no hay nada para linkear" —
+// los otros (crear directorio, escribir settings.json) son fallas de
+// filesystem genéricas que no ameritan la clasificación "sin credenciales" en
+// diagnostics.go.
+var errNoClaudeCredentials = errors.New("no se encontraron credenciales de Claude Code (~/.claude/.credentials.json ni ~/.claude.json)")
+
 // claudeCLIBackend implementa generateBackend invocando `claude -p` como
 // subproceso — alternativa a Ollama para máquinas donde el modelo local no
 // responde bajo carga, aprovechando una suscripción de Claude Code ya
@@ -184,6 +191,15 @@ func NewClaudeCLIFromConfig(ctx context.Context, cfg config.Config) *Client {
 	configDir := filepath.Join(dataDir, claudeCLIConfigDirName)
 	if err := prepareClaudeCLIConfigDir(configDir); err != nil {
 		slog.Warn("claude-cli: config dir aislado no disponible, sin LLM por CLI", "error", err)
+		if errors.Is(err, errNoClaudeCredentials) {
+			// Abstención, no fallo: se cuenta y se clasifica para que `kronos
+			// doctor` la muestre, pero sin pasar por beginGeneration (no hay
+			// *Client todavía) ni por el cortacircuitos — no es una falla del
+			// CLI, es que no se lo llegó a invocar.
+			recordLastFailure(DefaultLastFailurePath(dataDir), claudeCLIProvider, ClaudeCLIFailureNoCreds,
+				"no encuentro las credenciales de Claude Code (~/.claude/.credentials.json): iniciá sesión con `claude login` o revisá llm.cli_path")
+			NewUsage(DefaultUsagePath(dataDir)).Record(claudeCLIProvider, UsageResultSkippedNoCreds)
+		}
 		return nil
 	}
 
@@ -246,7 +262,7 @@ func prepareClaudeCLIConfigDir(dir string) error {
 	}
 
 	if !fileExists(credsDst) && !fileExists(mcpDst) {
-		return errors.New("no se encontraron credenciales de Claude Code (~/.claude/.credentials.json ni ~/.claude.json)")
+		return errNoClaudeCredentials
 	}
 	return nil
 }

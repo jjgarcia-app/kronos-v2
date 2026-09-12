@@ -23,6 +23,13 @@ const (
 	UsageResultError          = "error"
 	UsageResultSkippedLoad    = "skipped_load"
 	UsageResultSkippedBreaker = "skipped_breaker"
+	// UsageResultSkippedNoCreds: el chequeo previo de claude-cli (ver
+	// prepareClaudeCLIConfigDir) no encontró credenciales de Claude Code para
+	// aislar — se aborta ANTES de construir el *Client, así que no pasa por
+	// beginGeneration; se cuenta acá para que no quede invisible en `kronos
+	// doctor`. Es una abstención (config del entorno), no un fallo del
+	// backend: no cuenta contra el cortacircuitos.
+	UsageResultSkippedNoCreds = "skipped_no_creds"
 )
 
 // UsageBucket cuenta cuántas llamadas de generación con un (proveedor,

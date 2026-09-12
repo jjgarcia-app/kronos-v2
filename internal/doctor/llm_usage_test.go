@@ -53,6 +53,26 @@ func TestFormatUsageDetail_NoCallsInCurrentHour(t *testing.T) {
 	}
 }
 
+func TestFormatUsageDetail_ShowsSkippedNoCredsAbstention(t *testing.T) {
+	now := time.Date(2026, 9, 12, 15, 30, 0, 0, time.UTC)
+	currentHour := now.Truncate(time.Hour)
+
+	state := llm.UsageState{
+		Buckets: []llm.UsageBucket{
+			{HourStart: currentHour, Provider: "claude-cli", Result: llm.UsageResultSkippedNoCreds, Count: 2},
+		},
+		LastAt:       now.Add(-1 * time.Minute),
+		LastProvider: "claude-cli",
+		LastResult:   llm.UsageResultSkippedNoCreds,
+	}
+
+	got := formatUsageDetail(state, now)
+
+	if !strings.Contains(got, "claude-cli 2: 2 saltada sin credenciales") {
+		t.Errorf("esperaba ver la abstención sin credenciales en el desglose, got: %q", got)
+	}
+}
+
 func TestCheckLLMUsage_NoData_ReportsNoInventedZeros(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_DATA_HOME", "")

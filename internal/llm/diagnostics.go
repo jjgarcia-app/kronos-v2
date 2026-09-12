@@ -19,6 +19,13 @@ const (
 	ClaudeCLIFailureBinaryMissing = "binario no encontrado"
 	ClaudeCLIFailurePermission    = "permiso denegado"
 	ClaudeCLIFailureUnknown       = "desconocido"
+	// ClaudeCLIFailureNoCreds: no es una falla del CLI en sí — el chequeo
+	// previo de NewClaudeCLIFromConfig no encontró credenciales de Claude
+	// Code para armar el config dir aislado, así que ni se llegó a invocar
+	// `claude -p`. Se distingue del resto de las clasificaciones (que sí
+	// vienen de una invocación real) para que `kronos doctor` señale
+	// configuración del entorno en vez de "el CLI falló".
+	ClaudeCLIFailureNoCreds = "sin credenciales"
 )
 
 // LastFailure es la última clasificación de falla de generación registrada.
