@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
 # verify-memory.sh — verificación de punta a punta de la memoria de kronos.
 #
-# Corre las cuatro cosas que de verdad importan (y que ya se rompieron una vez
-# cada una) contra el binario REAL y la base REAL, sin mocks:
+# Corre, contra el binario REAL y la base REAL (sin mocks), las cosas que de
+# verdad importan de esta memoria — cada chequeo existe porque esa parte ya
+# se rompió al menos una vez y el fallo no se veía desde afuera:
 #
 #   1. bloque core  — que SessionStart inyecte items del proyecto, sin
 #                     "recortado por presupuesto" (el caso que motivó el
-#                     filtro de pertinencia de la ronda 4).
-#   2. recall       — que un prompt conversacional traiga memoria y que un
-#                     prompt trivial no gaste nada (ronda 3).
+#                     filtro de pertinencia de la ronda 4), y que los digests
+#                     de sesión (type=session) nunca superen
+#                     core.max_session_items (default 1).
+#   2. recall       — que un prompt conversacional traiga memoria, que un
+#                     prompt trivial no gaste nada (ronda 3), y que cuando FTS
+#                     ya alcanzó no se pague el round-trip vectorial (FTS-first).
 #   3. gate         — los tres casos: sesión sin inyección en proyecto con
 #                     memoria bloquea, sesión ya informada no bloquea, proyecto
 #                     sin memoria no bloquea (rondas 2 y 4).
@@ -16,6 +20,12 @@
 #                     importar, y confirmar que el archivo queda al día y que
 #                     el export siguiente NO lo marca como editado a mano
 #                     (ronda 4; restaura la fixture al terminar).
+#   5. doctor       — que el contador de uso de generación LLM aparezca en
+#                     `kronos doctor` (sin esto, el consumo de la suscripción
+#                     de Claude Code vía claude-cli es invisible).
+#   6. doctor       — que los pendientes de digest (enriquecimiento completo
+#                     vs solo hechos) se desglosen en la línea del digest, así
+#                     un pendiente que no avanza no queda colgado sin verse.
 #
 # Uso:
 #   scripts/verify-memory.sh [--proyecto NOMBRE] [--sin-vault] [--bin RUTA]
@@ -32,7 +42,7 @@ while [ $# -gt 0 ]; do
     --bin) BIN="$2"; shift 2 ;;
     --proyecto) PROYECTO="$2"; shift 2 ;;
     --sin-vault) CON_VAULT=0; shift ;;
-    -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,34p' "$0"; exit 0 ;;
     *) echo "argumento desconocido: $1" >&2; exit 2 ;;
   esac
 done
@@ -95,6 +105,20 @@ else
 fi
 PROYECTO_BLOQUE="$(printf '%s' "$CORE_FOOTER" | sed -n 's/.*project \([^ ]*\).*/\1/p')"
 [ -n "$PROYECTO_BLOQUE" ] && PROYECTO="$PROYECTO_BLOQUE"
+# core.max_session_items (default 1): los resúmenes de sesión (digests
+# automáticos y mem_session_summary, ambos type=session) no pueden tapar
+# conocimiento real en el bloque siempre-presente — sobre datos reales, sin
+# sesiones sintéticas: si el proyecto acumuló más de un digest histórico,
+# esto ya lo ejercita solo. El primer "max_session_items" del JSON es el de
+# "core" porque el campo Core va antes que Recall en el struct de config.
+MAX_SESSION_ITEMS="$("$BIN" config show 2>/dev/null | sed -n 's/.*"max_session_items": *\([0-9]*\).*/\1/p' | head -1)"
+[ -z "$MAX_SESSION_ITEMS" ] && MAX_SESSION_ITEMS=1
+CORE_SESSION_ITEMS="$(printf '%s' "$CORE_OUT" | grep -c '^- \[session\]' || true)"
+if [ "$CORE_SESSION_ITEMS" -le "$MAX_SESSION_ITEMS" ]; then
+  ok "items type=session en el bloque core: $CORE_SESSION_ITEMS (tope core.max_session_items=$MAX_SESSION_ITEMS)"
+else
+  bad "el bloque core trae $CORE_SESSION_ITEMS items type=session, por encima del tope core.max_session_items=$MAX_SESSION_ITEMS"
+fi
 
 # -------------------------------------------------------------------- 2. recall
 head_ "2. recall por prompt (UserPromptSubmit)"
@@ -121,6 +145,20 @@ if [ "$CONV_MS" -lt 1500 ]; then
   ok "latencia del recall: ${CONV_MS}ms (presupuesto 400ms + arranque del proceso)"
 else
   warn "latencia del recall: ${CONV_MS}ms — alta (¿Ollama cargado o máquina ocupada?)"
+fi
+# FTS-first (recall.min_fts_results, default 1): si el prompt conversacional
+# ya trajo una inyección por FTS, el camino vectorial (round-trip real a
+# Ollama, 800ms-6s medidos en esta máquina) ni se intenta — se saltea "frío",
+# sin pagarlo. Umbral informativo (WARN, no FAIL): una máquina cargada puede
+# inflar hasta el arranque del proceso solo, así que esto no debe tumbar la
+# verificación, pero una corrida sana casi nunca lo cruza si de verdad no
+# pagó el vector.
+if printf '%s' "$CONV_OUT" | grep -q 'kronos:relevante'; then
+  if [ "$CONV_MS" -lt 250 ]; then
+    ok "recall resuelto sin pagar el intento vectorial (${CONV_MS}ms, consistente con FTS-only)"
+  else
+    warn "recall con FTS-only tardó ${CONV_MS}ms — más de lo esperable si no pagó el vector (o la máquina está cargada)"
+  fi
 fi
 
 # ---------------------------------------------------------------------- 3. gate
@@ -207,6 +245,24 @@ else
       ok "fixture restaurada"
     fi
   fi
+fi
+
+# ---------------------------------------------------------- 5. doctor: generación
+head_ "5. doctor: contador de uso de generación LLM"
+DOCTOR_OUT="$(timeout 30 "$BIN" doctor 2>&1)"
+if printf '%s' "$DOCTOR_OUT" | grep -q 'Uso de generación LLM'; then
+  ok "el contador de uso de generación aparece en kronos doctor"
+else
+  bad "kronos doctor no muestra el check 'Uso de generación LLM'"
+fi
+
+# ------------------------------------------------------ 6. doctor: digest pendientes
+head_ "6. doctor: pendientes de digest desglosados (enriquecimiento vs hechos)"
+DIGEST_LINE="$(printf '%s' "$DOCTOR_OUT" | grep -m1 'Digest automático')"
+if printf '%s' "$DIGEST_LINE" | grep -q 'pendientes:'; then
+  ok "la línea del digest desglosa pendientes: $(printf '%s' "$DIGEST_LINE" | sed -n 's/.*pendientes: \([^|]*\).*/\1/p' | sed 's/ *$//')"
+else
+  bad "la línea del digest no trae el desglose de pendientes: $DIGEST_LINE"
 fi
 
 # --------------------------------------------------------------------- resumen
