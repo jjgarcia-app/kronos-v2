@@ -7,12 +7,15 @@ on:
   # Permite republicar un tag viejo sin recrearlo: los assets de goreleaser solo
   # se generan cuando se pushea el tag, así que si varios tags se pushean juntos
   # (o el run falla), la versión queda sin sus tarballs. Con esto:
-  #   gh workflow run release.yml --ref v2.18.14
+  #   gh workflow run release.yml --ref main -f tag=v2.18.14
+  # El input es necesario porque GitHub toma el workflow del ref elegido: al
+  # disparar sobre main hay que decirle qué tag construir, y el checkout de abajo
+  # hace el checkout de ese tag, no el de main.
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag a publicar (se usa el ref elegido al disparar)'
-        required: false
+        description: 'Tag a publicar (ej. v2.18.14)'
+        required: true
         type: string
 
 permissions:
@@ -25,6 +28,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          # En un push de tag, github.ref ya es el tag. En un disparo manual sobre
+          # main, el input `tag` es el que manda.
+          ref: ${{ inputs.tag || github.ref }}
 
       - uses: actions/setup-go@v5
         with:
