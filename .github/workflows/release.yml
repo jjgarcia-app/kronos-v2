@@ -4,6 +4,16 @@ on:
   push:
     tags:
       - 'v*'
+  # Permite republicar un tag viejo sin recrearlo: los assets de goreleaser solo
+  # se generan cuando se pushea el tag, así que si varios tags se pushean juntos
+  # (o el run falla), la versión queda sin sus tarballs. Con esto:
+  #   gh workflow run release.yml --ref v2.18.14
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag a publicar (se usa el ref elegido al disparar)'
+        required: false
+        type: string
 
 permissions:
   contents: write
