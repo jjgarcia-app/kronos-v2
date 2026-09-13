@@ -43,6 +43,38 @@ func ollamaDigestStub(t *testing.T, inner string) *httptest.Server {
 	}))
 }
 
+// ollamaDigestStubSequence devuelve una respuesta distinta en cada llamada
+// sucesiva (la última se repite si hay más llamadas que respuestas) — usado
+// para probar el ciclo completo de un reintento: la primera llamada simula
+// el tick original (prosa) y la segunda el reintento acotado de "solo
+// hechos" en el siguiente tick, contra el mismo servidor. También guarda
+// cada prompt recibido, para verificar qué se le pidió al modelo en cada
+// llamada (ej. que el reintento no vuelve a mandar el prompt completo).
+func ollamaDigestStubSequence(t *testing.T, responses []string) (srv *httptest.Server, prompts *[]string) {
+	t.Helper()
+	var mu sync.Mutex
+	var got []string
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Prompt string `json:"prompt"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+
+		mu.Lock()
+		idx := len(got)
+		got = append(got, body.Prompt)
+		mu.Unlock()
+
+		inner := responses[len(responses)-1]
+		if idx < len(responses) {
+			inner = responses[idx]
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"response": inner})
+	}))
+	return srv, &got
+}
+
 // backdateObservationUpdatedAt fuerza updated_at al pasado — necesario para
 // probar el camino "el digest existe pero ya venció" sin esperar de verdad
 // digestInterval (20min por default) en el test.
@@ -174,6 +206,7 @@ func TestMaybeUpdateDigest_DigestDisabled_NoOp(t *testing.T) {
 // prosa del LLM MÁS el bloque determinístico al final — nunca se pierden
 // los hechos concretos aunque el LLM resuma de más.
 func TestMaybeUpdateDigest_LLMEnriches_KeepsDeterministicBlock(t *testing.T) {
+	isolatedDataDir(t) // el stub no trae "facts" — sin aislar, marcaría un pendiente de hechos en el data dir real
 	st := newTestStore(t)
 	ctx := context.Background()
 	if _, err := st.CreateSession(ctx, "s1", "kronos-v2", "/tmp/kronos-v2"); err != nil {
@@ -214,6 +247,7 @@ func TestMaybeUpdateDigest_LLMEnriches_KeepsDeterministicBlock(t *testing.T) {
 // inválido), el digest determinístico se guarda igual, sin el aporte del
 // LLM.
 func TestMaybeUpdateDigest_LLMFails_KeepsDeterministicOnly(t *testing.T) {
+	isolatedDataDir(t) // la falla marca un pendiente — sin aislar, escribiría en el data dir real
 	st := newTestStore(t)
 	ctx := context.Background()
 	if _, err := st.CreateSession(ctx, "s1", "kronos-v2", "/tmp/kronos-v2"); err != nil {
@@ -438,6 +472,7 @@ func TestMaybeUpdateDigest_SessionRowMissing_StillSaves(t *testing.T) {
 // que la prosa del digest (ver llm.Client.UpdateDigest) se guarda como
 // observación PROPIA con su tipo — no enterrado en el digest tipo "session".
 func TestMaybeUpdateDigest_PromotesFacts_WithType(t *testing.T) {
+	isolatedDataDir(t) // pending.Clear() escribe al data dir tras un enriquecimiento exitoso — aislar por higiene
 	st := newTestStore(t)
 	ctx := context.Background()
 	if _, err := st.CreateSession(ctx, "s1", "kronos-v2", "/tmp/kronos-v2"); err != nil {
@@ -481,6 +516,7 @@ func TestMaybeUpdateDigest_PromotesFacts_WithType(t *testing.T) {
 // hechos no agrega una llamada nueva al LLM: es la MISMA respuesta que ya
 // generaba la prosa, así que el contador de uso sube en 1, no en 2.
 func TestMaybeUpdateDigest_SingleLLMCall_NoExtraUsage(t *testing.T) {
+	isolatedDataDir(t) // pending.Clear() escribe al data dir tras un enriquecimiento exitoso — aislar por higiene
 	st := newTestStore(t)
 	ctx := context.Background()
 	if _, err := st.CreateSession(ctx, "s1", "kronos-v2", "/tmp/kronos-v2"); err != nil {
@@ -514,6 +550,7 @@ func TestMaybeUpdateDigest_SingleLLMCall_NoExtraUsage(t *testing.T) {
 // una fila nueva — SaveObservation ya dedupea por hash, esto verifica que
 // promoteDigestFacts lo aprovecha en vez de esquivarlo con un topic_key.
 func TestMaybeUpdateDigest_RerunSameFacts_DoesNotDuplicate(t *testing.T) {
+	isolatedDataDir(t) // pending.Clear() escribe al data dir tras un enriquecimiento exitoso — aislar por higiene
 	st := newTestStore(t)
 	ctx := context.Background()
 	if _, err := st.CreateSession(ctx, "s1", "kronos-v2", "/tmp/kronos-v2"); err != nil {
@@ -564,6 +601,7 @@ func TestMaybeUpdateDigest_RerunSameFacts_DoesNotDuplicate(t *testing.T) {
 // fuera del whitelist (acá "session", justo el tipo que este cambio busca
 // dejar de sobrecargar) se descarta en vez de colarse como observación.
 func TestMaybeUpdateDigest_DiscardsFactsWithInvalidType(t *testing.T) {
+	isolatedDataDir(t) // pending.Clear() escribe al data dir tras un enriquecimiento exitoso — aislar por higiene
 	st := newTestStore(t)
 	ctx := context.Background()
 	if _, err := st.CreateSession(ctx, "s1", "kronos-v2", "/tmp/kronos-v2"); err != nil {
@@ -594,6 +632,7 @@ func TestMaybeUpdateDigest_DiscardsFactsWithInvalidType(t *testing.T) {
 // un hecho genérico/truncado ("se corrieron tests", o peor, casi vacío) no
 // vale la pena guardarlo como observación propia.
 func TestMaybeUpdateDigest_DiscardsTooShortFacts(t *testing.T) {
+	isolatedDataDir(t) // pending.Clear() escribe al data dir tras un enriquecimiento exitoso — aislar por higiene
 	st := newTestStore(t)
 	ctx := context.Background()
 	if _, err := st.CreateSession(ctx, "s1", "kronos-v2", "/tmp/kronos-v2"); err != nil {
@@ -623,6 +662,7 @@ func TestMaybeUpdateDigest_DiscardsTooShortFacts(t *testing.T) {
 // TestMaybeUpdateDigest_MaxFactsCap confirma digest.max_facts: con más
 // hechos propuestos que el tope, solo se guardan los primeros N.
 func TestMaybeUpdateDigest_MaxFactsCap(t *testing.T) {
+	isolatedDataDir(t) // pending.Clear() escribe al data dir tras un enriquecimiento exitoso — aislar por higiene
 	st := newTestStore(t)
 	ctx := context.Background()
 	if _, err := st.CreateSession(ctx, "s1", "kronos-v2", "/tmp/kronos-v2"); err != nil {
@@ -667,6 +707,7 @@ func TestMaybeUpdateDigest_MaxFactsCap(t *testing.T) {
 // guarda ninguno como observación propia (el digest tipo session sí, igual
 // que siempre).
 func TestMaybeUpdateDigest_PromoteFactsDisabled_NoFactsSaved(t *testing.T) {
+	isolatedDataDir(t) // pending.Clear() escribe al data dir tras un enriquecimiento exitoso — aislar por higiene
 	st := newTestStore(t)
 	ctx := context.Background()
 	if _, err := st.CreateSession(ctx, "s1", "kronos-v2", "/tmp/kronos-v2"); err != nil {
@@ -700,6 +741,7 @@ func TestMaybeUpdateDigest_PromoteFactsDisabled_NoFactsSaved(t *testing.T) {
 // vez de un array de objetos) no debe tirar abajo el digest en prosa, que es
 // lo que ya funcionaba antes de que existiera esta sección.
 func TestMaybeUpdateDigest_MalformedFactsJSON_KeepsContent(t *testing.T) {
+	isolatedDataDir(t) // facts malformado marca pendiente de hechos — sin aislar, escribiría en el data dir real
 	st := newTestStore(t)
 	ctx := context.Background()
 	if _, err := st.CreateSession(ctx, "s1", "kronos-v2", "/tmp/kronos-v2"); err != nil {
@@ -913,5 +955,169 @@ func TestMaybeUpdateDigest_RetriesExhausted_StopsAttemptingLLM(t *testing.T) {
 
 	if *calls != 3 {
 		t.Errorf("llamadas al LLM = %d, want 3 (tope de reintentos alcanzado, la 4ta no debería haber llamado)", *calls)
+	}
+}
+
+// --- Tema 1: los hechos del digest dejan de perderse en silencio ---
+//
+// El hueco medido en producción: la llamada de enriquecimiento sale bien
+// (guarda prosa), pero la respuesta no trae una sección de hechos explícita
+// — hoy eso no queda pendiente, así que el aprendizaje se pierde en silencio.
+// Los tres tests que siguen cubren los tres desenlaces posibles: (a) hechos
+// en la primera respuesta (ya cubierto arriba por
+// TestMaybeUpdateDigest_PromotesFacts_WithType), (b) prosa sin sección de
+// hechos → pendiente de "solo hechos", y (c) el modelo dice explícitamente
+// que no hay nada → sin pendiente.
+
+// TestMaybeUpdateDigest_ProseWithoutFactsField_MarksFactsPending confirma el
+// caso (b): la prosa se guarda igual, pero al no venir "facts" en la
+// respuesta (ni lista ni ausencia explícita) la sesión queda anotada como
+// pendiente de SOLO hechos — no de enriquecimiento completo, que ya se logró.
+func TestMaybeUpdateDigest_ProseWithoutFactsField_MarksFactsPending(t *testing.T) {
+	dataDir := isolatedDataDir(t)
+	st := newTestStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateSession(ctx, "s1", "kronos-v2", "/tmp/kronos-v2"); err != nil {
+		t.Fatal(err)
+	}
+	path := writeTestTranscript(t, []string{
+		`{"type":"user","message":{"role":"user","content":"por qué falla el build, llevo media hora viendo este error y no encuentro qué lo está causando"}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":"la causa era un import circular entre internal/foo e internal/bar, lo saqué a un paquete nuevo internal/shared"}}`,
+	})
+	srv := ollamaDigestStub(t, `{"content":"prosa sin sección de hechos"}`)
+	defer srv.Close()
+
+	llmClient := llm.NewClient(srv.URL, "llama3.2:1b")
+	if err := hooks.MaybeUpdateDigest(ctx, st, config.Default(), llmClient, "s1", path, "/tmp/kronos-v2", false); err != nil {
+		t.Fatalf("MaybeUpdateDigest: %v", err)
+	}
+
+	obs, err := st.GetByTopicKey(ctx, "kronos-v2", "session/s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if obs == nil || !strings.Contains(obs.Content, "prosa sin sección de hechos") {
+		t.Fatalf("la prosa debería haberse guardado igual, got: %+v", obs)
+	}
+
+	pending := llm.NewDigestPending(llm.DefaultDigestPendingPath(dataDir))
+	if kind := pending.PendingKind("s1"); kind != llm.DigestPendingKindFacts {
+		t.Errorf("PendingKind = %q, want %q (éxito en la prosa, hechos sin respuesta explícita)", kind, llm.DigestPendingKindFacts)
+	}
+}
+
+// TestMaybeUpdateDigest_ExplicitEmptyFacts_NoPending confirma el caso (c):
+// el modelo respeta el formato pedido y devuelve "facts": [] — eso es una
+// respuesta explícita de "no hay nada que promover", así que no debe quedar
+// ningún pendiente (reintentar sería trabajo al pedo).
+func TestMaybeUpdateDigest_ExplicitEmptyFacts_NoPending(t *testing.T) {
+	dataDir := isolatedDataDir(t)
+	st := newTestStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateSession(ctx, "s1", "kronos-v2", "/tmp/kronos-v2"); err != nil {
+		t.Fatal(err)
+	}
+	path := writeTestTranscript(t, []string{
+		`{"type":"user","message":{"role":"user","content":"por qué falla el build, llevo media hora viendo este error y no encuentro qué lo está causando"}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":"la causa era un import circular entre internal/foo e internal/bar, lo saqué a un paquete nuevo internal/shared"}}`,
+	})
+	srv := ollamaDigestStub(t, `{"content":"prosa sin novedades","facts":[]}`)
+	defer srv.Close()
+
+	llmClient := llm.NewClient(srv.URL, "llama3.2:1b")
+	if err := hooks.MaybeUpdateDigest(ctx, st, config.Default(), llmClient, "s1", path, "/tmp/kronos-v2", false); err != nil {
+		t.Fatalf("MaybeUpdateDigest: %v", err)
+	}
+
+	obs, err := st.GetByTopicKey(ctx, "kronos-v2", "session/s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if obs == nil || !strings.Contains(obs.Content, "prosa sin novedades") {
+		t.Fatalf("la prosa del LLM debería haberse guardado (confirma que la llamada sí se hizo): %+v", obs)
+	}
+
+	pending := llm.NewDigestPending(llm.DefaultDigestPendingPath(dataDir))
+	if kind := pending.PendingKind("s1"); kind != "" {
+		t.Errorf("PendingKind = %q, want \"\" (facts:[] es una respuesta explícita, no hay nada que reintentar)", kind)
+	}
+}
+
+// TestMaybeUpdateDigest_FactsOnlyRetry_PromotesFactWithoutResendingProse
+// confirma el ciclo completo del caso (b): en el tick siguiente a una prosa
+// sin hechos, MaybeUpdateDigest reintenta con el pedido ACOTADO (sin volver a
+// pedir la prosa, que ya está guardada), y si esta vez el modelo responde con
+// hechos, se promueven y el pendiente se limpia — preservando el contenido ya
+// guardado en el tick anterior en vez de pisarlo con el determinístico
+// recién calculado.
+func TestMaybeUpdateDigest_FactsOnlyRetry_PromotesFactWithoutResendingProse(t *testing.T) {
+	isolatedDataDir(t)
+	st := newTestStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateSession(ctx, "s1", "kronos-v2", "/tmp/kronos-v2"); err != nil {
+		t.Fatal(err)
+	}
+	path := writeTestTranscript(t, []string{
+		`{"type":"user","message":{"role":"user","content":"por qué falla el build, llevo media hora viendo este error y no encuentro qué lo está causando"}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":"la causa era un import circular entre internal/foo e internal/bar, lo saqué a un paquete nuevo internal/shared"}}`,
+	})
+	srv, prompts := ollamaDigestStubSequence(t, []string{
+		`{"content":"prosa original guardada en el primer tick"}`,
+		`[{"type":"bugfix","title":"Fix vía reintento acotado de hechos","content":"Qué: import circular. Por qué: paquetes acoplados. Cómo aplicar: separar en internal/shared."}]`,
+	})
+	defer srv.Close()
+	llmClient := llm.NewClient(srv.URL, "llama3.2:1b")
+
+	// Tick 1: prosa sin hechos — deja el pendiente de "solo hechos" (caso b).
+	if err := hooks.MaybeUpdateDigest(ctx, st, config.Default(), llmClient, "s1", path, "/tmp/kronos-v2", false); err != nil {
+		t.Fatalf("MaybeUpdateDigest (tick 1): %v", err)
+	}
+
+	// Tick 2: force=false y el digest recién se guardó (no venció
+	// digestInterval) — sin el pendiente de hechos, MaybeUpdateDigest lo
+	// saltearía por "todavía no toca".
+	if err := hooks.MaybeUpdateDigest(ctx, st, config.Default(), llmClient, "s1", path, "/tmp/kronos-v2", false); err != nil {
+		t.Fatalf("MaybeUpdateDigest (tick 2): %v", err)
+	}
+
+	if len(*prompts) != 2 {
+		t.Fatalf("llamadas al LLM = %d, want 2", len(*prompts))
+	}
+	if strings.Contains((*prompts)[1], "You maintain a running summary") {
+		t.Error("el reintento de hechos no debería reenviar el prompt completo de prosa")
+	}
+	if !strings.Contains((*prompts)[1], "extracting standalone facts") {
+		t.Errorf("el reintento debería usar el prompt acotado de solo hechos, prompt = %q", (*prompts)[1])
+	}
+
+	obs, err := st.GetByTopicKey(ctx, "kronos-v2", "session/s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(obs.Content, "prosa original guardada en el primer tick") {
+		t.Errorf("el reintento de hechos no debería pisar la prosa ya guardada, Content = %q", obs.Content)
+	}
+
+	allObs, err := st.ListAll(ctx, "kronos-v2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fact *store.Observation
+	for _, o := range allObs {
+		if o.Type == store.TypeBugfix {
+			fact = o
+		}
+	}
+	if fact == nil {
+		t.Fatalf("esperaba una observación tipo bugfix promovida por el reintento acotado, got: %+v", allObs)
+	}
+
+	dataDir, err := platform.DataDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending := llm.NewDigestPending(llm.DefaultDigestPendingPath(dataDir))
+	if kind := pending.PendingKind("s1"); kind != "" {
+		t.Errorf("PendingKind = %q, want \"\" tras el reintento exitoso", kind)
 	}
 }

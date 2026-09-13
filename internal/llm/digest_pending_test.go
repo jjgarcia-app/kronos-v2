@@ -124,6 +124,62 @@ func TestDigestPending_NilReceiver_SafeNoop(t *testing.T) {
 	p.Clear("s1")
 }
 
+// --- Tema 1: distinguir pendiente de enriquecimiento completo vs solo hechos ---
+
+func TestDigestPending_MarkFactsPending_KindIsFacts(t *testing.T) {
+	p := NewDigestPending(filepath.Join(t.TempDir(), "digest-pending.json"))
+	p.MarkFactsPending("s1")
+	if kind := p.PendingKind("s1"); kind != DigestPendingKindFacts {
+		t.Errorf("PendingKind = %q, want %q", kind, DigestPendingKindFacts)
+	}
+}
+
+func TestDigestPending_MarkFailed_KindIsEnrichment(t *testing.T) {
+	p := NewDigestPending(filepath.Join(t.TempDir(), "digest-pending.json"))
+	p.MarkFailed("s1")
+	if kind := p.PendingKind("s1"); kind != DigestPendingKindEnrichment {
+		t.Errorf("PendingKind = %q, want %q", kind, DigestPendingKindEnrichment)
+	}
+}
+
+func TestDigestPending_PendingKind_NoEntry_Empty(t *testing.T) {
+	p := NewDigestPending(filepath.Join(t.TempDir(), "digest-pending.json"))
+	if kind := p.PendingKind("s1"); kind != "" {
+		t.Errorf("PendingKind sin entrada = %q, want \"\"", kind)
+	}
+}
+
+// TestDigestPending_MarkFailed_OverwritesFactsKind confirma que una falla
+// real del enriquecimiento completo siempre exige reintentar todo, aunque la
+// sesión ya tuviera un pendiente de "solo hechos" de un ciclo anterior.
+func TestDigestPending_MarkFailed_OverwritesFactsKind(t *testing.T) {
+	p := NewDigestPending(filepath.Join(t.TempDir(), "digest-pending.json"))
+	p.MarkFactsPending("s1")
+	p.MarkFailed("s1")
+	if kind := p.PendingKind("s1"); kind != DigestPendingKindEnrichment {
+		t.Errorf("PendingKind = %q, want %q tras MarkFailed", kind, DigestPendingKindEnrichment)
+	}
+}
+
+func TestDigestPending_CountByKind_SplitsByType(t *testing.T) {
+	p := NewDigestPending(filepath.Join(t.TempDir(), "digest-pending.json"))
+	p.MarkFailed("s1")
+	p.MarkFactsPending("s2")
+	p.MarkFactsPending("s3")
+	enrichment, facts := p.CountByKind()
+	if enrichment != 1 || facts != 2 {
+		t.Errorf("CountByKind = (%d, %d), want (1, 2)", enrichment, facts)
+	}
+}
+
+func TestDigestPending_CountByKind_NilReceiver_Zero(t *testing.T) {
+	var p *DigestPending
+	enrichment, facts := p.CountByKind()
+	if enrichment != 0 || facts != 0 {
+		t.Errorf("CountByKind sobre nil = (%d, %d), want (0, 0)", enrichment, facts)
+	}
+}
+
 func writeCorruptFile(t *testing.T, path string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte("{esto no es json"), 0o644); err != nil {

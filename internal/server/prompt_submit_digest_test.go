@@ -25,6 +25,7 @@ import (
 // resumen — sin que la request en sí tenga que esperarlo (responde 200 de
 // inmediato, el digest se ve un instante después).
 func TestHandlePromptSubmit_TriggersDigestUpdate(t *testing.T) {
+	isolatedDigestPendingDir(t)
 	srv, ts := newTestServer(t, "")
 
 	llmSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

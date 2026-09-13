@@ -96,6 +96,7 @@ func TestHandlePreCompactCapture_MissingFields_StillAccepted_NoOp(t *testing.T) 
 // pese a responder 202 de inmediato, el trabajo real sigue corriendo del
 // lado del daemon y termina guardando la observación.
 func TestHandlePreCompactCapture_EndToEnd_SavesObservationAsync(t *testing.T) {
+	isolatedDigestPendingDir(t)
 	ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{
@@ -160,6 +161,7 @@ func TestHandlePreCompactCapture_EndToEnd_SavesObservationAsync(t *testing.T) {
 // force=true, así que debe actualizarse aunque un digest recién guardado
 // diga que "todavía no toca".
 func TestHandlePreCompactCapture_ForcesDigestUpdate_EvenIfNotDue(t *testing.T) {
+	isolatedDigestPendingDir(t)
 	ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		var body struct {

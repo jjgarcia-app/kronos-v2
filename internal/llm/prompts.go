@@ -31,6 +31,31 @@ Respond ONLY with valid JSON (no markdown, no explanation outside JSON):
 	)
 }
 
+// buildDigestFactsOnlyPrompt arma el pedido acotado del reintento de
+// "solo hechos" (ver ExtractDigestFacts / DigestPendingKindFacts): la prosa
+// del digest ya está guardada de una corrida anterior, así que este prompt
+// no la vuelve a pedir — es más corto y barato que buildDigestPrompt, con la
+// misma extracción de hechos y la misma válvula explícita de "no hay nada"
+// que evita reintentar al pedo.
+func buildDigestFactsOnlyPrompt(excerpt string, maxFacts int) string {
+	return fmt.Sprintf(`You are extracting standalone facts from a coding-session transcript excerpt for a persistent memory system. The running session summary was already saved separately — this is only about facts worth remembering as their OWN piece of knowledge, for someone querying memory in a DIFFERENT, FUTURE session, possibly weeks from now.
+
+Transcript excerpt (most recent turns, oldest first):
+---
+%s
+---
+
+List up to %d such facts. A fact only qualifies if it will still be true and useful in 30 days: a bug and its root cause, an architecture/design decision, a config change and why, a non-obvious discovery or gotcha, a reusable pattern, or a learned preference. Do NOT propose facts for routine/ephemeral activity ("ran the tests", "read a file", "started the session"). Each fact must be self-contained (title and content make sense with zero session context).
+
+If at least one fact qualifies, respond ONLY with a valid JSON array (no markdown, no explanation outside JSON):
+[{"type": "<bugfix|decision|config|discovery|pattern|preference>", "title": "<short searchable phrase, verb + what, en español>", "content": "<Qué: ...\nPor qué: ...\nCómo aplicar: ..., en español>"}]
+
+If nothing qualifies, respond with exactly this line and nothing else:
+FACTS: ninguno`,
+		truncate(excerpt, 6000), maxFacts,
+	)
+}
+
 func buildExtractPrompt(excerpt string) string {
 	return fmt.Sprintf(`You are screening a coding-session transcript excerpt for a persistent memory system, right before the conversation context gets compacted (destroyed).
 

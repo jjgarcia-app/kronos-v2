@@ -414,6 +414,18 @@ type DigestFact struct {
 type DigestUpdate struct {
 	Content string       `json:"content"`
 	Facts   []DigestFact `json:"facts"`
+
+	// FactsKnown es true cuando la respuesta trajo una sección "facts"
+	// parseable (lista, vacía o no) — es decir, el modelo respondió algo
+	// explícito sobre hechos, aunque haya decidido que no hay ninguno. false
+	// cuando la clave vino ausente o con una forma que no se pudo parsear: en
+	// ese caso no sabemos si de verdad no hay hechos o el modelo simplemente
+	// no siguió el formato pedido, y MaybeUpdateDigest lo trata como
+	// pendiente de reintento (ver DigestPendingKindFacts en
+	// digest_pending.go) en vez de asumir silenciosamente que no hay nada
+	// que promover — justo el hueco medido en producción: digest con prosa,
+	// cero hechos, sin pendiente.
+	FactsKnown bool `json:"-"`
 }
 
 // digestRawResponse difiere el parseo de "facts" del de "content": un JSON
@@ -478,11 +490,58 @@ func (c *Client) UpdateDigest(ctx context.Context, previousDigest, excerpt strin
 		var facts []DigestFact
 		if err := json.Unmarshal(resp.Facts, &facts); err == nil {
 			d.Facts = facts
+			d.FactsKnown = true // respuesta explícita, aunque facts venga vacío ("[]" o "null")
 		}
 		// error acá se descarta a propósito (ver comentario de la función):
-		// facts con forma inesperada no deben perder el digest en prosa.
+		// facts con forma inesperada no deben perder el digest en prosa. Pero
+		// tampoco cuenta como respuesta explícita — FactsKnown queda false,
+		// ver DigestUpdate.FactsKnown.
 	}
 	return d, nil
+}
+
+// digestFactsOnlyExplicitNoFacts es la respuesta textual que buildDigestFactsOnlyPrompt
+// pide cuando no hay hechos que extraer — sin esta válvula, cualquier sesión
+// sin hechos reintentaría hasta agotar digestPendingMaxAttempts al pedo (ver
+// ExtractDigestFacts).
+const digestFactsOnlyExplicitNoFacts = "FACTS: NINGUNO"
+
+// ExtractDigestFacts pide, en una llamada acotada y separada de UpdateDigest,
+// SOLO la lista de hechos standalone de un excerpt — usada para reintentar un
+// enriquecimiento de digest cuya llamada anterior tuvo éxito guardando la
+// prosa pero no trajo una respuesta explícita sobre hechos (ver
+// DigestUpdate.FactsKnown y DigestPendingKindFacts en digest_pending.go). No
+// vuelve a pedir la prosa: internal/hooks.MaybeUpdateDigest ya tiene el
+// resumen guardado de la corrida anterior.
+//
+// explicit=true cuando la respuesta fue interpretable: una lista de hechos
+// (vacía o no) o el literal "FACTS: ninguno" — en ambos casos no hace falta
+// reintentar de nuevo. explicit=false cuando la respuesta no se pudo parsear
+// como ninguna de las dos formas — el caller debe seguir reintentando (hasta
+// el tope de digestPendingMaxAttempts). err no-nil solo ante una falla real
+// de la llamada (cortacircuitos, carga, timeout, backend caído) — mismo
+// contrato fail-open que las otras tres llamadas de generación.
+func (c *Client) ExtractDigestFacts(ctx context.Context, excerpt string, maxFacts int, timeout time.Duration) (facts []DigestFact, explicit bool, err error) {
+	abort, finish := c.beginGeneration()
+	if abort != nil {
+		return nil, false, abort
+	}
+	defer func() { finish(err) }()
+
+	prompt := buildDigestFactsOnlyPrompt(excerpt, maxFacts)
+	raw, genErr := c.backend.generate(ctx, prompt, 300, timeout)
+	if genErr != nil {
+		return nil, false, genErr
+	}
+
+	trimmed := strings.TrimSpace(raw)
+	if strings.EqualFold(strings.TrimSuffix(trimmed, "."), digestFactsOnlyExplicitNoFacts) {
+		return nil, true, nil
+	}
+	if unmarshalErr := json.Unmarshal([]byte(extractJSONArray(trimmed)), &facts); unmarshalErr != nil {
+		return nil, false, nil // no es un error de la llamada — el modelo no respondió en un formato interpretable
+	}
+	return facts, true, nil
 }
 
 func truncate(s string, max int) string {
@@ -503,6 +562,21 @@ func extractJSONObject(raw string) string {
 		raw = raw[i:]
 	}
 	if i := strings.LastIndex(raw, "}"); i >= 0 && i < len(raw)-1 {
+		raw = raw[:i+1]
+	}
+	return raw
+}
+
+// extractJSONArray es extractJSONObject para una respuesta que se espera
+// como array JSON en vez de objeto — usado por ExtractDigestFacts, cuyo
+// prompt pide un array de hechos en vez del envoltorio {"content":...,
+// "facts":...} de UpdateDigest.
+func extractJSONArray(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if i := strings.Index(raw, "["); i > 0 {
+		raw = raw[i:]
+	}
+	if i := strings.LastIndex(raw, "]"); i >= 0 && i < len(raw)-1 {
 		raw = raw[:i+1]
 	}
 	return raw
