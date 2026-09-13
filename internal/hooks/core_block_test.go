@@ -29,6 +29,13 @@ func setTempConfigDir(t *testing.T) {
 		t.Setenv("HOME", dir)
 	}
 	_ = os.MkdirAll(filepath.Join(dir, "kronos"), 0755)
+	// Y el directorio que el código realmente usa: en macOS ConfigPath() es
+	// ~/Library/Application Support/kronos, así que el layout XDG de arriba no
+	// alcanza para escribir un config.json de prueba (mismo motivo que en
+	// internal/config/config_test.go, donde el CI lo cazó).
+	if p, err := config.ConfigPath(); err == nil {
+		_ = os.MkdirAll(filepath.Dir(p), 0755)
+	}
 }
 
 func saveObs(t *testing.T, st store.Storer, typ store.ObservationType, scope store.Scope, project, title, content string) *store.Observation {

@@ -18,7 +18,18 @@ func setTempConfigDir(t *testing.T) {
 		t.Setenv("XDG_CONFIG_HOME", dir)
 		t.Setenv("HOME", dir)
 	}
-	_ = os.MkdirAll(filepath.Join(dir, "kronos"), 0755)
+	// Crear el directorio que el código REALMENTE va a usar, no el layout XDG a
+	// mano: en macOS ConfigPath() devuelve ~/Library/Application Support/kronos,
+	// así que crear $dir/kronos dejaba la escritura de los tests sin carpeta
+	// padre y fallaban con "no such file or directory" — solo pasaba en macOS y
+	// lo cazó el CI (en Linux el layout XDG coincide y nunca se vio).
+	path, err := config.ConfigPath()
+	if err != nil {
+		t.Fatalf("ConfigPath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatalf("crear el config dir: %v", err)
+	}
 }
 
 func TestDefault_HasExpectedValues(t *testing.T) {
