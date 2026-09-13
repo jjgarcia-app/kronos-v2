@@ -12,6 +12,20 @@ import (
 	"github.com/jjgarcia-app/kronos-v2/internal/store"
 )
 
+// isolatedDigestPendingDir aísla platform.DataDir() (de donde cuelga el
+// archivo de reintentos pendientes de digest, ver internal/llm.DigestPending)
+// con un HOME/XDG_DATA_HOME temporales — cualquier test que dispare
+// MaybeUpdateDigest (directo o vía handlePreCompactCapture/prompt-submit) con
+// un LLM que no incluya "facts" en la respuesta marca un pendiente de solo
+// hechos (ver Tema 1 en internal/hooks/digest.go); sin aislar, eso escribe en
+// el data dir REAL de quien corre la suite en vez del temporal del test.
+func isolatedDigestPendingDir(t *testing.T) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "data"))
+}
+
 func newTestServer(t *testing.T, token string) (*Server, *httptest.Server) {
 	t.Helper()
 	st, err := store.New(filepath.Join(t.TempDir(), "test.db"))

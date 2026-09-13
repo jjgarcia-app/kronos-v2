@@ -127,18 +127,43 @@ func TestCheckAutoDigest_PendingEnrichment_ReportsCount(t *testing.T) {
 
 	report := doctor.Run(context.Background(), cfg)
 	check := findCheck(t, report, "Digest automático")
-	if !strings.Contains(check.Detail, "enriquecimiento pendiente: 2 sesiones") {
-		t.Errorf("Detail = %q, esperaba mención de 2 sesiones con enriquecimiento pendiente", check.Detail)
+	if !strings.Contains(check.Detail, "pendientes: 2 enriquecimiento") {
+		t.Errorf("Detail = %q, esperaba mención de 2 pendientes de enriquecimiento", check.Detail)
 	}
 }
 
-// TestCheckAutoDigest_NoPending_OmitsDetail confirma que sin pendientes no
-// se agrega ruido a la línea del digest.
-func TestCheckAutoDigest_NoPending_OmitsDetail(t *testing.T) {
+// TestCheckAutoDigest_PendingFacts_ReportsSeparateFromEnrichment confirma el
+// desglose por tipo (Tema 1): un pendiente de "solo hechos" (la prosa ya se
+// guardó, ver DigestPendingKindFacts) se reporta separado de los pendientes
+// de enriquecimiento completo, para poder distinguir cuál de los dos está
+// fallando sin ir a leer el archivo de pendientes a mano.
+func TestCheckAutoDigest_PendingFacts_ReportsSeparateFromEnrichment(t *testing.T) {
+	cfg := digestTestConfig(t)
+	dataDir, err := platform.DataDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending := llm.NewDigestPending(llm.DefaultDigestPendingPath(dataDir))
+	pending.MarkFailed("s1")
+	pending.MarkFactsPending("s2")
+	pending.MarkFactsPending("s3")
+
+	report := doctor.Run(context.Background(), cfg)
+	check := findCheck(t, report, "Digest automático")
+	if !strings.Contains(check.Detail, "pendientes: 1 enriquecimiento, 2 hechos") {
+		t.Errorf("Detail = %q, esperaba el desglose '1 enriquecimiento, 2 hechos'", check.Detail)
+	}
+}
+
+// TestCheckAutoDigest_NoPending_ReportsUpToDate confirma que sin pendientes
+// la línea dice explícitamente que está al día, en vez de omitir el dato —
+// un `kronos doctor` en verde tiene que poder distinguir "sin pendientes" de
+// "no se pudo ni chequear".
+func TestCheckAutoDigest_NoPending_ReportsUpToDate(t *testing.T) {
 	cfg := digestTestConfig(t)
 	report := doctor.Run(context.Background(), cfg)
 	check := findCheck(t, report, "Digest automático")
-	if strings.Contains(check.Detail, "enriquecimiento pendiente") {
-		t.Errorf("Detail = %q, no debería mencionar pendientes sin ninguno", check.Detail)
+	if !strings.Contains(check.Detail, "pendientes: al día") {
+		t.Errorf("Detail = %q, esperaba 'pendientes: al día' sin ningún pendiente", check.Detail)
 	}
 }

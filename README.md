@@ -145,7 +145,7 @@ Una vez conectado, el agente dispone de:
 | Búsqueda textual | FTS5 (SQLite) / pg_tsvector (PG) | — |
 | Embeddings | Ollama bge-m3 (chromem-go, sin CGO) | Sin embeddings |
 | Reranking | RRF k=60 (FTS + vector) | Solo FTS |
-| LLM para relaciones | Ollama (auto-detect) | OpenAI · Anthropic |
+| LLM de generación (digest, captura pasiva, judge) | Ollama (local, auto-detect) | `claude-cli` (`claude -p`, usa la suscripción de Claude Code) · OpenAI · Anthropic |
 
 PostgreSQL es opcional. Cuando está configurado, actúa como réplica async — el servidor arranca inmediatamente aunque Postgres no esté disponible.
 
@@ -177,7 +177,11 @@ kronos doctor
 [OK] Hooks:           SessionStart, UserPromptSubmit, SubagentStop, Stop
 [OK] PATH:            /usr/local/bin/kronos
 [OK] MCP:             Claude Code conectado — 20 tools
+[OK] Digest automático: último hace 4 min (sesión abc12345) | pendientes: al día
+[OK] Uso de generación LLM: generación: 3 llamadas en la última hora (ollama 3: 3 ok) | hoy: 12 (12 ok) | última: hace 4 min
 ```
+
+`kronos doctor` también cuenta cuántas llamadas de generación se hicieron (por proveedor y resultado: ok, error, salteada por carga/cortacircuitos/sin credenciales) y clasifica la última falla de `claude-cli` si la hubo — sin esto, el consumo de la suscripción de Claude Code vía `llm.provider=claude-cli` era invisible. El daemon (`kronos serve --daemon-mode`) escribe su log a `~/.local/share/kronos/daemon.log` en vez de a la terminal.
 
 Para verificar el canal de memoria de punta a punta (que el bloque core llegue
 pertinente, que el recall traiga lo conversacional, que el gate no estorbe y
@@ -216,9 +220,39 @@ Archivo de configuración en `~/.config/kronos/config.json`:
   "llm": {
     "provider": "ollama",
     "model": "llama3.2"
+  },
+  "core": {
+    "max_session_items": 1
+  },
+  "recall": {
+    "max_session_items": 1,
+    "fts_timeout_ms": 5000,
+    "total_budget_ms": 400
+  },
+  "digest": {
+    "timeout_ms": 60000,
+    "max_facts": 3,
+    "promote_facts": true
   }
 }
 ```
+
+Knobs menos obvios:
+
+| Clave | Default | Qué controla |
+|---|---|---|
+| `core.max_session_items` | 1 | Tope de resúmenes de sesión (`type=session`) en el bloque siempre-presente que inyecta `SessionStart` — sin tope, los digests automáticos desplazan decisiones/bugs/patrones reales. |
+| `recall.max_session_items` | 1 | Mismo tope, para la inyección por relevancia de cada prompt (`UserPromptSubmit`). |
+| `recall.fts_timeout_ms` | 5000 | Presupuesto exclusivo de la fase FTS del recall (barata, corre siempre primero). Generoso a propósito: si se corta, el recall devuelve vacío aunque el resultado ya estuviera en la mano — la fase entrega lo que ya obtuvo en vez de descartarlo. |
+| `recall.total_budget_ms` | 400 | Presupuesto exclusivo de la fase **vectorial** oportunista (solo se paga si FTS no encontró nada) — separado de `fts_timeout_ms` para que un pico de carga no le robe presupuesto a la fase barata. |
+| `digest.timeout_ms` | 60000 | Cuánto puede tardar el enriquecimiento por LLM del digest de sesión en la actualización periódica, que corre async en el daemon (más generoso que `llm.timeout_ms` porque nada del lado del usuario espera este resultado). |
+| `digest.max_facts` | 3 | Cuántos hechos tipados (bugfix/decision/config/discovery/pattern/preference) puede promover a observaciones propias una sola actualización de digest. |
+| `digest.promote_facts` | true | Si además de la prosa del digest se extraen y guardan esos hechos como observaciones individuales (misma llamada al LLM, no agrega una llamada nueva). |
+| `llm.provider` | `ollama` | `ollama` (local) o `claude-cli` (invoca `claude -p --model <llm.model>`, usa la suscripción de Claude Code en vez de pagar una API aparte). |
+| `llm.model` | `llama3.2` (ollama) / `haiku` (claude-cli) | Modelo de generación. |
+| `llm.cli_path` | `claude` | Binario a invocar cuando `provider=claude-cli` (se resuelve por PATH si no es ruta absoluta). |
+| `llm.timeout_ms` | 30000 | Timeout de una llamada de generación con `claude-cli`. |
+| `llm.max_load_per_cpu` | 1.0 | Umbral del guardián de carga (`load1/NumCPU`) que saltea llamadas de generación en máquinas saturadas. Solo protege al modelo **local** (Ollama) — `claude-cli` genera en la nube, así que no hay CPU local que proteger y el guardián no le aplica. |
 
 ---
 

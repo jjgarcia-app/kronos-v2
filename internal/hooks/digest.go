@@ -157,9 +157,16 @@ func MaybeUpdateDigest(ctx context.Context, st store.Storer, cfg config.Config, 
 	if err != nil {
 		return nil
 	}
-	retryingEnrichment := !force && pending.Due(sessionID)
-	if !force && !retryingEnrichment && existing != nil && time.Since(existing.UpdatedAt) < digestInterval(cfg) {
-		return nil // todavía no toca, y no hay un reintento de enriquecimiento esperando
+	// retryKind: "" cuando no hay nada pendiente, o el tipo de pendiente que
+	// toca reintentar ya (ver DigestPendingKindEnrichment/Facts en
+	// digest_pending.go) — ambos saltan digestInterval igual que force, sin
+	// esperar a que venza de nuevo.
+	retryKind := ""
+	if !force {
+		retryKind = pending.PendingKind(sessionID)
+	}
+	if !force && retryKind == "" && existing != nil && time.Since(existing.UpdatedAt) < digestInterval(cfg) {
+		return nil // todavía no toca, y no hay un reintento pendiente esperando
 	}
 
 	tailFacts, _ := transcript.TailFacts(transcriptPath, digestMaxEvents)
@@ -176,22 +183,57 @@ func MaybeUpdateDigest(ctx context.Context, st store.Storer, cfg config.Config, 
 		if !force {
 			enrichTimeout = DigestEnrichTimeout(cfg)
 		}
-		// Misma llamada, mismo round-trip: update.Facts viene de la MISMA
-		// respuesta del LLM que ya genera la prosa (ver
-		// llm.Client.UpdateDigest) — no se agrega una llamada nueva, así que
-		// el contador de uso sigue subiendo en 1 por actualización de
-		// digest, no en 2.
-		update, failed := tryDigestLLMEnrichment(ctx, llmClient, existing, transcriptPath, sessionID, enrichTimeout)
-		switch {
-		case update != nil:
-			content = update.Content + "\n\n" + deterministic
-			facts = update.Facts
-			pending.Clear(sessionID)
-		case failed:
-			// No se pierde nada: el determinístico se guarda igual más abajo.
-			// Queda anotado para reintentar el enriquecimiento en el próximo
-			// MaybeUpdateDigest de esta sesión, sin esperar a digestInterval.
-			pending.MarkFailed(sessionID)
+
+		if retryKind == llm.DigestPendingKindFacts {
+			// La prosa ya se guardó en un tick anterior (está en `existing`,
+			// que incluye el determinístico de esa corrida) — este tick pide
+			// SOLO los hechos, con un pedido acotado y sin volver a resumir
+			// (ver llm.Client.ExtractDigestFacts). No se toca `content`: no
+			// hay nada nuevo que aportarle sin llamar de nuevo a la prosa
+			// completa, y llamarla de nuevo sería justo la llamada extra que
+			// este reintento acotado evita.
+			if existing != nil && strings.TrimSpace(existing.Content) != "" {
+				content = existing.Content
+			}
+			retryFacts, explicit := tryDigestFactsOnlyRetry(ctx, llmClient, transcriptPath, cfg, sessionID, enrichTimeout)
+			if explicit {
+				facts = retryFacts
+				pending.Clear(sessionID)
+			} else {
+				pending.MarkFactsPending(sessionID)
+			}
+		} else {
+			// Misma llamada, mismo round-trip: update.Facts viene de la MISMA
+			// respuesta del LLM que ya genera la prosa (ver
+			// llm.Client.UpdateDigest) — no se agrega una llamada nueva, así
+			// que el contador de uso sigue subiendo en 1 por actualización de
+			// digest, no en 2.
+			update, failed := tryDigestLLMEnrichment(ctx, llmClient, existing, transcriptPath, sessionID, enrichTimeout)
+			switch {
+			case update != nil:
+				content = update.Content + "\n\n" + deterministic
+				if update.FactsKnown {
+					// (a) éxito con hechos, o el modelo dijo explícitamente
+					// que no hay ninguno — en ambos casos no hace falta
+					// reintentar nada más.
+					facts = update.Facts
+					pending.Clear(sessionID)
+				} else {
+					// (b) éxito en la prosa, pero sin respuesta explícita
+					// sobre hechos (ni lista ni "FACTS: ninguno") — antes
+					// esto se perdía en silencio (medido: digest con prosa,
+					// cero hechos, sin pendiente). Se reintenta SOLO los
+					// hechos en el próximo tick, sin volver a pedir la prosa
+					// que ya se guarda más abajo.
+					pending.MarkFactsPending(sessionID)
+				}
+			case failed:
+				// No se pierde nada: el determinístico se guarda igual más
+				// abajo. Queda anotado para reintentar el enriquecimiento
+				// completo en el próximo MaybeUpdateDigest de esta sesión,
+				// sin esperar a digestInterval.
+				pending.MarkFailed(sessionID)
+			}
 		}
 	}
 
@@ -357,6 +399,40 @@ func tryDigestLLMEnrichment(ctx context.Context, llmClient *llm.Client, existing
 	}
 	result.Content = prose
 	return result, false
+}
+
+// tryDigestFactsOnlyRetry pide, con una llamada acotada (ver
+// llm.Client.ExtractDigestFacts), solo los hechos de una sesión cuyo
+// enriquecimiento anterior ya guardó la prosa pero dejó los hechos
+// pendientes (ver DigestPendingKindFacts). No vuelve a pedir la prosa.
+//
+// explicit=true cuando el modelo dio una respuesta interpretable (una lista
+// de hechos, vacía o no, o "FACTS: ninguno") — el pendiente se puede limpiar
+// sin importar si facts vino vacío. explicit=false ante cualquier otro caso
+// (la llamada falló, se pasó de tiempo, o la respuesta no se pudo parsear) —
+// el caller debe volver a anotar el pendiente para el próximo tick, hasta el
+// tope de digestPendingMaxAttempts.
+func tryDigestFactsOnlyRetry(ctx context.Context, llmClient *llm.Client, transcriptPath string, cfg config.Config, sessionID string, timeout time.Duration) (facts []llm.DigestFact, explicit bool) {
+	excerpt, err := transcript.TailExcerpt(transcriptPath, excerptMaxChars)
+	if err != nil || len(strings.TrimSpace(excerpt)) < minExcerptChars {
+		// Nada real que pedir todavía — no es una falla del LLM, así que no
+		// vale la pena seguir reintentando por esto puntualmente.
+		return nil, true
+	}
+
+	max := cfg.Digest.MaxFacts
+	if max <= 0 {
+		max = digestDefaultMaxFacts
+	}
+
+	start := time.Now()
+	result, explicitResp, err := llmClient.ExtractDigestFacts(ctx, excerpt, max, timeout)
+	if err != nil {
+		slog.Warn("digest: el reintento de hechos por LLM falló, se sigue reintentando",
+			"session_id", sessionID, "elapsed", time.Since(start), "error", err)
+		return nil, false
+	}
+	return result, explicitResp
 }
 
 // renderDeterministicDigest arma el digest sin LLM a partir de los hechos

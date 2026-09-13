@@ -64,25 +64,34 @@ func checkAutoDigest(ctx context.Context, cfg config.Config) Check {
 	return Check{Name: "Digest automático", Detail: detail, Status: status}
 }
 
-// digestPendingDetail reporta cuántas sesiones tienen un enriquecimiento por
-// LLM pendiente de reintento (ver internal/llm.DigestPending) — sin esto, un
-// pico de carga que hace fallar el enriquecimiento (ver
-// internal/hooks.MaybeUpdateDigest) queda invisible hasta que alguien nota
-// que faltan hechos tipados. No es una cuota ni un bloqueo, solo
-// información: "" si no se pudo resolver el data dir o no hay pendientes.
+// digestPendingDetail reporta el estado de los reintentos de digest
+// pendientes (ver internal/llm.DigestPending), desglosado por tipo —
+// enriquecimiento completo (prosa + hechos, DigestPendingKindEnrichment) vs
+// solo hechos (la prosa ya se guardó, DigestPendingKindFacts) — para que
+// "kronos doctor" distinga de un vistazo cuál de los dos está fallando, en
+// vez de un número único que no dice qué falta. Siempre reporta algo
+// (incluido "al día" sin pendientes), no solo cuando hay algo pendiente: sin
+// eso, un `kronos doctor` en verde no permite distinguir "sin pendientes" de
+// "no se pudo ni chequear". "" únicamente si no se pudo resolver el data dir
+// (no es un fallo del check, ver breakerStatus). No es una cuota ni un
+// bloqueo, solo información.
 func digestPendingDetail() string {
 	dataDir, err := platform.DataDir()
 	if err != nil {
 		return ""
 	}
-	n := llm.NewDigestPending(llm.DefaultDigestPendingPath(dataDir)).Count()
-	if n == 0 {
-		return ""
+	enrichment, facts := llm.NewDigestPending(llm.DefaultDigestPendingPath(dataDir)).CountByKind()
+	if enrichment == 0 && facts == 0 {
+		return "pendientes: al día"
 	}
-	if n == 1 {
-		return "enriquecimiento pendiente: 1 sesión"
+	parts := make([]string, 0, 2)
+	if enrichment > 0 {
+		parts = append(parts, fmt.Sprintf("%d enriquecimiento", enrichment))
 	}
-	return fmt.Sprintf("enriquecimiento pendiente: %d sesiones", n)
+	if facts > 0 {
+		parts = append(parts, fmt.Sprintf("%d hechos", facts))
+	}
+	return "pendientes: " + strings.Join(parts, ", ")
 }
 
 // llmProviderStatus arma el fragmento "proveedor: X, modelo: Y[, guardián de
