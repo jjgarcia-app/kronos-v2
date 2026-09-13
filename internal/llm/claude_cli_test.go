@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jjgarcia-app/kronos-v2/internal/config"
+	"github.com/jjgarcia-app/kronos-v2/internal/platform"
 )
 
 // writeFakeCLI escribe un script ejecutable que hace de reemplazo del
@@ -280,12 +281,23 @@ func TestNewClaudeCLIFromConfig_NoCredentials_ReturnsNil(t *testing.T) {
 	}
 }
 
-// dataDirFor calcula el mismo data dir que platform.DataDir() vería con el
-// HOME/XDG_DATA_HOME que dejó withFakeHome — evita que el test dependa de
-// platform.DataDir directamente para no acoplarse a su firma.
+// dataDirFor resuelve el data dir con la MISMA función que usa el código
+// (platform.DataDir) en vez de reconstruir la ruta a mano. En macOS el data dir
+// es ~/Library/Application Support/kronos: el test anterior buscaba en
+// ~/.local/share/kronos (ruta XDG de Linux), así que en macOS leía un
+// directorio donde nadie había escrito y reportaba 0 abstenciones — el CI lo
+// cazó y en Linux nunca se vio. De paso, verifica que el HOME falso aísle de
+// verdad.
 func dataDirFor(t *testing.T, home string) string {
 	t.Helper()
-	return filepath.Join(home, ".local", "share", "kronos")
+	dir, err := platform.DataDir()
+	if err != nil {
+		t.Fatalf("platform.DataDir: %v", err)
+	}
+	if !strings.HasPrefix(dir, home) {
+		t.Fatalf("el data dir %q no está bajo el HOME falso %q — el aislamiento del test no está funcionando", dir, home)
+	}
+	return dir
 }
 
 func TestNewClaudeCLIFromConfig_NoCredentials_RegistraAbstencionSinAbrirCortacircuitos(t *testing.T) {
