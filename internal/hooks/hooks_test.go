@@ -38,24 +38,29 @@ func fixedVectorEmbedFn(vectors map[string][]float32) embeddings.EmbeddingFunc {
 
 // setupTempDataDir redirects platform.DataDir() to a fresh temp directory for
 // the duration of the test. Returns the kronos sub-directory path.
-// Skips on macOS because DataDir there uses a fixed ~/Library path with no env override.
+//
+// Pisa HOME (vía platform.FakeHomeEnv) en vez de solo XDG_DATA_HOME/
+// LOCALAPPDATA: en macOS, DataDir() usa una ruta fija bajo el home
+// (~/Library/Application Support/kronos) que no lee ninguna variable XDG,
+// así que un override que solo tocaba XDG_DATA_HOME no aislaba nada ahí —
+// de ahí el skip que tenía este helper antes. Pisando HOME (que
+// os.UserHomeDir() sí respeta en macOS/Linux) la ruta fija queda bajo el
+// temp dir igual, y ya no hace falta reconstruirla a mano: se le pregunta a
+// platform.DataDir() cuál es, la misma función que usa el código real.
 func setupTempDataDir(t *testing.T) string {
 	t.Helper()
-	if runtime.GOOS == "darwin" {
-		t.Skip("macOS DataDir uses ~/Library/Application Support — not overridable via env")
+	home := t.TempDir()
+	for k, v := range platform.FakeHomeEnv(runtime.GOOS, home) {
+		t.Setenv(k, v)
 	}
-	base := t.TempDir()
-	kronosDir := filepath.Join(base, "kronos")
-	if err := os.MkdirAll(kronosDir, 0o755); err != nil {
+	dir, err := platform.DataDir()
+	if err != nil {
+		t.Fatalf("platform.DataDir: %v", err)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("setupTempDataDir mkdir: %v", err)
 	}
-	switch runtime.GOOS {
-	case "windows":
-		t.Setenv("LOCALAPPDATA", base)
-	default:
-		t.Setenv("XDG_DATA_HOME", base)
-	}
-	return kronosDir
+	return dir
 }
 
 func newTestStore(t *testing.T) *store.Store {
@@ -93,21 +98,16 @@ func (s *slowSearchStore) Search(ctx context.Context, p store.SearchParams) ([]*
 }
 
 // setupTempConfigDir redirige config.ConfigPath() a un directorio temporal
-// para la duración del test — mismo patrón que setupTempDataDir, pero para
-// XDG_CONFIG_HOME/APPDATA en vez de XDG_DATA_HOME/LOCALAPPDATA. Necesario
-// para poder escribir un config.json de prueba con Recall custom sin tocar
-// el config real de la máquina.
+// para la duración del test — mismo patrón y misma razón que
+// setupTempDataDir (pisa HOME, no solo XDG_CONFIG_HOME/APPDATA, porque en
+// macOS ConfigDir() tampoco lee ninguna variable XDG). Necesario para poder
+// escribir un config.json de prueba con Recall custom sin tocar el config
+// real de la máquina.
 func setupTempConfigDir(t *testing.T) {
 	t.Helper()
-	if runtime.GOOS == "darwin" {
-		t.Skip("macOS ConfigDir usa ~/Library/Application Support fijo — no overrideable por env")
-	}
-	base := t.TempDir()
-	switch runtime.GOOS {
-	case "windows":
-		t.Setenv("APPDATA", base)
-	default:
-		t.Setenv("XDG_CONFIG_HOME", base)
+	home := t.TempDir()
+	for k, v := range platform.FakeHomeEnv(runtime.GOOS, home) {
+		t.Setenv(k, v)
 	}
 }
 

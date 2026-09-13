@@ -5,6 +5,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -13,20 +15,64 @@ import (
 	"github.com/jjgarcia-app/kronos-v2/internal/platform"
 )
 
+// fakeCLIFile elige el nombre de archivo y el contenido del CLI falso según
+// el SO — pura, recibe goos por parámetro en vez de leer runtime.GOOS
+// directo, para poder testear la selección de Windows sin correr ahí. En
+// Windows no hay /bin/sh: un .sh no es ejecutable, hace falta un .cmd con
+// sintaxis batch equivalente.
+func fakeCLIFile(goos, unixScript, windowsScript string) (name, content string) {
+	if goos == "windows" {
+		return "fake-claude.cmd", windowsScript
+	}
+	return "fake-claude.sh", unixScript
+}
+
 // writeFakeCLI escribe un script ejecutable que hace de reemplazo del
 // binario `claude` real para tests hermeticos — sin esto, testear
 // claudeCLIBackend.generate necesitaría el CLI real, autenticado, con red.
-func writeFakeCLI(t *testing.T, script string) string {
+// unixScript y windowsScript expresan el MISMO comportamiento en la sintaxis
+// de cada SO (ver fakeCLIFile).
+func writeFakeCLI(t *testing.T, unixScript, windowsScript string) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "fake-claude.sh")
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+	name, content := fakeCLIFile(runtime.GOOS, unixScript, windowsScript)
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	return path
 }
 
+// TestFakeCLIFile_PicksScriptBySO verifica la selección de forma
+// determinista para los tres SO soportados, sin depender de en cuál corre
+// el CI — es la parte "testeable" del generador del CLI falso.
+func TestFakeCLIFile_PicksScriptBySO(t *testing.T) {
+	cases := []struct {
+		goos     string
+		wantName string
+		wantBody string
+	}{
+		{"windows", "fake-claude.cmd", "windows-body"},
+		{"linux", "fake-claude.sh", "unix-body"},
+		{"darwin", "fake-claude.sh", "unix-body"},
+	}
+	for _, tc := range cases {
+		name, content := fakeCLIFile(tc.goos, "unix-body", "windows-body")
+		if name != tc.wantName || content != tc.wantBody {
+			t.Errorf("fakeCLIFile(%s) = (%q, %q), want (%q, %q)", tc.goos, name, content, tc.wantName, tc.wantBody)
+		}
+	}
+}
+
 func TestClaudeCLIBackend_Generate_ReturnsTrimmedStdout(t *testing.T) {
-	cli := writeFakeCLI(t, "#!/bin/sh\ncat\n")
+	if runtime.GOOS == "windows" {
+		// cmd.exe no tiene un equivalente simple a "cat": leer stdin línea a
+		// línea (set /p, findstr) mangla JSON con comillas/espacios y pierde
+		// la garantía de bytes exactos que este test verifica. Es la
+		// excepción permitida, no la regla — el resto de los tests de
+		// generate() sí corren en Windows.
+		t.Skip("cmd.exe no tiene equivalente confiable a `cat` de stdin")
+	}
+	cli := writeFakeCLI(t, "#!/bin/sh\ncat\n", "")
 	b := &claudeCLIBackend{cliPath: cli, model: "haiku", configDir: t.TempDir(), timeout: 5 * time.Second}
 
 	out, err := b.generate(context.Background(), `{"hello":"world"}`, 100, 0)
@@ -45,6 +91,12 @@ if [ -z "$CLAUDE_CONFIG_DIR" ]; then
   exit 1
 fi
 echo "$CLAUDE_CONFIG_DIR"
+`, `@echo off
+if "%CLAUDE_CONFIG_DIR%"=="" (
+  echo CLAUDE_CONFIG_DIR no seteado 1>&2
+  exit /b 1
+)
+echo %CLAUDE_CONFIG_DIR%
 `)
 	configDir := t.TempDir()
 	b := &claudeCLIBackend{cliPath: cli, model: "haiku", configDir: configDir, timeout: 5 * time.Second}
@@ -59,20 +111,34 @@ echo "$CLAUDE_CONFIG_DIR"
 }
 
 func TestClaudeCLIBackend_Generate_NonZeroExit_ReturnsStderrInError(t *testing.T) {
-	cli := writeFakeCLI(t, "#!/bin/sh\necho 'auth inválida' >&2\nexit 1\n")
+	// Sin tildes a propósito: cmd.exe interpreta el .cmd con la code page
+	// ANSI activa salvo BOM/chcp explícito, y un acento aquí es puro
+	// fixture de test (no texto de usuario) — no vale la pena pelear con
+	// encoding de consola por esto.
+	cli := writeFakeCLI(t, "#!/bin/sh\necho 'auth invalida' >&2\nexit 1\n", "@echo off\necho auth invalida 1>&2\nexit /b 1\n")
 	b := &claudeCLIBackend{cliPath: cli, model: "haiku", configDir: t.TempDir(), timeout: 5 * time.Second}
 
 	_, err := b.generate(context.Background(), "prompt", 100, 0)
 	if err == nil {
 		t.Fatal("esperaba error por exit code != 0")
 	}
-	if !strings.Contains(err.Error(), "auth inválida") {
+	if !strings.Contains(err.Error(), "auth invalida") {
 		t.Errorf("el error debería incluir el stderr recortado, got: %v", err)
 	}
 }
 
+// sleepCmdScript arma un .cmd que duerme ~ms milisegundos antes de seguir —
+// cmd.exe no tiene `sleep`, y `timeout` falla si stdin no es una consola
+// (es el caso acá: generate() le pasa un io.Reader como stdin). El truco
+// estándar es un ping a una IP no ruteable (TEST-NET-1, RFC 5737) con -w
+// como timeout de espera: nunca responde, así que el ping tarda exactamente
+// ms milisegundos en darse por vencido.
+func sleepCmdScript(ms int, then string) string {
+	return "@echo off\nping -n 1 -w " + strconv.Itoa(ms) + " 192.0.2.1 >nul\n" + then + "\n"
+}
+
 func TestClaudeCLIBackend_Generate_TimeoutKillsProcess(t *testing.T) {
-	cli := writeFakeCLI(t, "#!/bin/sh\nsleep 5\necho deberia-no-verse\n")
+	cli := writeFakeCLI(t, "#!/bin/sh\nsleep 5\necho deberia-no-verse\n", sleepCmdScript(5000, "echo deberia-no-verse"))
 	b := &claudeCLIBackend{cliPath: cli, model: "haiku", configDir: t.TempDir(), timeout: 100 * time.Millisecond}
 
 	start := time.Now()
@@ -98,7 +164,7 @@ func TestClaudeCLIBackend_Generate_TimeoutKillsProcess(t *testing.T) {
 // backend cuando es MÁS CORTO — necesario para que un caller pueda acotar
 // una llamada puntual sin tocar el timeout general del cliente.
 func TestClaudeCLIBackend_Generate_TimeoutParamOverridesShorter(t *testing.T) {
-	cli := writeFakeCLI(t, "#!/bin/sh\nsleep 5\necho deberia-no-verse\n")
+	cli := writeFakeCLI(t, "#!/bin/sh\nsleep 5\necho deberia-no-verse\n", sleepCmdScript(5000, "echo deberia-no-verse"))
 	// b.timeout=5s (generoso) pero se pide timeout=100ms para esta llamada.
 	b := &claudeCLIBackend{cliPath: cli, model: "haiku", configDir: t.TempDir(), timeout: 5 * time.Second}
 
@@ -123,7 +189,7 @@ func TestClaudeCLIBackend_Generate_TimeoutParamOverridesShorter(t *testing.T) {
 // acá el backend tiene 100ms (moriría con el timeout general) pero la
 // llamada pide 3s, tiempo de sobra para que el script de 300ms termine bien.
 func TestClaudeCLIBackend_Generate_TimeoutParamOverridesLonger(t *testing.T) {
-	cli := writeFakeCLI(t, "#!/bin/sh\nsleep 0.3\necho listo\n")
+	cli := writeFakeCLI(t, "#!/bin/sh\nsleep 0.3\necho listo\n", sleepCmdScript(300, "echo listo"))
 	b := &claudeCLIBackend{cliPath: cli, model: "haiku", configDir: t.TempDir(), timeout: 100 * time.Millisecond}
 
 	out, err := b.generate(context.Background(), "prompt", 100, 3*time.Second)
@@ -166,7 +232,8 @@ func TestClassifyClaudeCLIFailure(t *testing.T) {
 }
 
 func TestClaudeCLIBackend_Generate_RecordsLastFailureOnError(t *testing.T) {
-	cli := writeFakeCLI(t, "#!/bin/sh\necho 'Not logged in, please run /login' >&2\nexit 1\n")
+	cli := writeFakeCLI(t, "#!/bin/sh\necho 'Not logged in, please run /login' >&2\nexit 1\n",
+		"@echo off\necho Not logged in, please run /login 1>&2\nexit /b 1\n")
 	failurePath := filepath.Join(t.TempDir(), "llm-last-failure.json")
 	b := &claudeCLIBackend{cliPath: cli, model: "haiku", configDir: t.TempDir(), timeout: 5 * time.Second, lastFailurePath: failurePath}
 
@@ -186,15 +253,18 @@ func TestClaudeCLIBackend_Generate_RecordsLastFailureOnError(t *testing.T) {
 	}
 }
 
-// withFakeHome apunta HOME (y limpia XDG_DATA_HOME/XDG_CONFIG_HOME) a un
-// directorio temporal — así platform.ClaudeDir/ClaudeMCPFile/DataDir quedan
-// bajo control del test sin tocar el ~/.claude real de la máquina.
+// withFakeHome apunta HOME/USERPROFILE (y en Windows LOCALAPPDATA/APPDATA)
+// a un directorio temporal — así platform.ClaudeDir/ClaudeMCPFile/DataDir/
+// ConfigDir quedan bajo control del test sin tocar el ~/.claude real de la
+// máquina. En Windows, ClaudeDir() resuelve por os.UserHomeDir(), que ahí
+// lee USERPROFILE (no HOME) — pisar solo HOME dejaba el subproceso leyendo
+// credenciales del HOME real del runner (ver platform.FakeHomeEnv).
 func withFakeHome(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_DATA_HOME", "")
-	t.Setenv("XDG_CONFIG_HOME", "")
+	for k, v := range platform.FakeHomeEnv(runtime.GOOS, home) {
+		t.Setenv(k, v)
+	}
 	return home
 }
 

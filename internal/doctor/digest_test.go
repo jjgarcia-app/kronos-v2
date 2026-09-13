@@ -3,6 +3,7 @@ package doctor_test
 import (
 	"context"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -14,17 +15,17 @@ import (
 	"github.com/jjgarcia-app/kronos-v2/internal/store"
 )
 
-// digestTestConfig aísla la config con un SQLite propio y un
-// XDG_DATA_HOME/HOME temporales (de donde platform.DataDir() resuelve el
-// archivo del cortacircuitos), para no leer/escribir el estado real del
-// usuario que corre la suite — a diferencia de TestRun_ReturnsAllChecks, que
-// sí usa config.Default() tal cual porque solo valida nombres/estados, no
-// contenido.
+// digestTestConfig aísla la config con un SQLite propio y un HOME temporal
+// (de donde platform.DataDir() resuelve el archivo del cortacircuitos), para
+// no leer/escribir el estado real del usuario que corre la suite — a
+// diferencia de TestRun_ReturnsAllChecks, que sí usa config.Default() tal
+// cual porque solo valida nombres/estados, no contenido.
 func digestTestConfig(t *testing.T) config.Config {
 	t.Helper()
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "data"))
+	for k, v := range platform.FakeHomeEnv(runtime.GOOS, home) {
+		t.Setenv(k, v)
+	}
 
 	cfg := config.Default()
 	cfg.DB.SQLitePath = filepath.Join(t.TempDir(), "kronos.db")
