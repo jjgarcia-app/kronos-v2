@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -23,10 +24,16 @@ import (
 // reintentos pendientes de enriquecimiento, ver internal/llm.DigestPending)
 // con un HOME/XDG_DATA_HOME temporales — sin esto, estos tests leerían y
 // escribirían el estado real del usuario que corre la suite.
+// Las variables de Windows (USERPROFILE/LOCALAPPDATA/APPDATA) van por
+// platform.FakeHomeEnv: sin ellas, en Windows os.UserHomeDir() y DataDir()
+// ignoran HOME y el test termina leyendo el directorio real del runner (lo cazó
+// el CI: dos tests del reintento de hechos fallaban solo ahí).
 func isolatedDataDir(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	for k, v := range platform.FakeHomeEnv(runtime.GOOS, home) {
+		t.Setenv(k, v)
+	}
 	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "data"))
 	dataDir, err := platform.DataDir()
 	if err != nil {

@@ -13,6 +13,7 @@ import (
 	"github.com/jjgarcia-app/kronos-v2/internal/checkpoint"
 	"github.com/jjgarcia-app/kronos-v2/internal/config"
 	"github.com/jjgarcia-app/kronos-v2/internal/hooks"
+	"github.com/jjgarcia-app/kronos-v2/internal/platform"
 	"github.com/jjgarcia-app/kronos-v2/internal/store"
 )
 
@@ -22,17 +23,15 @@ import (
 func setTempConfigDir(t *testing.T) {
 	t.Helper()
 	dir := t.TempDir()
-	if runtime.GOOS == "windows" {
-		t.Setenv("APPDATA", dir)
-	} else {
-		t.Setenv("XDG_CONFIG_HOME", dir)
-		t.Setenv("HOME", dir)
+	// Las variables de cada sistema por platform.FakeHomeEnv: en Windows HOME
+	// no es lo que lee os.UserHomeDir(), así que sin USERPROFILE/APPDATA el test
+	// escribiría en el directorio real del runner.
+	for k, v := range platform.FakeHomeEnv(runtime.GOOS, dir) {
+		t.Setenv(k, v)
 	}
-	_ = os.MkdirAll(filepath.Join(dir, "kronos"), 0755)
-	// Y el directorio que el código realmente usa: en macOS ConfigPath() es
-	// ~/Library/Application Support/kronos, así que el layout XDG de arriba no
-	// alcanza para escribir un config.json de prueba (mismo motivo que en
-	// internal/config/config_test.go, donde el CI lo cazó).
+	// Y el directorio que del código: en macOS ConfigPath() es
+	// ~/Library/Application Support/kronos, así que el layout XDG no alcanza
+	// para escribir un config.json de prueba (ver internal/config/config_test.go).
 	if p, err := config.ConfigPath(); err == nil {
 		_ = os.MkdirAll(filepath.Dir(p), 0755)
 	}
