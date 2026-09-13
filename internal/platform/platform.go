@@ -136,3 +136,33 @@ func sanitizeForFilename(s string) string {
 func OS() string {
 	return runtime.GOOS
 }
+
+// FakeHomeEnv arma las variables de entorno que hace falta sobreescribir
+// para que os.UserHomeDir(), DataDir() y ConfigDir() (y por lo tanto
+// ClaudeDir/ClaudeMCPFile, que dependen directo de UserHomeDir) queden
+// aisladas bajo `home` en tests herméticos, según el SO. Es una función pura
+// — recibe goos por parámetro en vez de leer runtime.GOOS directo — para
+// poder testear la rama de Windows sin correr en Windows.
+//
+// En Windows, DataDir/ConfigDir resuelven por LOCALAPPDATA/APPDATA antes que
+// por el home (ver arriba), así que pisar solo USERPROFILE no alcanza: un
+// test que solo hacía eso terminaba leyendo/escribiendo el
+// %LOCALAPPDATA%\kronos REAL del runner de CI (visto en claude_cli_test.go:
+// "el data dir ... no está bajo el HOME falso ..."). En el resto de los
+// sistemas, HOME alcanza para DataDir/ConfigDir por default —
+// XDG_DATA_HOME/XDG_CONFIG_HOME se limpian para que un valor heredado del
+// entorno real no gane por sobre HOME.
+func FakeHomeEnv(goos, home string) map[string]string {
+	if goos == "windows" {
+		return map[string]string{
+			"USERPROFILE":  home,
+			"LOCALAPPDATA": home,
+			"APPDATA":      home,
+		}
+	}
+	return map[string]string{
+		"HOME":            home,
+		"XDG_DATA_HOME":   "",
+		"XDG_CONFIG_HOME": "",
+	}
+}

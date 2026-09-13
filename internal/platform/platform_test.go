@@ -3,6 +3,7 @@ package platform_test
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -71,5 +72,34 @@ func TestOS_KnownValue(t *testing.T) {
 	known := map[string]bool{"windows": true, "darwin": true, "linux": true}
 	if !known[got] && got == "" {
 		t.Errorf("OS() returned empty string")
+	}
+}
+
+// TestFakeHomeEnv_Windows/_Unix testean la lógica de selección de variables
+// por SO de forma determinista, pasando el GOOS a mano — sin esto, la rama
+// de Windows de FakeHomeEnv no se ejercitaba nunca en el CI de Linux/macOS.
+func TestFakeHomeEnv_Windows(t *testing.T) {
+	got := platform.FakeHomeEnv("windows", `C:\fake\home`)
+	want := map[string]string{
+		"USERPROFILE":  `C:\fake\home`,
+		"LOCALAPPDATA": `C:\fake\home`,
+		"APPDATA":      `C:\fake\home`,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("FakeHomeEnv(windows, ...) = %v, want %v", got, want)
+	}
+}
+
+func TestFakeHomeEnv_Unix(t *testing.T) {
+	for _, goos := range []string{"linux", "darwin"} {
+		got := platform.FakeHomeEnv(goos, "/fake/home")
+		want := map[string]string{
+			"HOME":            "/fake/home",
+			"XDG_DATA_HOME":   "",
+			"XDG_CONFIG_HOME": "",
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("FakeHomeEnv(%s, ...) = %v, want %v", goos, got, want)
+		}
 	}
 }

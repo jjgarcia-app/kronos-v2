@@ -1,11 +1,13 @@
 package doctor
 
 import (
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jjgarcia-app/kronos-v2/internal/llm"
+	"github.com/jjgarcia-app/kronos-v2/internal/platform"
 )
 
 func TestFormatUsageDetail_BreaksDownByProviderAndResult(t *testing.T) {
@@ -74,9 +76,9 @@ func TestFormatUsageDetail_ShowsSkippedNoCredsAbstention(t *testing.T) {
 }
 
 func TestCheckLLMUsage_NoData_ReportsNoInventedZeros(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("XDG_DATA_HOME", "")
-	t.Setenv("XDG_CONFIG_HOME", "")
+	for k, v := range platform.FakeHomeEnv(runtime.GOOS, t.TempDir()) {
+		t.Setenv(k, v)
+	}
 
 	check := checkLLMUsage()
 	if check.Status != StatusOK {

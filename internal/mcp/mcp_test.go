@@ -16,18 +16,14 @@ import (
 
 // setupTempDataDir aísla platform.DataDir() a un directorio temporal —
 // necesario para tests que ejercitan el archivo current_session_<proyecto>.txt
-// (mismo patrón que internal/hooks/hooks_test.go).
+// (mismo patrón que internal/hooks/hooks_test.go: pisa HOME, no solo
+// XDG_DATA_HOME/LOCALAPPDATA, porque en macOS DataDir() usa una ruta fija
+// bajo el home que no lee ninguna variable XDG).
 func setupTempDataDir(t *testing.T) {
 	t.Helper()
-	if runtime.GOOS == "darwin" {
-		t.Skip("macOS DataDir usa ~/Library/Application Support — no overrideable via env")
-	}
-	base := t.TempDir()
-	switch runtime.GOOS {
-	case "windows":
-		t.Setenv("LOCALAPPDATA", base)
-	default:
-		t.Setenv("XDG_DATA_HOME", base)
+	home := t.TempDir()
+	for k, v := range platform.FakeHomeEnv(runtime.GOOS, home) {
+		t.Setenv(k, v)
 	}
 }
 

@@ -10,34 +10,35 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jjgarcia-app/kronos-v2/internal/platform"
 	_ "github.com/ncruces/go-sqlite3/driver"
 )
 
 // setupTempDataDir redirects platform.DataDir() to a fresh temp dir — same
-// pattern used by internal/hooks tests. Skips on macOS (fixed ~/Library
-// path, no env override there).
+// pattern used by internal/hooks tests: pisa HOME (no solo XDG_DATA_HOME/
+// LOCALAPPDATA), porque en macOS DataDir() usa una ruta fija bajo el home
+// que no lee ninguna variable XDG. Ya no hace falta el skip que tenía antes
+// en macOS ni reconstruir la ruta a mano: se le pregunta a platform.DataDir()
+// cuál es, la misma función que usa el código real.
 func setupTempDataDir(t *testing.T) string {
 	t.Helper()
-	if runtime.GOOS == "darwin" {
-		t.Skip("macOS DataDir usa ~/Library/Application Support — no overrideable por env")
+	home := t.TempDir()
+	// HOME (y en Windows APPDATA) aislados: si no, config.Load() lee el
+	// config REAL del usuario, que puede apuntar a su Postgres de
+	// producción, y cada backup del test dispara un pg_dump de la base
+	// completa (segundos). Eso hacía que el test dependiera de la carga de
+	// la máquina y fallara solo en la suite completa.
+	for k, v := range platform.FakeHomeEnv(runtime.GOOS, home) {
+		t.Setenv(k, v)
 	}
-	base := t.TempDir()
-	kronosDir := filepath.Join(base, "kronos")
-	if err := os.MkdirAll(kronosDir, 0o755); err != nil {
+	dir, err := platform.DataDir()
+	if err != nil {
+		t.Fatalf("platform.DataDir: %v", err)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	// HOME aislado: si no, config.Load() lee el config REAL del usuario, que
-	// apunta a su Postgres de producción, y cada backup del test dispara un
-	// pg_dump de la base completa (segundos). Eso hacía que el test dependiera
-	// de la carga de la máquina y fallara solo en la suite completa.
-	t.Setenv("HOME", base)
-	switch runtime.GOOS {
-	case "windows":
-		t.Setenv("LOCALAPPDATA", base)
-	default:
-		t.Setenv("XDG_DATA_HOME", base)
-	}
-	return kronosDir
+	return dir
 }
 
 // makeTestDB crea un kronos.db real (mismas migraciones que produce
