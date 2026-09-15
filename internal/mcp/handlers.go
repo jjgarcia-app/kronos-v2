@@ -127,6 +127,12 @@ func (s *Server) handleMemSave(ctx context.Context, req mcpgo.CallToolRequest) (
 			for _, c := range candidates {
 				msg += fmt.Sprintf("\n  - judgment_id=%d | ID %d: %s (%s)", c.JudgmentID, c.ID, c.Title, c.Type)
 			}
+			// Medido el 2026-09-15: un agente buscó un hallazgo con mem_search, no lo
+			// encontró y lo volvió a guardar — el hecho ya estaba desde el 09-14. La
+			// búsqueda estricta era el problema (ver widenFTSQuery en store/fts.go),
+			// pero el aviso tiene que decir qué hacer cuando el candidato NO es una
+			// contradicción sino el mismo hecho: actualizar, no insertar otra fila.
+			msg += "\n\nSi alguno es el MISMO hecho (no una contradicción), actualizalo con mem_update pasando ese ID en vez de guardar otra observación — así sube revision_count en lugar de duplicar."
 		}
 	}
 
