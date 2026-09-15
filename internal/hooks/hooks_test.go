@@ -746,8 +746,14 @@ func TestRunPromptSubmit_Timeout_ExitsClean(t *testing.T) {
 		if err != nil {
 			t.Errorf("RunPromptSubmit returned error: %v", err)
 		}
-	case <-time.After(2500 * time.Millisecond):
-		t.Error("RunPromptSubmit did not return within 2500ms — el timeout de config.Recall (1500ms) no se aplicó")
+	// 10s de backstop, no 2500ms: con 2500ms el margen sobre el deadline de
+	// 1500ms era de un segundo, y cuando la suite COMPLETA corre en paralelo
+	// dentro del mismo paquete ese margen se agotaba y el test fallaba sin bug
+	// (medido el 2026-09-15: 3/3 en verde aislado con load 19,19, y rojo en la
+	// suite). Lo que el test verifica es que el deadline CORTA y el hook
+	// vuelve; el backstop solo tiene que ser imposible de alcanzar por lentitud.
+	case <-time.After(10 * time.Second):
+		t.Error("RunPromptSubmit no volvió en 10s — el timeout de config.Recall (1500ms) no se aplicó")
 	}
 }
 

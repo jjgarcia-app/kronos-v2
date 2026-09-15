@@ -969,3 +969,37 @@ func isDuplicateError(err error) bool {
 		strings.Contains(s, "UNIQUE constraint") ||
 		strings.Contains(s, "already exists")
 }
+
+// JudgeBySemantic: la usa `gc --consolidate` para marcar una fusión (relación
+// "supersedes" entre el superviviente y la reemplazada). Antes no estaba en
+// DualStore, así que la llamada caía al store local: la fusión se veía en el
+// buffer y no llegaba nunca a la base. Medido el 2026-09-15, tras fusionar 13
+// pares: el buffer local tenía 60 relaciones y revision_count 2-3 en los
+// supervivientes, Postgres tenía 0 relaciones y revision_count 1, y la cola de
+// sync vacía (el sync no lleva estas tablas). Primary primero, buffer como
+// respaldo — si el primario está caído el marcado queda local, que es el
+// comportamiento de antes en ese caso.
+func (d *DualStore) JudgeBySemantic(ctx context.Context, sourceID, targetID, relation string, confidence float64, reason, model string) (string, error) {
+	if !d.isPrimaryDown() {
+		id, err := d.primary.JudgeBySemantic(ctx, sourceID, targetID, relation, confidence, reason, model)
+		if err == nil {
+			return id, nil
+		}
+		d.markDown(err)
+	}
+	return d.buffer.JudgeBySemantic(ctx, sourceID, targetID, relation, confidence, reason, model)
+}
+
+// IncrementRevisionCount: la otra mitad del marcado de una fusión (el
+// superviviente sube su revision_count). Mismo caso y misma evidencia que
+// JudgeBySemantic: sin esto el contador subía solo en el buffer.
+func (d *DualStore) IncrementRevisionCount(ctx context.Context, id int64) (*Observation, error) {
+	if !d.isPrimaryDown() {
+		obs, err := d.primary.IncrementRevisionCount(ctx, id)
+		if err == nil {
+			return obs, nil
+		}
+		d.markDown(err)
+	}
+	return d.buffer.IncrementRevisionCount(ctx, id)
+}
