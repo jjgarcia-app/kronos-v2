@@ -18,10 +18,13 @@ import (
 	_ "github.com/ncruces/go-sqlite3/driver"
 )
 
-// backupInterval: cada cuánto el daemon corre un backup automático solo. 24h
-// alcanza para el caso de uso real — un desarrollador trabajando en su
-// propia máquina, no un servicio con SLA de RPO ajustado.
-const backupInterval = 24 * time.Hour
+// backupIntervalDefault: cada cuánto el daemon corre un backup automático
+// solo, cuando el config no dice otra cosa. 24h alcanza para el caso de uso
+// real — un desarrollador trabajando en su propia máquina, no un servicio
+// con SLA de RPO ajustado. Desde la medición del 2026-09-15 esto es
+// configurable (backup.interval_hours) y el backup al arrancar se puede
+// apagar (backup.on_start), que es lo que hacía pesado cada reinicio.
+const backupIntervalDefault = 24 * time.Hour
 
 // runBackupLoop corre en background mientras el daemon vive — reemplaza el
 // hábito manual de copiar kronos.db antes de un cambio grande por algo
@@ -29,7 +32,7 @@ const backupInterval = 24 * time.Hour
 // aparte. Un backup inicial al arrancar, después cada backupInterval. Nunca
 // tira el daemon abajo por un fallo de backup — solo lo loguea (va a
 // daemon.log en modo daemon, ver redirectLogsToFile).
-func runBackupLoop(ctx context.Context) {
+func runBackupLoop(ctx context.Context, cfg config.BackupConfig) {
 	runOnce := func() {
 		defer func() {
 			if r := recover(); r != nil {
@@ -53,8 +56,21 @@ func runBackupLoop(ctx context.Context) {
 	default:
 	}
 
-	runOnce()
-	ticker := time.NewTicker(backupInterval)
+	if !cfg.Enabled {
+		fmt.Fprintf(os.Stderr, "backup automático desactivado (backup.enabled=false)\n")
+		return
+	}
+
+	intervalo := backupIntervalDefault
+	if cfg.IntervalHours > 0 {
+		intervalo = cfg.BackupInterval()
+	}
+	if cfg.OnStart {
+		runOnce()
+	} else {
+		fmt.Fprintf(os.Stderr, "backup al arrancar desactivado (backup.on_start=false); próximo en %s\n", intervalo)
+	}
+	ticker := time.NewTicker(intervalo)
 	defer ticker.Stop()
 	for {
 		select {

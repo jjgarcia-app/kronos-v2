@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jjgarcia-app/kronos-v2/internal/platform"
 )
@@ -385,8 +386,29 @@ type DigestConfig struct {
 	PromoteFacts bool `json:"promote_facts"`
 }
 
+// BackupConfig controla el backup automático del daemon (ver
+// cmd/kronos/backup.go). Motivado por una medición en producción el
+// 2026-09-15: cada reinicio del daemon — frecuente durante una tanda de
+// releases — disparaba un pg_dump completo de la base (~7 MB) en una máquina
+// ya cargada con 8-10 sesiones de Claude Code, compitiendo por CPU justo
+// cuando el usuario trabaja. Y el intervalo de 24h era una constante del
+// código, sin forma de correrlo en una hora muerta.
+type BackupConfig struct {
+	// Enabled: si false, el daemon no hace backups automáticos (el comando
+	// manual `kronos backup` sigue funcionando igual). Default true.
+	Enabled bool `json:"enabled"`
+	// IntervalHours: cada cuánto corre el backup periódico. Default 24.
+	// Valores <= 0 vuelven al default.
+	IntervalHours int `json:"interval_hours"`
+	// OnStart: si true (default), además del periódico se hace uno al
+	// arrancar el daemon. Poner false para que reiniciar el daemon (o la
+	// máquina) no dispare un pg_dump cada vez.
+	OnStart bool `json:"on_start"`
+}
+
 type Config struct {
 	DB            DBConfig            `json:"db"`
+	Backup        BackupConfig        `json:"backup"`
 	Embeddings    EmbeddingsConfig    `json:"embeddings"`
 	LLM           LLMConfig           `json:"llm"`
 	Memory        MemoryConfig        `json:"memory"`
@@ -507,6 +529,7 @@ func Default() Config {
 			MinObservations:      5,
 			SatisfiedByInjection: true,
 		},
+		Backup: BackupConfig{Enabled: true, IntervalHours: 24, OnStart: true},
 		Digest: DigestConfig{
 			Enabled:         true,
 			IntervalMinutes: 20,
@@ -1093,4 +1116,14 @@ func parseList(s string) []string {
 func parseBool(s string) bool {
 	b, _ := strconv.ParseBool(s)
 	return b
+}
+
+// BackupInterval devuelve cada cuánto corre el backup periódico del daemon.
+// Centralizado acá para que el default viva en un solo lugar.
+func (b BackupConfig) BackupInterval() time.Duration {
+	horas := b.IntervalHours
+	if horas <= 0 {
+		horas = 24
+	}
+	return time.Duration(horas) * time.Hour
 }
