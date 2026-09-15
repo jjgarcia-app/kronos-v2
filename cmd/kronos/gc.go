@@ -53,6 +53,13 @@ siguen existiendo y son consultables.
   --max-pairs N       Tope de observaciones consultadas contra el proveedor
                       de embeddings en esta corrida (default: 50). No afecta
                       la comparación por topic_key, que siempre corre entera.
+  --min-shared-tokens N
+                      Tokens significativos de título que dos observaciones del
+                      mismo proyecto y tipo deben compartir para pasar el
+                      prefiltro de título (default: 3, o
+                      consolidation.min_shared_title_tokens en config.json).
+                      Bajarlo encuentra más duplicados a costa de más llamadas
+                      al proveedor de embeddings.
   --no-embeddings     Corre solo el camino topic_key — ni una llamada al
                       proveedor de embeddings. Milisegundos en vez de minutos;
                       forma rápida de tener un primer reporte.
@@ -246,16 +253,22 @@ func runGCConsolidate(args []string) error {
 		rel = relations.New(vs)
 	}
 
+	minSharedTokens := flagInt(args, "--min-shared-tokens")
+	if minSharedTokens <= 0 {
+		minSharedTokens = cfg.Consolidation.MinSharedTitleTokens
+	}
+
 	runStart := time.Now().UTC()
 	report, err := consolidate.Run(ctx, st, rel, consolidate.Options{
-		Project:            project,
-		Threshold:          threshold,
-		RequireSameType:    cfg.Consolidation.RequireSameType,
-		RequireSameProject: cfg.Consolidation.RequireSameProject,
-		DryRun:             dryRun,
-		NoEmbeddings:       noEmbeddings,
-		MaxPairs:           maxPairs,
-		Since:              since,
+		Project:              project,
+		Threshold:            threshold,
+		RequireSameType:      cfg.Consolidation.RequireSameType,
+		RequireSameProject:   cfg.Consolidation.RequireSameProject,
+		DryRun:               dryRun,
+		NoEmbeddings:         noEmbeddings,
+		MaxPairs:             maxPairs,
+		MinSharedTitleTokens: minSharedTokens,
+		Since:                since,
 	})
 	if err != nil {
 		return fmt.Errorf("consolidar: %w", err)
@@ -340,4 +353,23 @@ func printConsolidateReport(r *consolidate.Report) {
 	if r.DryRun && len(r.Pairs) > 0 {
 		fmt.Println("\nNada se escribió (dry-run). Usá --no-dry-run para aplicar la fusión.")
 	}
+}
+
+// flagInt lee "--nombre N" o "--nombre=N" de args y devuelve el valor (0 si no
+// está o no parsea). Se usa para los flags de `gc --consolidate` que no
+// dependen de la posición dentro del loop de argumentos.
+func flagInt(args []string, name string) int {
+	for i, a := range args {
+		if a == name && i+1 < len(args) {
+			if n, err := strconv.Atoi(args[i+1]); err == nil {
+				return n
+			}
+		}
+		if v, ok := strings.CutPrefix(a, name+"="); ok {
+			if n, err := strconv.Atoi(v); err == nil {
+				return n
+			}
+		}
+	}
+	return 0
 }

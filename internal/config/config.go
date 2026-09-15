@@ -287,6 +287,12 @@ type ConsolidationConfig struct {
 	Threshold          float64 `json:"threshold"`
 	RequireSameType    bool    `json:"require_same_type"`
 	RequireSameProject bool    `json:"require_same_project"`
+	// MinSharedTitleTokens: tokens significativos de título que dos
+	// observaciones del mismo bucket deben compartir para que el prefiltro
+	// de `gc --consolidate` las deje pasar a la pasada de embeddings.
+	// Default 3 (comportamiento histórico). Bajarlo encuentra más pares
+	// duplicados a costa de más llamadas al proveedor de embeddings.
+	MinSharedTitleTokens int `json:"min_shared_title_tokens"`
 }
 
 // RelationsConfig controla el filtro anti-ruido de FindCandidates — el
@@ -510,11 +516,12 @@ func Default() Config {
 			MaxSessionItems: 1,
 		},
 		Consolidation: ConsolidationConfig{
-			Enabled:            false,
-			IntervalHours:      24,
-			Threshold:          0.93,
-			RequireSameType:    true,
-			RequireSameProject: true,
+			MinSharedTitleTokens: 3,
+			Enabled:              false,
+			IntervalHours:        24,
+			Threshold:            0.93,
+			RequireSameType:      true,
+			RequireSameProject:   true,
 		},
 		Relations: RelationsConfig{
 			BM25Floor:       -6.0,
