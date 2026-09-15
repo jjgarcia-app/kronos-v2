@@ -606,6 +606,85 @@ func TestRun_Since_SkipsAlreadyEvaluatedObservations(t *testing.T) {
 	}
 }
 
+// Dos observaciones con títulos de plantilla y números distintos no se fusionan.
+// El guardia detecta que "batch 1" vs "batch 2" son hechos distintos.
+func TestRun_TemplateGuardian_SkipsDifferentNumbers(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	rel := newDetector(t)
+
+	const commonContent = "Se analizó la solicitud de acceso y se verificó la identidad del usuario. La operación fue exitosa."
+
+	saveAndIndex(t, ctx, st, rel, "proj-a", store.TypeDiscovery,
+		"Análisis verificado Gmail tickets batch 1",
+		"batch 1 "+commonContent)
+	saveAndIndex(t, ctx, st, rel, "proj-a", store.TypeDiscovery,
+		"Análisis verificado Gmail tickets batch 2",
+		"batch 2 "+commonContent)
+
+	report, err := consolidate.Run(ctx, st, rel, consolidate.Options{
+		Threshold:          0.70,
+		RequireSameType:    true,
+		RequireSameProject: true,
+		DryRun:             false,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if len(report.Pairs) != 0 {
+		t.Fatalf("esperaba 0 pares (números distintos), obtuve %d: %+v", len(report.Pairs), report.Pairs)
+	}
+	if report.Merged != 0 {
+		t.Fatalf("esperaba 0 fusiones, obtuve %d", report.Merged)
+	}
+	if report.PairsSkippedByTemplate == 0 {
+		t.Errorf("esperaba PairsSkippedByTemplate > 0, obtuve %d", report.PairsSkippedByTemplate)
+	}
+}
+
+// Dos observaciones con el mismo hecho y el MISMO número (o sin números) y
+// contenido casi idéntico SÍ se fusionan (el guardia no rompe casos legítimos).
+func TestRun_TemplateGuardian_AllowsSameNumbers(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	rel := newDetector(t)
+
+	o1 := saveAndIndex(t, ctx, st, rel, "proj-a", store.TypeDiscovery,
+		"El login falla batch 1",
+		"El login falla cuando el usuario tiene MFA activado y el token expiró antes de refrescar. batch 1")
+	o2 := saveAndIndex(t, ctx, st, rel, "proj-a", store.TypeDiscovery,
+		"El login falla batch 1 variante",
+		"El login falla cuando el usuario tiene MFA activado y el token expiro antes de refrescar. batch 1")
+
+	report, err := consolidate.Run(ctx, st, rel, consolidate.Options{
+		Threshold:          0.60,
+		RequireSameType:    true,
+		RequireSameProject: true,
+		DryRun:             false,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if len(report.Pairs) != 1 {
+		t.Fatalf("esperaba 1 par (mismo número), obtuve %d: %+v", len(report.Pairs), report.Pairs)
+	}
+	if report.Merged != 1 {
+		t.Fatalf("esperaba 1 fusión, obtuve %d", report.Merged)
+	}
+
+	pair := report.Pairs[0]
+	if !pair.Applied {
+		t.Fatal("el par debería quedar marcado como aplicado")
+	}
+
+	ids := map[int64]bool{o1.ID: true, o2.ID: true}
+	if !ids[pair.SurvivorID] || !ids[pair.ReplacedID] {
+		t.Errorf("el par no corresponde a las observaciones creadas: %+v", pair)
+	}
+}
+
 // TestRun_TitlePrefilter_UmbralConfigurable: el prefiltro de título era un
 // constante de 3 tokens. Medido en producción el 2026-09-15, dos
 // observaciones del mismo proyecto y tipo que eran el MISMO hallazgo con

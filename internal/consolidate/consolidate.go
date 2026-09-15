@@ -23,6 +23,7 @@ package consolidate
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -163,6 +164,39 @@ type Report struct {
 	// pero quedaron afuera por Options.Since — ya se evaluaron en una
 	// corrida anterior y no se actualizaron desde entonces.
 	PairsSkippedBySince int
+	// PairsSkippedByTemplate: pares detectados por similitud semántica pero
+	// descartados porque sus títulos difieren en números — indica que son
+	// hechos distintos (ej: tramos distintos de un análisis de lotes).
+	PairsSkippedByTemplate int
+}
+
+// extractNumbers extrae todas las secuencias de dígitos del título como strings.
+func extractNumbers(title string) []string {
+	re := regexp.MustCompile(`\d+`)
+	return re.FindAllString(title, -1)
+}
+
+// titlesHaveDifferentNumbers retorna true si los títulos difieren en sus números.
+// Si ambos no tienen números o tienen exactamente los mismos números, retorna false.
+func titlesHaveDifferentNumbers(title1, title2 string) bool {
+	nums1 := extractNumbers(title1)
+	nums2 := extractNumbers(title2)
+
+	if len(nums1) == 0 && len(nums2) == 0 {
+		return false
+	}
+
+	if len(nums1) != len(nums2) {
+		return true
+	}
+
+	for i := range nums1 {
+		if nums1[i] != nums2[i] {
+			return true
+		}
+	}
+
+	return false
 }
 
 // Run busca pares de observaciones semánticamente duplicadas dentro del
@@ -274,6 +308,7 @@ func Run(ctx context.Context, st *store.Store, rel *relations.Detector, opts Opt
 	useEmbeddings := !opts.NoEmbeddings && rel != nil && rel.Enabled()
 	evaluated := 0
 	skippedByCap := 0
+	skippedByTemplate := 0
 	if useEmbeddings {
 		byID := make(map[int64]*store.Observation, len(pool))
 		for _, o := range pool {
@@ -297,6 +332,12 @@ func Run(ctx context.Context, st *store.Store, rel *relations.Detector, opts Opt
 				if !ok || bucketKeyFor(cand, opts) != myKey {
 					continue // fuera del bucket — no es candidato bajo esta política
 				}
+
+				if titlesHaveDifferentNumbers(o.Title, cand.Title) {
+					skippedByTemplate++
+					continue
+				}
+
 				key := pairKey(o.ID, cand.ID)
 				if seen[key] {
 					continue
@@ -355,6 +396,7 @@ func Run(ctx context.Context, st *store.Store, rel *relations.Detector, opts Opt
 		PairsSkippedByCap:       skippedByCap,
 		PairsSkippedByPrefilter: skippedByPrefilter,
 		PairsSkippedBySince:     skippedBySince,
+		PairsSkippedByTemplate:  skippedByTemplate,
 	}, nil
 }
 
