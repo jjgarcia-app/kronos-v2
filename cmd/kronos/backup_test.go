@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+
+	"github.com/jjgarcia-app/kronos-v2/internal/config"
 	"time"
 
 	"github.com/jjgarcia-app/kronos-v2/internal/platform"
@@ -200,7 +202,7 @@ func TestRunBackupLoop_StopsOnContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		runBackupLoop(ctx)
+		runBackupLoop(ctx, config.Default().Backup)
 		close(done)
 	}()
 	cancel()
@@ -208,5 +210,42 @@ func TestRunBackupLoop_StopsOnContextCancel(t *testing.T) {
 	case <-done:
 	case <-time.After(3 * time.Second):
 		t.Fatal("runBackupLoop no terminó tras cancelar el context")
+	}
+}
+
+// Con backup deshabilitado, el loop no debe quedarse vivo ni tocar la base.
+func TestRunBackupLoop_DeshabilitadoTerminaSolo(t *testing.T) {
+	done := make(chan struct{})
+	go func() {
+		runBackupLoop(context.Background(), config.BackupConfig{Enabled: false})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("runBackupLoop siguió vivo con backup deshabilitado")
+	}
+}
+
+// Con on_start=false y un intervalo largo, no debe correr ningún backup al
+// arrancar (era el pg_dump que se disparaba en cada reinicio del daemon).
+func TestRunBackupLoop_OnStartFalseNoHaceBackupInmediato(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		runBackupLoop(ctx, config.BackupConfig{Enabled: true, IntervalHours: 24, OnStart: false})
+		close(done)
+	}()
+	select {
+	case <-done:
+		t.Fatal("runBackupLoop volvió antes de cancelar el contexto")
+	case <-time.After(700 * time.Millisecond):
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("runBackupLoop no terminó tras cancelar el contexto")
 	}
 }

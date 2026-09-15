@@ -9,6 +9,23 @@ import (
 )
 
 // Search performs full-text search over observations.
+//
+// Dos intentos: primero la consulta tal como llegó (estricta) y, solo si no
+// devuelve NADA y tiene más de un término, un segundo intento con los
+// términos unidos por OR (ver widenFTSQuery).
+//
+// Medido en producción el 2026-09-15: la misma búsqueda que el recall usa
+// con las palabras de un prompt real devolvía 0 filas aunque el hecho
+// existiera en la base — `"laptop enviar archivos scp tailscale"` → 0
+// resultados, `"laptop"` → 3. La memoria estaba guardada y el hook la
+// inyectaba; lo que fallaba era la consulta, demasiado estricta para texto
+// natural (los términos se ANDean). El síntoma que ve el usuario es "el
+// agente no consultó la memoria que tenía disponible".
+//
+// El segundo intento NO reemplaza al primero: si la consulta estricta trae
+// algo, ese resultado es el que vale (precisión); el OR es solo la red que
+// evita el vacío (recall). Correr con OR siempre degradaría búsquedas
+// puntuales, así que no se hace.
 func (s *Store) Search(ctx context.Context, p SearchParams) ([]*SearchResult, error) {
 	if p.Query == "" {
 		return nil, fmt.Errorf("query is required")
@@ -16,10 +33,70 @@ func (s *Store) Search(ctx context.Context, p SearchParams) ([]*SearchResult, er
 	if p.Limit <= 0 {
 		p.Limit = 20
 	}
+
+	res, err := s.searchOnce(ctx, p)
+	if err != nil {
+		return nil, err
+	}
+	if len(res) > 0 {
+		return res, nil
+	}
+
+	amplio, ok := widenFTSQuery(p.Query)
+	if !ok {
+		return res, nil
+	}
+	p2 := p
+	p2.Query = amplio
+	res2, err2 := s.searchOnce(ctx, p2)
+	if err2 != nil {
+		// Si el fallback falla, el resultado válido es el vacío del intento
+		// estricto: no convertir un "no hay nada" en un error del buscador.
+		return res, nil
+	}
+	return res2, nil
+}
+
+// searchOnce es una corrida de búsqueda contra el backend activo.
+func (s *Store) searchOnce(ctx context.Context, p SearchParams) ([]*SearchResult, error) {
 	if s.driver == "postgres" {
 		return s.searchPostgres(ctx, p)
 	}
 	return s.searchSQLite(ctx, p)
+}
+
+// widenFTSQuery arma la versión ancha de una consulta: cada término entre
+// comillas, unidos por OR — la misma forma que ya usa runRecall y que
+// entienden los dos backends (FTS5 de SQLite y websearch_to_tsquery de
+// Postgres, ver sanitizeFTSQuery y searchPostgres).
+//
+// Devuelve false (no hay nada que ensanchar) cuando:
+//   - la consulta ya trae sintaxis explícita (comillas, paréntesis,
+//     wildcard): quien la escribió así sabe lo que quiere;
+//   - ya trae operadores booleanos en mayúscula (OR/AND/NOT): ya está
+//     ensanchada a mano;
+//   - tiene un solo término: no hay nada que unir.
+func widenFTSQuery(q string) (string, bool) {
+	t := strings.TrimSpace(q)
+	if t == "" {
+		return "", false
+	}
+	if strings.ContainsAny(t, `"()*`) {
+		return "", false
+	}
+	for _, op := range []string{" OR ", " AND ", " NOT "} {
+		if strings.Contains(t, op) {
+			return "", false
+		}
+	}
+	fields := strings.Fields(t)
+	if len(fields) < 2 {
+		return "", false
+	}
+	for i, f := range fields {
+		fields[i] = `"` + f + `"`
+	}
+	return strings.Join(fields, " OR "), true
 }
 
 func (s *Store) searchSQLite(ctx context.Context, p SearchParams) ([]*SearchResult, error) {
