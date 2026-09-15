@@ -274,6 +274,36 @@ func runGCConsolidate(args []string) error {
 		return fmt.Errorf("consolidar: %w", err)
 	}
 
+	// Propagar el marcado al primario. consolidate.Run trabaja sobre el store
+	// LOCAL a propósito (la detección de candidatos necesita FTS5 de SQLite),
+	// así que la relación "supersedes" y el revision_count del superviviente
+	// se escribían solo en el buffer: medido el 2026-09-15, tras fusionar 13
+	// pares, el buffer tenía 61 relaciones y Postgres 0. El sync tampoco lleva
+	// esas tablas, así que la fusión se perdía al reconstruir la base. Acá se
+	// repite el marcado contra el primario para los pares aplicados.
+	if !dryRun && len(report.Pairs) > 0 {
+		prim, errPrim := store.NewPostgres(cfg.DB.PostgresDSN)
+		if errPrim != nil || prim == nil {
+			fmt.Fprintf(os.Stderr, "aviso: sin primario, la fusión queda solo en el buffer: %v\n", errPrim)
+		} else {
+			propagados := 0
+			for _, par := range report.Pairs {
+				if !par.Applied {
+					continue
+				}
+				if _, errProp := prim.JudgeBySemantic(ctx, par.SurvivorSyncID, par.ReplacedSyncID, store.RelationSupersedes, 1.0, par.Reason, "kronos-gc-consolidate"); errProp != nil {
+					fmt.Fprintf(os.Stderr, "aviso: supersedes no llegó al primario (#%d <- #%d): %v\n", par.SurvivorID, par.ReplacedID, errProp)
+					continue
+				}
+				if _, errProp := prim.IncrementRevisionCount(ctx, par.SurvivorID); errProp != nil {
+					fmt.Fprintf(os.Stderr, "aviso: revision_count no subió en el primario (#%d): %v\n", par.SurvivorID, errProp)
+				}
+				propagados++
+			}
+			fmt.Printf("  propagado al primario: %d de %d pares\n", propagados, len(report.Pairs))
+		}
+	}
+
 	// Solo si la pasada de embeddings efectivamente corrió: persistir el
 	// timestamp evita que la PRÓXIMA corrida (sin --since) vuelva a pagar una
 	// llamada de embeddings por observaciones que ya se evaluaron acá y no
