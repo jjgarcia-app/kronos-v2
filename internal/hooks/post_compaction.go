@@ -26,6 +26,8 @@ func RunPostCompaction(ctx context.Context, in Input, st store.Storer) error {
 	n, _ := st.CountObservations(ctx, proj.Name)
 	fmt.Printf("[kronos] %d observations available for %s\n", n, proj.Name)
 	fmt.Println("[kronos] call mem_search with keywords from your task before editing OR before answering questions about past work — don't answer 'I don't know/have no record' from memory alone")
+	// Mismo puntero de conducta que en el arranque normal (ver hints.go).
+	fmt.Print(HintsPreamble(0))
 
 	injectContinuity(ctx, st, proj.Name, in.SessionID)
 
