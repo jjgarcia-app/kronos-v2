@@ -20,9 +20,9 @@ const defaultHintsChars = 300
 // cosas se resuelven comprobando antes de afirmar y leyendo la doc antes de
 // preguntar.
 var hints = []string{
-	"[kronos] capacidades y entorno comprobables: `kronos env` (con hora de comprobacion)",
-	"[kronos] documentacion: .claude/commands/ y docs/ del repo - /home/orca/projects/_infra/",
-	"[kronos] comproba antes de afirmar algo tuyo o del entorno; si no lo encontras deci \"no lo encontre\"",
+	"[kronos:hints] capacidades y entorno comprobables: `kronos env` (con hora de comprobacion)",
+	"[kronos:hints] documentacion: .claude/commands/ y docs/ del repo - /home/orca/projects/_infra/",
+	"[kronos:hints] comproba antes de afirmar algo tuyo o del entorno; si no lo encontras deci \"no lo encontre\"",
 }
 
 // HintsPreamble devuelve las líneas de conducta respetando un tope de chars
@@ -47,6 +47,11 @@ func HintsPreamble(maxChars int) string {
 	}
 	return strings.Join(out, "\n") + "\n"
 }
+
+// El prefijo es [kronos:hints] y NO [kronos] a proposito: los tests que cuentan
+// observaciones inyectadas buscan lineas que empiecen con "[kronos] ", y estos
+// punteros no son observaciones (rompieron 3 tests de post-compaction el
+// 2026-09-15 al compartir el prefijo).
 
 // HintsStats reporta líneas y chars del puntero (lo usa el doctor).
 func HintsStats(maxChars int) (lineas, chars int) {
