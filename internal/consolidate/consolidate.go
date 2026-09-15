@@ -69,6 +69,18 @@ const similarLimit = 8
 // una llamada por cada observación del bucket entero aunque los títulos no
 // tuvieran nada en común entre sí (5 evaluadas, 32s, 6.4s por llamada, 0
 // candidatos) — con el prefiltro esas llamadas nunca se piden.
+//
+// Es solo el DEFAULT: Options.MinSharedTitleTokens lo puede bajar con
+// `kronos gc --consolidate --min-shared-tokens N` (y con el knob
+// consolidation.min_shared_title_tokens). Medido en producción el 2026-09-15
+// sobre el histórico completo (1.093 observaciones), y el resultado es que
+// bajarlo NO paga en el régimen real: con el mismo tope --max-pairs (60) el
+// umbral 2 dejó pasar más candidatos (377 descartados por prefiltro contra
+// 679), el tope se repartió entre candidatos flojos y encontró MENOS pares
+// reales (2 contra 28). La palanca para encontrar más duplicados es subir
+// --max-pairs, no bajar este umbral — y aun así el umbral 2 sumó un par que
+// el 3 no vio (SIROC expiration alert), así que con presupuesto grande puede
+// tener sentido. Por eso el default queda en 3 y el knob existe para medir.
 const minSharedTitleTokens = 3
 
 // Options controla qué candidatos se consideran y si se escriben cambios.
@@ -89,6 +101,13 @@ type Options struct {
 	// store en esta corrida (<=0 usa DefaultMaxPairs). No aplica al camino
 	// topic_key, que siempre corre completo por ser gratis.
 	MaxPairs int
+
+	// MinSharedTitleTokens: mínimo de tokens significativos de título que dos
+	// observaciones del mismo bucket (proyecto+tipo) deben compartir para que
+	// el prefiltro las considere candidatas de la pasada de embeddings. <=0
+	// usa minSharedTitleTokens (el default histórico). Bajarlo sube el recall
+	// de duplicados y también el número de llamadas al proveedor de embeddings.
+	MinSharedTitleTokens int
 
 	// Since: solo observaciones actualizadas después de este momento entran
 	// a la pasada de embeddings (cero = sin filtro, evalúa todo lo que
@@ -202,6 +221,11 @@ func Run(ctx context.Context, st *store.Store, rel *relations.Detector, opts Opt
 	// alguna otra observación de su mismo bucket (o el mismo topic_key no
 	// vacío, ya cubierto en la práctica por el paso 1). Gratis — no toca el
 	// proveedor de embeddings.
+	minTokens := opts.MinSharedTitleTokens
+	if minTokens <= 0 {
+		minTokens = minSharedTitleTokens
+	}
+
 	var afterPrefilter []*store.Observation
 	skippedByPrefilter := 0
 	for _, bucket := range buckets {
@@ -223,7 +247,7 @@ func Run(ctx context.Context, st *store.Store, rel *relations.Detector, opts Opt
 			tokensByID[o.ID] = significantTitleTokens(o.Title)
 		}
 		for _, o := range remaining {
-			if hasTitlePartner(o, remaining, tokensByID) {
+			if hasTitlePartner(o, remaining, tokensByID, minTokens) {
 				afterPrefilter = append(afterPrefilter, o)
 			} else {
 				skippedByPrefilter++
@@ -457,7 +481,7 @@ func sharedTitleTokenCount(a, b map[string]bool) int {
 // hasTitlePartner indica si o tiene, dentro de group, al menos otra
 // observación con la que comparta topic_key no vacío o minSharedTitleTokens
 // tokens significativos de título.
-func hasTitlePartner(o *store.Observation, group []*store.Observation, tokensByID map[int64]map[string]bool) bool {
+func hasTitlePartner(o *store.Observation, group []*store.Observation, tokensByID map[int64]map[string]bool, minTokens int) bool {
 	for _, other := range group {
 		if other.ID == o.ID {
 			continue
@@ -465,7 +489,7 @@ func hasTitlePartner(o *store.Observation, group []*store.Observation, tokensByI
 		if o.TopicKey != "" && o.TopicKey == other.TopicKey {
 			return true
 		}
-		if sharedTitleTokenCount(tokensByID[o.ID], tokensByID[other.ID]) >= minSharedTitleTokens {
+		if sharedTitleTokenCount(tokensByID[o.ID], tokensByID[other.ID]) >= minTokens {
 			return true
 		}
 	}

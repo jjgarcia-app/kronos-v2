@@ -605,3 +605,51 @@ func TestRun_Since_SkipsAlreadyEvaluatedObservations(t *testing.T) {
 		t.Errorf("sin --since no debería haber descartes por since, got %d", report2.PairsSkippedBySince)
 	}
 }
+
+// TestRun_TitlePrefilter_UmbralConfigurable: el prefiltro de título era un
+// constante de 3 tokens. Medido en producción el 2026-09-15, dos
+// observaciones del mismo proyecto y tipo que eran el MISMO hallazgo con
+// títulos redactados distinto compartían 2 tokens ("aprobacion extraccion
+// bloqueada" vs "aprobacion extraccion pendiente"), así que nunca llegaban a
+// compararse. Con el umbral en 2 sí pasan; con el default 3, no.
+func TestRun_TitlePrefilter_UmbralConfigurable(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	rel, calls := newCountingDetector(t)
+
+	saveAndIndex(t, ctx, st, rel, "proj-umbral", store.TypeBugfix,
+		"aprobacion extraccion bloqueada", "la aprobacion manual no se bloqueaba")
+	saveAndIndex(t, ctx, st, rel, "proj-umbral", store.TypeBugfix,
+		"aprobacion extraccion pendiente", "la aprobacion manual quedo pendiente")
+
+	// Con el default (3 tokens): ningún par sobrevive, cero embeddings.
+	*calls = 0
+	r3, err := consolidate.Run(ctx, st, rel, consolidate.Options{
+		RequireSameType: true, RequireSameProject: true, DryRun: true,
+	})
+	if err != nil {
+		t.Fatalf("Run (default): %v", err)
+	}
+	if *calls != 0 {
+		t.Errorf("con umbral 3 no debería gastar embeddings, got %d", *calls)
+	}
+	if r3.PairsSkippedByPrefilter != 2 {
+		t.Errorf("umbral 3: esperaba 2 descartadas por prefiltro, got %d", r3.PairsSkippedByPrefilter)
+	}
+
+	// Con umbral 2: las dos pasan el prefiltro y se evalúan (una llamada cada una).
+	*calls = 0
+	r2, err := consolidate.Run(ctx, st, rel, consolidate.Options{
+		RequireSameType: true, RequireSameProject: true, DryRun: true,
+		MinSharedTitleTokens: 2,
+	})
+	if err != nil {
+		t.Fatalf("Run (umbral 2): %v", err)
+	}
+	if r2.PairsSkippedByPrefilter != 0 {
+		t.Errorf("umbral 2: esperaba 0 descartadas por prefiltro, got %d", r2.PairsSkippedByPrefilter)
+	}
+	if *calls != 2 {
+		t.Errorf("umbral 2: esperaba 2 llamadas a embeddings, got %d", *calls)
+	}
+}
