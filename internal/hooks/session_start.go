@@ -63,6 +63,9 @@ func RunSessionStart(ctx context.Context, in Input, st store.Storer) error {
 	if in.SessionID != "" {
 		fmt.Printf("[kronos] your session_id is %q — pass it explicitly as session_id in every mem_* tool call this session (mem_search, mem_context, mem_checkpoint, mem_save...). Without it, kronos has to guess which of possibly several concurrent sessions is yours, and often guesses wrong.\n", in.SessionID)
 	}
+	// Puntero de conducta (ver hints.go): dónde comprobar el entorno y dónde
+	// está la documentación. Son punteros con tope, no datos del entorno.
+	fmt.Print(HintsPreamble(0))
 	printBacklogWarnings(ctx, st, proj.Name)
 
 	injectContinuity(ctx, st, proj.Name, in.SessionID)
