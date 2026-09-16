@@ -94,3 +94,33 @@ func TestRankAndDedupeRecallItemsOpts_DensidadPrimeraCeroNoCorta(t *testing.T) {
 		t.Fatalf("setup inválido: esperaba 'baseline' primero tras ordenar, got %q", got[0].id)
 	}
 }
+
+// TestRankAndDedupeRecallItemsOpts_AnclaEsLaMaximaNoElPrimero cubre el caso
+// que motivó anclar el corte a la densidad MÁXIMA entre candidatos en vez de
+// a la del primero del orden: "primero" (por matchedTerms/similitud) no
+// siempre es el más denso. Acá los tres candidatos empatan en matchedTerms,
+// así que el orden lo decide similarity — "primero" queda con densidad floja
+// (1/11 ≈ 0.09) mientras "denso" (mismo matchedTerms, título de una sola
+// palabra) tiene densidad 1.0. Con la densidad del primero como ancla, el
+// umbral (0.6 * 0.09) es tan bajo que hasta un relleno de verdad ("filler",
+// densidad 1/3 ≈ 0.33) sobrevive; anclado a la máxima (0.6 * 1.0 = 0.6),
+// "filler" queda por debajo y se corta — solo "primero" y "denso" quedan.
+func TestRankAndDedupeRecallItemsOpts_AnclaEsLaMaximaNoElPrimero(t *testing.T) {
+	items := []recallItem{
+		{
+			id: "primero", typ: "discovery", matchedTerms: 1, similarity: 0.9,
+			title:   "resumen extendido variado",
+			content: "contenido adicional disperso sobre trabajo variado ajeno reciente extenso",
+		},
+		{id: "denso", typ: "discovery", matchedTerms: 1, similarity: 0.1, title: "recall"},
+		{id: "filler", typ: "discovery", matchedTerms: 1, similarity: 0.05, title: "detalle disperso", content: "variado"},
+	}
+	got := rankAndDedupeRecallItemsOpts(items, 10, 3, rellenoDensidadFallback)
+	if len(got) != 2 {
+		t.Fatalf("esperaba que 'filler' se corte contra la densidad máxima ('denso'), got %d: %+v", len(got), got)
+	}
+	ids := map[string]bool{got[0].id: true, got[1].id: true}
+	if !ids["primero"] || !ids["denso"] {
+		t.Errorf("esperaba que sobrevivan 'primero' y 'denso', got %+v", got)
+	}
+}
