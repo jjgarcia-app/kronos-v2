@@ -601,24 +601,40 @@ func candidateDensity(it recallItem) float64 {
 }
 
 // filterRellenosByDensity corta los rellenos — todo lo que sigue al primer
-// item, que se queda siempre — cuya densidad de match sea floja respecto del
-// primero (ver config.RecallConfig.RellenoDensidad / candidateDensity).
-// Motivado por lo medido con el set de evaluación aguja.json: con 1
-// candidato bueno, los huecos restantes del recall se rellenaban con
-// cualquier cosa que pasara la guarda de min_matched_terms (precisión 0.33);
-// cortando rellenos con densidad < factor * densidad del primero, la
-// precisión mejora con una caída de recall marginal.
+// item, que se queda siempre — cuya densidad de match sea floja respecto de
+// la MÁXIMA densidad entre los candidatos (ver config.RecallConfig.RellenoDensidad
+// / candidateDensity). Motivado por lo medido con el set de evaluación
+// aguja.json: con 1 candidato bueno, los huecos restantes del recall se
+// rellenaban con cualquier cosa que pasara la guarda de min_matched_terms
+// (precisión 0.33); cortando rellenos con densidad < factor * densidad
+// máxima, la precisión mejora con una caída de recall marginal.
+//
+// El ancla es la máxima y no la del primer item: el orden previo a este
+// corte prioriza matchedTerms/similitud (ver rankAndDedupeRecallItemsOpts),
+// que puede divergir de la densidad cuando dos candidatos empatan en
+// términos matcheados pero difieren en longitud de título+contenido — el
+// primero del orden no siempre es el más denso. Medido: con la densidad del
+// primero como ancla, un candidato dueño de un match perfecto pero que
+// rankeaba segundo (empate en matchedTerms, perdía por similitud) se
+// descartaba por quedar por debajo de un umbral calibrado contra un primero
+// menos denso.
 //
 // factor negativo desactiva el corte (deja pasar todo, comportamiento
-// anterior a este cambio) — ver rellenoDensidadFactorFor. Si la densidad del
-// primer item es 0 (matchedTerms = 0), el umbral resultante también es 0:
-// ningún relleno se pierde por densidad en ese caso, que es lo correcto —
-// no hay candidato de referencia contra el cual ser "flojo".
+// anterior a este cambio) — ver rellenoDensidadFactorFor. Si la densidad
+// máxima es 0 (ningún candidato matcheó término), el umbral resultante
+// también es 0: ningún relleno se pierde por densidad en ese caso, que es lo
+// correcto — no hay candidato de referencia contra el cual ser "flojo".
 func filterRellenosByDensity(items []recallItem, factor float64) []recallItem {
 	if len(items) <= 1 || factor < 0 {
 		return items
 	}
-	threshold := factor * candidateDensity(items[0])
+	maxDensity := candidateDensity(items[0])
+	for _, it := range items[1:] {
+		if d := candidateDensity(it); d > maxDensity {
+			maxDensity = d
+		}
+	}
+	threshold := factor * maxDensity
 	kept := make([]recallItem, 0, len(items))
 	kept = append(kept, items[0])
 	for _, it := range items[1:] {
