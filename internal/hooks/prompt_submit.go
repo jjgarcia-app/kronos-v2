@@ -257,6 +257,25 @@ func vectorProbeThreshold(rc config.RecallConfig) time.Duration {
 	return time.Duration(ms) * time.Millisecond
 }
 
+// rellenoDensidadFallback se usa solo si config.RecallConfig.RellenoDensidad
+// viene en 0 (config.Default() ya pone 0.60) — mismo caso que
+// ftsTimeoutFallback: un config.json editado a mano que deje la clave en 0
+// no puede desactivar el corte de rellenos por accidente. Para desactivarlo
+// a propósito existe el valor negativo (ver rellenoDensidadFactorFor).
+const rellenoDensidadFallback = 0.60
+
+// rellenoDensidadFactorFor resuelve config.RecallConfig.RellenoDensidad con
+// su default (rellenoDensidadFallback), mismo estilo que ftsTimeoutFor /
+// vectorProbeThreshold. Un valor negativo explícito se devuelve tal cual —
+// desactiva el corte de rellenos (ver filterRellenosByDensity) en vez de
+// defaultear.
+func rellenoDensidadFactorFor(rc config.RecallConfig) float64 {
+	if rc.RellenoDensidad == 0 {
+		return rellenoDensidadFallback
+	}
+	return rc.RellenoDensidad
+}
+
 // promptRecallCacheTTL: misma ventana que embeddings.recallCacheTTL — una
 // consulta repetida (reformulación, doble Enter) dentro de este tramo no
 // vuelve a pagar ni el round-trip de FTS ni el de embeddings.
@@ -406,7 +425,7 @@ func runRecall(ctx context.Context, in Input, st store.Storer, vs *embeddings.Ve
 		items = append(items, it)
 	}
 
-	items = rankAndDedupeRecallItemsOpts(items, k, rc.MaxSessionItems)
+	items = rankAndDedupeRecallItemsOpts(items, k, rc.MaxSessionItems, rellenoDensidadFactorFor(rc))
 
 	if len(items) == 0 {
 		return
@@ -566,21 +585,70 @@ func gatherRecallCandidates(ctx context.Context, prompt string, st store.Storer,
 // desplazar el conocimiento real del proyecto.
 const defaultRecallMaxSessionItems = 1
 
+// candidateDensity mide qué tan concentrado está el match de un candidato en
+// su propio título+contenido: matchedTerms sobre el total de tokens
+// significativos que aporta la observación (mismo criterio de tokens que
+// significantTitleTokens ya usa para el dedupe de títulos). Un candidato que
+// matchea 1 término en un título corto es más pertinente que uno que matchea
+// el mismo término perdido en un título+contenido largo — ver
+// filterRellenosByDensity.
+func candidateDensity(it recallItem) float64 {
+	total := len(significantTitleTokens(it.title + " " + it.content))
+	if total < 1 {
+		total = 1
+	}
+	return float64(it.matchedTerms) / float64(total)
+}
+
+// filterRellenosByDensity corta los rellenos — todo lo que sigue al primer
+// item, que se queda siempre — cuya densidad de match sea floja respecto del
+// primero (ver config.RecallConfig.RellenoDensidad / candidateDensity).
+// Motivado por lo medido con el set de evaluación aguja.json: con 1
+// candidato bueno, los huecos restantes del recall se rellenaban con
+// cualquier cosa que pasara la guarda de min_matched_terms (precisión 0.33);
+// cortando rellenos con densidad < factor * densidad del primero, la
+// precisión mejora con una caída de recall marginal.
+//
+// factor negativo desactiva el corte (deja pasar todo, comportamiento
+// anterior a este cambio) — ver rellenoDensidadFactorFor. Si la densidad del
+// primer item es 0 (matchedTerms = 0), el umbral resultante también es 0:
+// ningún relleno se pierde por densidad en ese caso, que es lo correcto —
+// no hay candidato de referencia contra el cual ser "flojo".
+func filterRellenosByDensity(items []recallItem, factor float64) []recallItem {
+	if len(items) <= 1 || factor < 0 {
+		return items
+	}
+	threshold := factor * candidateDensity(items[0])
+	kept := make([]recallItem, 0, len(items))
+	kept = append(kept, items[0])
+	for _, it := range items[1:] {
+		if candidateDensity(it) >= threshold {
+			kept = append(kept, it)
+		}
+	}
+	return kept
+}
+
 // rankAndDedupeRecallItemsOpts ordena por (términos matcheados, similitud) —
 // mismo criterio para candidatos de FTS y de vector, así ninguno le gana al
-// otro solo por venir de un camino distinto — y colapsa títulos solapados
+// otro solo por venir de un camino distinto —, colapsa títulos solapados
 // ≥70% en tokens significativos (mismas función y umbral que usa el bloque
 // core para deduplicar — ver internal/hooks/core_block.go, titleOverlap /
-// titleOverlapThreshold / significantTitleTokens), antes de cortar en k.
+// titleOverlapThreshold / significantTitleTokens), corta los rellenos de
+// baja densidad (ver filterRellenosByDensity) y recién ahí aplica el tope de
+// sesión y el corte en k — en ese orden: el primer item nunca compite por su
+// lugar, así que el corte de densidad lo mide contra sí mismo antes de que
+// nada más se descarte por tope o presupuesto.
 // Es la versión con tope de sesión configurable (ver
-// config.RecallConfig.MaxSessionItems). Los items de tipo session van
+// config.RecallConfig.MaxSessionItems) y con corte de rellenos configurable
+// (ver config.RecallConfig.RellenoDensidad). Los items de tipo session van
 // SIEMPRE al final, sin importar cuántos términos matcheen: medido contra la
 // base real (2026-09-11), type=session era el tipo MÁS inyectado de todos (76
 // items, ~19% del total inyectado), y un resumen de sesión que gana por
 // matchedTerms tapa un bugfix o una decisión que es lo que el agente necesita.
 // Se siguen pudiendo encontrar con mem_search: esto solo ordena/limita la
 // inyección automática.
-func rankAndDedupeRecallItemsOpts(items []recallItem, k, maxSession int) []recallItem {
+func rankAndDedupeRecallItemsOpts(items []recallItem, k, maxSession int, densityFactor float64) []recallItem {
 	if maxSession <= 0 {
 		maxSession = defaultRecallMaxSessionItems
 	}
@@ -597,19 +665,12 @@ func rankAndDedupeRecallItemsOpts(items []recallItem, k, maxSession int) []recal
 		return items[i].similarity > items[j].similarity
 	})
 
-	kept := make([]recallItem, 0, len(items))
-	keptTokens := make([][]string, 0, len(items))
-	sessions := 0
+	deduped := make([]recallItem, 0, len(items))
+	dedupedTokens := make([][]string, 0, len(items))
 	for _, it := range items {
-		if isSession(it.typ) {
-			if sessions >= maxSession {
-				continue
-			}
-			sessions++
-		}
 		tokens := significantTitleTokens(it.title)
 		dup := false
-		for _, kt := range keptTokens {
+		for _, kt := range dedupedTokens {
 			if titleOverlap(tokens, kt) >= titleOverlapThreshold {
 				dup = true
 				break
@@ -618,8 +679,22 @@ func rankAndDedupeRecallItemsOpts(items []recallItem, k, maxSession int) []recal
 		if dup {
 			continue
 		}
+		deduped = append(deduped, it)
+		dedupedTokens = append(dedupedTokens, tokens)
+	}
+
+	deduped = filterRellenosByDensity(deduped, densityFactor)
+
+	kept := make([]recallItem, 0, len(deduped))
+	sessions := 0
+	for _, it := range deduped {
+		if isSession(it.typ) {
+			if sessions >= maxSession {
+				continue
+			}
+			sessions++
+		}
 		kept = append(kept, it)
-		keptTokens = append(keptTokens, tokens)
 		if len(kept) >= k {
 			break
 		}

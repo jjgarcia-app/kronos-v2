@@ -275,6 +275,27 @@ type RecallConfig struct {
 	// relevante desplaza conocimiento real, y medido contra la base real
 	// type=session era el tipo más inyectado de todos.
 	MaxSessionItems int `json:"max_session_items"`
+	// RellenoDensidad: factor de corte por densidad para los rellenos del
+	// recall (todo lo que sigue al primer item, que se queda siempre) — ver
+	// filterRellenosByDensity en internal/hooks/prompt_submit.go. Densidad de
+	// un candidato = matchedTerms / tokens significativos de su
+	// título+contenido; un relleno se descarta si su densidad es menor a
+	// RellenoDensidad * densidad del primer item.
+	//
+	// Motivado por lo medido con el set de evaluación aguja.json: hoy el
+	// recall acierta 95-97% de las veces (primera posición en la gran
+	// mayoría), pero con precisión 0.33 — cuando hay 1 candidato bueno, los 2
+	// huecos restantes se rellenan con cualquier cosa que pase la guarda de
+	// min_matched_terms. Simulado, cortar rellenos con densidad < 0.60 * la
+	// del primero sube la precisión a 0.45 (recall 97% -> 95%, ~2.1 líneas
+	// inyectadas en vez de 3.0). El corte por rareza real (df por término)
+	// medía mejor pero la consulta de df tarda 2,46s de mediana — inviable
+	// contra el presupuesto del recall (400ms).
+	//
+	// 0 usa el default (0.60, ver rellenoDensidadFactorFor). Un valor
+	// NEGATIVO desactiva el corte (deja pasar todo, comportamiento anterior a
+	// este campo).
+	RellenoDensidad float64 `json:"relleno_densidad"`
 }
 
 // ConsolidationConfig controla la consolidación de duplicados semánticos
@@ -514,6 +535,7 @@ func Default() Config {
 			FTSTimeoutMs:    5000,
 			VectorProbeMs:   300,
 			MaxSessionItems: 1,
+			RellenoDensidad: 0.60,
 		},
 		Consolidation: ConsolidationConfig{
 			MinSharedTitleTokens: 3,
@@ -996,6 +1018,12 @@ func (c *Config) Set(key, value string) error {
 				return fmt.Errorf("invalid int: %s", value)
 			}
 			c.Recall.MaxSessionItems = n
+		case "relleno_densidad":
+			f, err := strconv.ParseFloat(value, 64)
+			if err != nil {
+				return fmt.Errorf("invalid float: %s", value)
+			}
+			c.Recall.RellenoDensidad = f
 		default:
 			return fmt.Errorf("unknown recall field: %s", field)
 		}
