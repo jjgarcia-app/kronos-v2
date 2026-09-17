@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jjgarcia-app/kronos-v2/internal/config"
 	"github.com/jjgarcia-app/kronos-v2/internal/embeddings"
@@ -230,20 +231,59 @@ func minMatchedTermsFor(sigTermCount, configured int) int {
 	return configured
 }
 
+// matchingTerms devuelve CUÁLES de terms aparecen (substring, sin distinguir
+// mayúsculas) en título+contenido — countMatchedTerms es su longitud;
+// passesPrecisionGuard necesita saber cuál es el único término cuando
+// matched == 1, no solo cuántos matchearon.
+func matchingTerms(terms []string, title, content string) []string {
+	haystack := strings.ToLower(title + " " + content)
+	var out []string
+	for _, t := range terms {
+		if t != "" && strings.Contains(haystack, t) {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
 // countMatchedTerms cuenta cuántos de terms aparecen (substring, sin
 // distinguir mayúsculas) en título+contenido — es la verificación real de
 // precisión que reemplaza la garantía que el AND implícito daba gratis: con
 // la query relajada a OR, "matcheó por FTS" ya no implica "todos los
 // términos están ahí".
 func countMatchedTerms(terms []string, title, content string) int {
-	haystack := strings.ToLower(title + " " + content)
-	n := 0
-	for _, t := range terms {
-		if t != "" && strings.Contains(haystack, t) {
-			n++
-		}
+	return len(matchingTerms(terms, title, content))
+}
+
+// guardaLargoMinimo: longitud (en runas) a partir de la cual un único
+// término matcheado se considera "específico" (ver passesPrecisionGuard) —
+// palabras cortas ("test", "bug") son genéricas y matchean por casualidad;
+// palabras largas ("librerías", "convenciones") casi siempre son el tema
+// real de la pregunta. Medido contra el fixture kronos-bench: subía
+// cobertura 62%->75% sin bajar precisión ni cobertura del set de agujas
+// (ronda feat/recall-ventana-candidatos) — descartada en la misma ronda la
+// variante que en vez del largo miraba si el término aparecía en el título
+// (no aportaba sobre el fixture) y la que relajaba el corte de rellenos por
+// densidad cuando el relleno igualaba matchedTerms del primero (bajaba la
+// precisión del set de agujas de 0.72 a 0.68).
+const guardaLargoMinimo = 6
+
+// passesPrecisionGuard decide si un candidato con matchedTerms == len(matches)
+// términos coincidentes pasa la guarda de precisión que normalmente exige
+// needed (ver minMatchedTermsFor). matched >= needed siempre pasa. Por
+// debajo de needed solo hay un caso de excepción: matched == 1 y ese único
+// término tiene >= guardaLargoMinimo runas — suficientemente específico
+// como para no ser ruido aunque la pregunta tenga otros términos que no
+// matchearon.
+func passesPrecisionGuard(matches []string, needed int) bool {
+	matched := len(matches)
+	if matched >= needed {
+		return true
 	}
-	return n
+	if matched != 1 {
+		return false
+	}
+	return utf8.RuneCountInString(matches[0]) >= guardaLargoMinimo
 }
 
 // vectorProbeThreshold resuelve config.RecallConfig.VectorProbeMs con su
@@ -521,13 +561,13 @@ func gatherRecallCandidates(ctx context.Context, prompt string, st store.Storer,
 			}
 		}
 		for _, r := range ftsRes {
-			matched := countMatchedTerms(pq.sigTerms, r.Title, r.Content)
-			if matched < needed {
+			matches := matchingTerms(pq.sigTerms, r.Title, r.Content)
+			if !passesPrecisionGuard(matches, needed) {
 				continue // relajado por OR pero no matcheó lo suficiente — ruido, no resultado
 			}
 			candidates = append(candidates, recallItem{
 				id: strconv.FormatInt(r.ID, 10), title: r.Title, typ: string(r.Type), content: r.Content,
-				matchedTerms: matched,
+				matchedTerms: len(matches),
 			})
 		}
 	}
