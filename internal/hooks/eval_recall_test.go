@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -87,6 +88,17 @@ func TestEvalRecallInyeccion(t *testing.T) {
 		if derr != nil {
 			dataDir = ""
 		}
+		// mismo layout que cmd/kronos/serve.go (buildMCPServer): el vector
+		// store real vive en <dataDir>/vectors, no en <dataDir> — sin el
+		// subdirectorio, este harness abría una colección vacía distinta de
+		// la que usa el daemon en producción, así que TODAS las mediciones
+		// contra modo=real corrían con 0 embeddings indexados sin que nada
+		// lo avisara (recall/precisión idénticos a modo=fts). Medido:
+		// vs.Has(id) con el path viejo devolvía false para el 100% del
+		// corpus real (1169/1169 obs), incluidas las del fixture kronos-bench.
+		if dataDir != "" {
+			dataDir = filepath.Join(dataDir, "vectors")
+		}
 		if v, err := embeddings.New(context.Background(), dataDir); err == nil {
 			vs = v
 		} else {
@@ -113,14 +125,14 @@ func TestEvalRecallInyeccion(t *testing.T) {
 		Similarity   float64 `json:"similarity"`
 	}
 	type promptOut struct {
-		ID          string    `json:"id"`
-		Project     string    `json:"project"`
-		Prompt      string    `json:"prompt"`
-		Esperado    []string  `json:"esperado"`
-		Candidatos  int       `json:"candidatos"`
-		Items       []itemOut `json:"items"`
-		BlockChars  int       `json:"block_chars"`
-		Milisegundos int64    `json:"ms"`
+		ID           string    `json:"id"`
+		Project      string    `json:"project"`
+		Prompt       string    `json:"prompt"`
+		Esperado     []string  `json:"esperado"`
+		Candidatos   int       `json:"candidatos"`
+		Items        []itemOut `json:"items"`
+		BlockChars   int       `json:"block_chars"`
+		Milisegundos int64     `json:"ms"`
 	}
 
 	salida := make([]promptOut, 0, len(set))
