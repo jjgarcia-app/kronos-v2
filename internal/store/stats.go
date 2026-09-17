@@ -12,6 +12,18 @@ type Stats struct {
 	TotalSessions     int
 	TotalPrompts      int
 	Projects          []string
+	// TopOrganicProject y TopOrganicShare miden concentración EXCLUYENDO
+	// importaciones masivas de una sola vez (>5 observaciones del mismo
+	// proyecto creadas en el mismo minuto — un import real deja un pico
+	// instantáneo, un flujo de trabajo orgánico no). Medido en una base real:
+	// un proyecto con 67% de concentración bruta (778/1152) caía a 44%
+	// (150/343) al excluir un import de 628 filas creadas en un solo minuto
+	// — la concentración orgánica es la que importa para el equilibrio del
+	// corpus (F7 en el modelo de auditoría de memoria de agentes), no el
+	// volumen bruto, que puede ser legítimo.
+	TopOrganicProject string
+	TopOrganicShare   float64 // 0 si no hay observaciones orgánicas
+	OrganicTotal      int
 }
 
 // Stats queries aggregate statistics from the database.
@@ -54,7 +66,93 @@ func (s *Store) Stats(ctx context.Context) (*Stats, error) {
 		return nil, err
 	}
 
+	if err := s.fillOrganicConcentration(ctx, &st); err != nil {
+		return nil, err
+	}
+
 	return &st, nil
+}
+
+// bulkImportMinuteThreshold: más de esta cantidad de observaciones del MISMO
+// proyecto creadas en el MISMO minuto (created_at truncado a 'YYYY-MM-DDTHH:MM')
+// se trata como un import masivo de una sola vez, no como trabajo orgánico —
+// ver el comentario de Stats.TopOrganicShare para la medición que justifica
+// el criterio y el umbral.
+const bulkImportMinuteThreshold = 5
+
+// fillOrganicConcentration calcula TopOrganicProject/TopOrganicShare/
+// OrganicTotal sobre Stats: dos consultas (una para encontrar los minutos con
+// >bulkImportMinuteThreshold observaciones de un proyecto, otra para contar el
+// resto por proyecto) — portable entre SQLite y Postgres porque created_at es
+// TEXT en ambos backends y substr() funciona igual en los dos.
+func (s *Store) fillOrganicConcentration(ctx context.Context, st *Stats) error {
+	bulkRows, err := s.query(ctx, `
+		SELECT project, substr(created_at, 1, 16) AS minuto
+		FROM observations
+		WHERE deleted_at IS NULL
+		GROUP BY project, substr(created_at, 1, 16)
+		HAVING COUNT(*) > ?`, bulkImportMinuteThreshold)
+	if err != nil {
+		return err
+	}
+	type bulkKey struct{ project, minute string }
+	bulk := make(map[bulkKey]bool)
+	for bulkRows.Next() {
+		var k bulkKey
+		if err := bulkRows.Scan(&k.project, &k.minute); err != nil {
+			bulkRows.Close()
+			return err
+		}
+		bulk[k] = true
+	}
+	if err := bulkRows.Err(); err != nil {
+		bulkRows.Close()
+		return err
+	}
+	bulkRows.Close()
+
+	rows, err := s.query(ctx, `
+		SELECT project, substr(created_at, 1, 16) AS minuto, COUNT(*)
+		FROM observations
+		WHERE deleted_at IS NULL AND project != ''
+		GROUP BY project, substr(created_at, 1, 16)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	perProject := make(map[string]int)
+	total := 0
+	for rows.Next() {
+		var project, minute string
+		var n int
+		if err := rows.Scan(&project, &minute, &n); err != nil {
+			return err
+		}
+		if bulk[bulkKey{project, minute}] {
+			continue
+		}
+		perProject[project] += n
+		total += n
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	st.OrganicTotal = total
+	if total == 0 {
+		return nil
+	}
+	var topProject string
+	var topN int
+	for p, n := range perProject {
+		if n > topN {
+			topProject, topN = p, n
+		}
+	}
+	st.TopOrganicProject = topProject
+	st.TopOrganicShare = float64(topN) / float64(total)
+	return nil
 }
 
 // GetObservationSync is a convenience wrapper that creates its own context.
