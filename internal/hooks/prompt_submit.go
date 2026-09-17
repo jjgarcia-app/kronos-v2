@@ -268,6 +268,14 @@ func countMatchedTerms(terms []string, title, content string) int {
 // precisión del set de agujas de 0.72 a 0.68).
 const guardaLargoMinimo = 6
 
+// vectorZeroTermPriorityThreshold: umbral de similitud (por encima del
+// config.Recall.MinSimilarity general) requerido para que un candidato del
+// vector sin ninguna palabra compartida con el prompt (matchedTerms=0) gane
+// el desempate de rankAndDedupeRecallItemsOpts contra un candidato de FTS con
+// matchedTerms>0. Ver el comentario en rankAndDedupeRecallItemsOpts para la
+// medición completa (fixture_set 75%→87%, aguja/set.json sin cambio).
+const vectorZeroTermPriorityThreshold = 0.65
+
 // passesPrecisionGuard decide si un candidato con matchedTerms == len(matches)
 // términos coincidentes pasa la guarda de precisión que normalmente exige
 // needed (ver minMatchedTermsFor). matched >= needed siempre pasa. Por
@@ -678,6 +686,25 @@ func filterRellenosByDensity(items []recallItem, factor float64) []recallItem {
 	kept := make([]recallItem, 0, len(items))
 	kept = append(kept, items[0])
 	for _, it := range items[1:] {
+		// Un candidato puramente semántico (matchedTerms=0) con similitud
+		// alta nunca pasaría este corte por densidad (candidateDensity da
+		// 0 sin ningún término matcheado), aunque el desempate de
+		// rankAndDedupeRecallItemsOpts ya lo haya priorizado sobre ruido
+		// léxico de matchedTerms bajo. Medido en vivo (fixture_set f2): el
+		// candidato correcto del vector (similarity=0.69, matchedTerms=0)
+		// ganaba el desempate de arriba y se perdía acá, con densidad 0
+		// contra candidatos de FTS con densidad >0. Se lo deja pasar
+		// explícitamente cuando su similitud supera
+		// vectorZeroTermPriorityThreshold — el mismo umbral del desempate,
+		// así ambos puntos usan el mismo criterio de "señal semántica
+		// fuerte". No toca candidateDensity en sí (esa función sigue
+		// dando 0 para matchedTerms=0, que es el comportamiento correcto
+		// para el caso de rellenos puramente semánticos de baja similitud,
+		// ver TestRankAndDedupeRecallItemsOpts_DensidadPrimeraCeroNoCorta).
+		if it.matchedTerms == 0 && it.similarity >= vectorZeroTermPriorityThreshold {
+			kept = append(kept, it)
+			continue
+		}
 		if candidateDensity(it) >= threshold {
 			kept = append(kept, it)
 		}
@@ -715,7 +742,38 @@ func rankAndDedupeRecallItemsOpts(items []recallItem, k, maxSession int, density
 		if si != sj {
 			return !si // el conocimiento real primero
 		}
+		// Un ítem del vector con matchedTerms=0 (sin ninguna palabra
+		// compartida con el prompt, solo similitud semántica) compite en
+		// desventaja perpetua contra ruido de FTS que comparte 1-2 palabras
+		// sueltas sin relación de sentido real. Medido en vivo
+		// (fixture_set f2): FTS trae 3 candidatos con matchedTerms=2 por
+		// compartir "librerías"/"repo" con títulos sin relación
+		// ("Fix: Sub() sumaba +1 de más"), mientras el candidato correcto
+		// del vector ("no admite dependencias externas: stdlib pura",
+		// similarity=0.69) tiene matchedTerms=0 y perdía SIEMPRE el
+		// desempate por matchedTerms.
+		//
+		// Se prioriza similarity SOLO cuando uno de los dos tiene
+		// matchedTerms=0 (viene puro del vector, sin señal léxica) Y una
+		// similitud por encima de vectorZeroTermPriorityThreshold. Medido:
+		// sin el umbral de similitud, un candidato con matchedTerms=0 y
+		// similarity baja (ruido semántico débil) le ganaría a un
+		// candidato con matchedTerms>0 real; con el umbral en 0.65
+		// (calibrado contra los 3 sets), fixture_set sube (75%→87%
+		// cobertura, f2 se resuelve) sin bajar aguja.json ni set.json —
+		// el caso que sí rompía sin este umbral (c205 de set.json,
+		// similarity=0.68-0.69 pero matchedTerms=2-3 en AMBOS lados, o sea
+		// ninguno con matchedTerms=0) queda fuera de esta rama y decide
+		// por matchedTerms como antes.
 		if items[i].matchedTerms != items[j].matchedTerms {
+			zeroI := items[i].matchedTerms == 0 && items[i].similarity >= vectorZeroTermPriorityThreshold
+			zeroJ := items[j].matchedTerms == 0 && items[j].similarity >= vectorZeroTermPriorityThreshold
+			if zeroI && !zeroJ {
+				return true
+			}
+			if zeroJ && !zeroI {
+				return false
+			}
 			return items[i].matchedTerms > items[j].matchedTerms
 		}
 		return items[i].similarity > items[j].similarity
