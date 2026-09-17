@@ -233,9 +233,28 @@ func runGCConsolidate(args []string) error {
 		since = parsed
 	}
 
-	st, err := store.New(dbPath)
-	if err != nil {
-		return fmt.Errorf("open store: %w", err)
+	// Con backend=postgres configurado, consolidate.Run corre directo contra
+	// el primario: consolidate.Run solo necesita ListAll/JudgeBySemantic/
+	// IncrementRevisionCount (SQL portable vía store.rebind, sin FTS5), y el
+	// buffer SQLite local puede estar arbitrariamente desactualizado frente al
+	// primario (sync es unidireccional buffer->primario con backoff, ver
+	// DualStore) — contar el corpus sobre el buffer cuenta uno viejo.
+	// Confirmado 2026-09-17: atisa-provider-management-all-in-one mostraba 637
+	// observaciones activas por el buffer congelado en vez de las 778 reales
+	// del primario.
+	usingPrimary := cfg.DB.Backend == "postgres" && cfg.DB.PostgresDSN != ""
+
+	var st *store.Store
+	if usingPrimary {
+		st, err = store.NewPostgres(cfg.DB.PostgresDSN)
+		if err != nil {
+			return fmt.Errorf("open primary store: %w", err)
+		}
+	} else {
+		st, err = store.New(dbPath)
+		if err != nil {
+			return fmt.Errorf("open store: %w", err)
+		}
 	}
 	defer st.Close()
 
@@ -274,14 +293,18 @@ func runGCConsolidate(args []string) error {
 		return fmt.Errorf("consolidar: %w", err)
 	}
 
-	// Propagar el marcado al primario. consolidate.Run trabaja sobre el store
-	// LOCAL a propósito (la detección de candidatos necesita FTS5 de SQLite),
-	// así que la relación "supersedes" y el revision_count del superviviente
-	// se escribían solo en el buffer: medido el 2026-09-15, tras fusionar 13
-	// pares, el buffer tenía 61 relaciones y Postgres 0. El sync tampoco lleva
-	// esas tablas, así que la fusión se perdía al reconstruir la base. Acá se
-	// repite el marcado contra el primario para los pares aplicados.
-	if !dryRun && len(report.Pairs) > 0 {
+	// Propagar el marcado al primario cuando consolidate.Run corrió contra el
+	// buffer local (sin backend=postgres configurado, o sin DSN): la relación
+	// "supersedes" y el revision_count del superviviente se escribieron solo
+	// ahí, y el sync no lleva esas tablas — medido el 2026-09-15, tras
+	// fusionar 13 pares, el buffer tenía 61 relaciones y Postgres 0. Con
+	// usingPrimary=true este paso no hace falta: consolidate.Run ya escribió
+	// directo en el primario.
+	if usingPrimary {
+		if !dryRun && report.Merged > 0 {
+			fmt.Printf("  aplicado directo al primario: %d pares\n", report.Merged)
+		}
+	} else if !dryRun && len(report.Pairs) > 0 {
 		prim, errPrim := store.NewPostgres(cfg.DB.PostgresDSN)
 		if errPrim != nil || prim == nil {
 			fmt.Fprintf(os.Stderr, "aviso: sin primario, la fusión queda solo en el buffer: %v\n", errPrim)
