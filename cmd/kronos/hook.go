@@ -37,6 +37,26 @@ import (
 // este timeout es el techo del peor caso, no el tiempo típico.
 const hookConnectTimeout = 800 * time.Millisecond
 
+// kronosDisableEnv apaga por completo los hooks de kronos — pensado para
+// automatizaciones que corren `claude -p` dentro de un repo con kronos
+// instalado (evals, generación de datos, jueces LLM) y no quieren que esos
+// prompts queden guardados como si fueran del usuario. Bug real que motivó
+// esto: una corrida de evaluación externa metió 109 prompts y 102 sesiones
+// en la base antes de que existiera este apagador.
+const kronosDisableEnv = "KRONOS_DISABLE"
+
+// hooksDisabled interpreta KRONOS_DISABLE como booleano (case-insensitive):
+// "1", "true" o "yes" lo activan; ausente, vacía o cualquier otro valor deja
+// el comportamiento de siempre sin cambios.
+func hooksDisabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(kronosDisableEnv))) {
+	case "1", "true", "yes":
+		return true
+	default:
+		return false
+	}
+}
+
 // runHook dispatches a named hook.
 //
 // Usage:
@@ -48,7 +68,15 @@ const hookConnectTimeout = 800 * time.Millisecond
 // session-end, pre-tool-use, pre-compact, post-tool-use.
 // For session-start, reason="compact" triggers post-compaction recovery.
 // Reason "startup", "clear", or empty all trigger the normal session start.
+//
+// Con KRONOS_DISABLE activo (ver hooksDisabled), esto es el único punto de
+// entrada de "kronos hook X" — el chequeo va acá, antes de cualquier
+// dispatch, para que ningún subcomando pueda escaparse del apagador sin
+// tener que repetir el chequeo en cada uno.
 func runHook(args []string) error {
+	if hooksDisabled() {
+		return nil
+	}
 	if len(args) == 0 {
 		return fmt.Errorf("uso: kronos hook <session-start|prompt-submit|subagent-stop|session-stop|session-end|pre-tool-use|pre-compact|post-tool-use> [--reason compact]")
 	}
