@@ -80,6 +80,26 @@ func TestBuildCoreBlock_RespectsCharsBudget(t *testing.T) {
 			title, strings.Repeat(fmt.Sprintf("contenido de relleno %d ", i), 20))
 	}
 
+	// Precondición determinista antes de medir el presupuesto: el store tiene
+	// que DEVOLVER las 20 observaciones. Sin esto, la aserción de "omitidos"
+	// fallaba de forma intermitente cuando la relectura inmediata no veía todas
+	// las filas recién insertadas (visibilidad de SQLite bajo carga): medido en
+	// CI — rojo en ubuntu y windows con macOS en verde, y verde al re-correr los
+	// mismos jobs. Si el pool queda corto, el test falla acá con el número
+	// exacto en vez de disfrazarse de fallo de presupuesto.
+	var pool []*store.Observation
+	limite := time.Now().Add(5 * time.Second)
+	for {
+		pool, _ = st.ListObservations(ctx, "proyecto-x", 50, 0)
+		if len(pool) >= 20 || time.Now().After(limite) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if len(pool) != 20 {
+		t.Fatalf("el store devolvió %d de 20 observaciones guardadas — la medición de presupuesto no es válida", len(pool))
+	}
+
 	limit := 400
 	block, err := hooks.BuildCoreBlock(ctx, st, "proyecto-x", hooks.CoreBlockOptions{CharsLimit: limit, MaxItems: 20})
 	if err != nil {
