@@ -150,13 +150,6 @@ func buildMCPServer(ctx context.Context, cfg config.Config, st store.Storer, dat
 	vs, _ := embeddings.New(ctx, filepath.Join(dataDir, "vectors"))
 	rel := relations.New(vs)
 
-	var local *store.Store
-	if ls, ok := st.(*store.Store); ok {
-		local = ls
-	} else if ds, ok := st.(interface{ LocalStore() *store.Store }); ok {
-		local = ds.LocalStore()
-	}
-
 	llmJudger := llm.NewFromConfig(ctx, cfg)
 
 	// reindexDone se cierra cuando reindexRecent termina. AutoJudge lo espera
@@ -168,7 +161,7 @@ func buildMCPServer(ctx context.Context, cfg config.Config, st store.Storer, dat
 		reindexDone = make(chan struct{})
 		go func() {
 			defer close(reindexDone)
-			reindexRecent(ctx, local, rel)
+			reindexRecent(ctx, st, rel)
 		}()
 	}
 
@@ -220,13 +213,30 @@ func redirectLogsToFile(path string) error {
 // indexado (sin llamar a Ollama), así que en cada arranque normal esto es
 // barato — solo el primer arranque tras un hueco real de indexación (o una
 // importación de sync --import) hace trabajo pesado.
+//
+// Recibe store.Storer (no *store.Store): con backend=postgres configurado,
+// st.ListAll delega al primario vía DualStore — leer del buffer SQLite local
+// (como hacía antes) lo dejaba ciego a lo que el buffer no tuviera todavía
+// sincronizado. Medido en producción el 2026-09-17: el buffer tenía 865 de
+// 1167 observaciones reales, así que reindexRecent nunca llegaba a indexar
+// las últimas ~300 — la búsqueda vectorial del recall quedaba con 0
+// resultados posibles para cualquier prompt sobre esas observaciones (mismo
+// bug de fondo que el de kronos gc --consolidate, ver bdbeaaf).
 // Usa timeout por item y pausa entre llamadas para no bloquear el read lock de chromem-go
 // mientras el MCP server atiende requests concurrentes.
-func reindexRecent(ctx context.Context, st *store.Store, rel *relations.Detector) {
+func reindexRecent(ctx context.Context, st store.Storer, rel *relations.Detector) {
+	reindexRecentForProject(ctx, st, rel, "")
+}
+
+// reindexRecentForProject es reindexRecent con el filtro de proyecto de
+// ListAll expuesto — separado para que el test de regresión pueda acotar el
+// trabajo a un proyecto sintético en vez de recorrer toda la base real
+// (~1200 observaciones, ~70s con la pausa entre llamadas).
+func reindexRecentForProject(ctx context.Context, st store.Storer, rel *relations.Detector, project string) {
 	if st == nil || rel == nil {
 		return
 	}
-	obs, err := st.ListAll(ctx, "")
+	obs, err := st.ListAll(ctx, project)
 	if err != nil {
 		return
 	}
