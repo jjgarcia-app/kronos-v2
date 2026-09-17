@@ -147,9 +147,12 @@ func TestRunPromptSubmit_ORQuery_MinMatchedTerms_PartialMatchAboveThreshold_Inje
 
 // TestRunPromptSubmit_ORQuery_BelowMinMatchedTerms_FallsBackToVector cubre el
 // reverso de (a): con solo 1 de 4 términos presentes (por debajo de
-// min_matched_terms=2), el resultado FTS se descarta como ruido y NO se
-// inyecta desde ahí — si tampoco hay vector disponible, no hay nada que
-// inyectar.
+// min_matched_terms=2) y ese único término CORTO (< guardaLargoMinimo, no
+// específico), el resultado FTS se descarta como ruido y NO se inyecta desde
+// ahí — si tampoco hay vector disponible, no hay nada que inyectar. "ahora"
+// (5 letras) es justo el caso que NO debe activar la excepción de término
+// largo (ver TestRunPromptSubmit_ORQuery_SingleLongTerm_Injects para el caso
+// que sí la activa).
 func TestRunPromptSubmit_ORQuery_BelowMinMatchedTerms_NoInjection(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
@@ -158,8 +161,40 @@ func TestRunPromptSubmit_ORQuery_BelowMinMatchedTerms_NoInjection(t *testing.T) 
 	st.CreateSession(ctx, "sess-or-weak", "kronos-v2", cwd)
 	st.PersistInjectedIDs(ctx, "sess-or-weak", []string{})
 
-	// Solo "alfresco" de los 4 términos del prompt aparece acá — 1 match,
+	// Solo "ahora" de los 4 términos del prompt aparece acá — 1 match, corto,
 	// por debajo del mínimo (2) para un prompt de 4 términos significativos.
+	st.SaveObservation(ctx, store.SaveParams{
+		Type:    store.TypeDiscovery,
+		Title:   "tareas pendientes ahora",
+		Content: "hay que revisarlo en algún momento, nada urgente todavía",
+		Project: "kronos-v2",
+	})
+
+	out := submitPrompt(t, ctx, st, "sess-or-weak", cwd, "alfresco aspect remove ahora")
+
+	if strings.Contains(out, "[kronos:relevante]") {
+		t.Errorf("1/4 términos matcheados, corto (< min_matched_terms y < guardaLargoMinimo) no debería inyectar, salida: %q", out)
+	}
+}
+
+// TestRunPromptSubmit_ORQuery_SingleLongTerm_Injects cubre la excepción a la
+// guarda de precisión: un único término matcheado (por debajo de
+// min_matched_terms=2) SÍ inyecta si ese término tiene >= guardaLargoMinimo
+// runas — palabras largas ("alfresco") son específicas del tema, a
+// diferencia de coincidencias cortas como "ahora". Caso real medido contra
+// el fixture kronos-bench (ronda feat/recall-ventana-candidatos): preguntas
+// como "¿qué convenciones de estilo usa el proyecto?" solo matcheaban
+// "convenciones" (1 de 3+ términos) y la guarda estricta las descartaba
+// aunque el hecho correcto estuviera en los resultados de la FTS.
+func TestRunPromptSubmit_ORQuery_SingleLongTerm_Injects(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	cwd, _ := os.Getwd()
+
+	st.CreateSession(ctx, "sess-or-long", "kronos-v2", cwd)
+	st.PersistInjectedIDs(ctx, "sess-or-long", []string{})
+
+	// Solo "alfresco" (8 letras) de los 4 términos del prompt aparece acá.
 	st.SaveObservation(ctx, store.SaveParams{
 		Type:    store.TypeDiscovery,
 		Title:   "alfresco upgrade notes",
@@ -167,10 +202,10 @@ func TestRunPromptSubmit_ORQuery_BelowMinMatchedTerms_NoInjection(t *testing.T) 
 		Project: "kronos-v2",
 	})
 
-	out := submitPrompt(t, ctx, st, "sess-or-weak", cwd, "alfresco aspect remove ahora")
+	out := submitPrompt(t, ctx, st, "sess-or-long", cwd, "alfresco aspect remove ahora")
 
-	if strings.Contains(out, "[kronos:relevante]") {
-		t.Errorf("1/4 términos matcheados (< min_matched_terms) no debería inyectar, salida: %q", out)
+	if !strings.Contains(out, "[kronos:relevante]") {
+		t.Errorf("1/4 términos matcheados pero largo (>= guardaLargoMinimo) debería inyectar, salida: %q", out)
 	}
 }
 
