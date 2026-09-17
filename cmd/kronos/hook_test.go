@@ -7,6 +7,52 @@ import (
 	"testing"
 )
 
+// TestHooksDisabled cubre los valores aceptados de KRONOS_DISABLE
+// (case-insensitive) y confirma que cualquier otro valor, incluida la
+// variable ausente, deja el comportamiento por defecto (hooks activos).
+func TestHooksDisabled(t *testing.T) {
+	cases := []struct {
+		value string
+		want  bool
+	}{
+		{"", false},
+		{"0", false},
+		{"false", false},
+		{"no", false},
+		{"algo-random", false},
+		{"1", true},
+		{"true", true},
+		{"TRUE", true},
+		{"yes", true},
+		{"YES", true},
+		{"  1  ", true},
+	}
+	for _, tc := range cases {
+		t.Setenv("KRONOS_DISABLE", tc.value)
+		if got := hooksDisabled(); got != tc.want {
+			t.Errorf("hooksDisabled() con KRONOS_DISABLE=%q = %v, want %v", tc.value, got, tc.want)
+		}
+	}
+}
+
+// TestRunHook_KronosDisable confirma que con KRONOS_DISABLE activo runHook
+// sale con nil (equivalente a exit 0) sin llegar a resolver rutas de datos
+// ni abrir el store — ni siquiera para un hookName válido como
+// "prompt-submit" o "session-start", que normalmente sí tocarían disco.
+func TestRunHook_KronosDisable(t *testing.T) {
+	t.Setenv("KRONOS_DISABLE", "1")
+
+	for _, hookName := range []string{"prompt-submit", "session-start", "pre-compact", "no-existe"} {
+		if err := runHook([]string{hookName}); err != nil {
+			t.Errorf("runHook([%q]) con KRONOS_DISABLE=1 = %v, want nil", hookName, err)
+		}
+	}
+
+	if err := runHook(nil); err != nil {
+		t.Errorf("runHook(nil) con KRONOS_DISABLE=1 = %v, want nil", err)
+	}
+}
+
 // TestTryDaemonPromptSubmit_Success confirma el camino feliz: el daemon
 // responde 200 y su body se copia tal cual al writer de salida.
 func TestTryDaemonPromptSubmit_Success(t *testing.T) {

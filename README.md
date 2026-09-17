@@ -254,6 +254,8 @@ Knobs menos obvios:
 | `llm.timeout_ms` | 30000 | Timeout de una llamada de generación con `claude-cli`. |
 | `llm.max_load_per_cpu` | 1.0 | Umbral del guardián de carga (`load1/NumCPU`) que saltea llamadas de generación en máquinas saturadas. Solo protege al modelo **local** (Ollama) — `claude-cli` genera en la nube, así que no hay CPU local que proteger y el guardián no le aplica. |
 
+Para automatizaciones que corren `claude -p` dentro de un proyecto (evals, generación de datos, jueces LLM), `KRONOS_DISABLE=1` apaga todos los hooks de kronos (exit 0, sin guardar nada) para que esos prompts no ensucien la memoria del proyecto.
+
 ---
 
 ## Requisitos
