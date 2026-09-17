@@ -484,8 +484,23 @@ func checkObservations(ctx context.Context, cfg config.Config) Check {
 		}
 	}
 
-	return Check{Name: "Observaciones", Detail: detail, Status: StatusOK}
+	status := StatusOK
+	if stats.OrganicTotal > 0 && stats.TopOrganicProject != "" {
+		detail += fmt.Sprintf(" | concentración orgánica: %s %.0f%% (excluye imports masivos de un solo minuto)",
+			stats.TopOrganicProject, stats.TopOrganicShare*100)
+		if stats.TopOrganicShare > organicConcentrationWarnThreshold {
+			status = StatusWarn
+			detail += " — un proyecto domina el corpus orgánico, considerar `kronos gc --consolidate`"
+		}
+	}
+
+	return Check{Name: "Observaciones", Detail: detail, Status: status}
 }
+
+// organicConcentrationWarnThreshold: por encima de este umbral, un proyecto
+// concentra más de la mitad del corpus orgánico (excluyendo imports masivos)
+// y kronos doctor avisa — ver Stats.TopOrganicShare para el criterio completo.
+const organicConcentrationWarnThreshold = 0.50
 
 // --- fix implementations ---
 
