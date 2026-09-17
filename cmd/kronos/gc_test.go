@@ -37,7 +37,15 @@ func TestRunGCConsolidate_PostgresBackend_ReadsPrimaryNotStaleBuffer(t *testing.
 	if err != nil {
 		t.Skipf("Postgres no disponible en %s, se salta el test de integración: %v", testConsolidateDSN, err)
 	}
-	defer prim.Close()
+	// Close() va en t.Cleanup, no en defer: los t.Cleanup registrados
+	// DESPUÉS (el borrado de las filas de prueba, más abajo) corren antes
+	// que los registrados ANTES (LIFO) — pero un defer de la propia función
+	// corre antes que CUALQUIER t.Cleanup, así que un `defer prim.Close()`
+	// cerraba la conexión antes de que el t.Cleanup de borrado pudiera usar
+	// prim.DB(), y el error del DELETE quedaba silenciado por `_, _ =`.
+	// Medido en vivo: dos corridas de este test dejaron 4 filas y 2
+	// relaciones "supersedes" de prueba sueltas en la base compartida.
+	t.Cleanup(func() { _ = prim.Close() })
 
 	ctx := context.Background()
 	testProject := fmt.Sprintf("kronos-gc-consolidate-test-%d", time.Now().UnixNano())
@@ -74,8 +82,12 @@ func TestRunGCConsolidate_PostgresBackend_ReadsPrimaryNotStaleBuffer(t *testing.
 	}
 
 	t.Cleanup(func() {
-		_, _ = prim.DB().ExecContext(ctx, `DELETE FROM memory_relations WHERE source_id = $1 OR target_id = $1 OR source_id = $2 OR target_id = $2`, obsA.SyncID, syncIDB)
-		_, _ = prim.DB().ExecContext(ctx, `DELETE FROM observations WHERE project = $1`, testProject)
+		if _, err := prim.DB().ExecContext(ctx, `DELETE FROM memory_relations WHERE source_id = $1 OR target_id = $1 OR source_id = $2 OR target_id = $2`, obsA.SyncID, syncIDB); err != nil {
+			t.Logf("cleanup: borrar memory_relations de prueba: %v", err)
+		}
+		if _, err := prim.DB().ExecContext(ctx, `DELETE FROM observations WHERE project = $1`, testProject); err != nil {
+			t.Logf("cleanup: borrar observations de prueba: %v", err)
+		}
 	})
 
 	setupTempDataDir(t)
