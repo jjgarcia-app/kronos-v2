@@ -14,6 +14,25 @@ scripts/verify-memory.sh --bin /ruta/a/kronos
 Sale con 0 si todo pasó, 1 si algo falló. Las latencias se reportan como WARN y
 no hacen fallar la verificación: en una máquina cargada son ruido.
 
+## Modelo de embeddings
+
+Default `all-minilm` (22M parámetros, 384 dim) desde 2026-09-18 — antes era
+`nomic-embed-text` (137M, 768 dim). Medido en una máquina sin GPU compartida
+con sesiones de Claude Code: ~4x más rápido por embedding (p50 2.4s vs 9.5s
+bajo la misma carga), cobertura y precisión@3 iguales dentro del margen de
+ruido en los 3 fixtures de evaluación (aguja/fixture_set/set — ver
+kronos-eval). Menos latencia por embedding significa menos tiempo con el
+socket abierto hacia el proveedor de LLM durante una sesión concurrente —
+ayuda a evitar los cortes de conexión que aparecen cuando la máquina está
+saturada.
+
+Es configurable: `recall.embeddings.ollama_model` en `~/.config/kronos/config.json`
+(requiere `ollama pull <modelo>` y reindexar — el vector store no es
+compatible entre modelos con distinta dimensionalidad, hay que borrar
+`~/.local/share/kronos/vectors` y reiniciar el daemon). Si preferís más
+calidad semántica a costa de latencia, `nomic-embed-text` sigue siendo una
+opción válida.
+
 ## Qué verifica y por qué
 
 | Chequeo | Qué comprueba | El fallo que previene |
