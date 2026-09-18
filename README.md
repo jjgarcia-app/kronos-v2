@@ -103,6 +103,7 @@ Una vez conectado, el agente dispone de:
 | `mem_search` | Buscar por texto — FTS5 + semántica (BM25 + bge-m3 + RRF) |
 | `mem_context` | Recuperar las observaciones más recientes del proyecto activo |
 | `mem_get_observation` | Obtener observación completa por ID |
+| `mem_skill_load` | Cargar el cuerpo completo de una skill (`type=skill`) por ID o topic_key |
 | `mem_update` | Actualizar observación existente |
 | `mem_delete` | Eliminar observación (soft-delete) |
 | `mem_capture_passive` | Capturar output de sub-agentes o herramientas externas |

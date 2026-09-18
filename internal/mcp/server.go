@@ -143,6 +143,8 @@ func (s *Server) Call(ctx context.Context, tool string, arguments map[string]any
 		handler = s.handleMemContext
 	case "mem_get_observation":
 		handler = s.handleMemGetObservation
+	case "mem_skill_load":
+		handler = s.handleMemSkillLoad
 	case "mem_update":
 		handler = s.handleMemUpdate
 	case "mem_session_start":
@@ -193,6 +195,7 @@ func (s *Server) registerTools() {
 		{toolMemSearch, s.handleMemSearch},
 		{toolMemContext, s.handleMemContext},
 		{toolMemGetObservation, s.handleMemGetObservation},
+		{toolMemSkillLoad, s.handleMemSkillLoad},
 		{toolMemUpdate, s.handleMemUpdate},
 		{toolMemSessionStart, s.handleMemSessionStart},
 		{toolMemSessionEnd, s.handleMemSessionEnd},

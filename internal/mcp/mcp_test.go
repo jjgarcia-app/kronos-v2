@@ -328,6 +328,78 @@ func TestMemGetObservation_NotFound(t *testing.T) {
 	callExpectError(t, srv, "mem_get_observation", map[string]any{"id": "99999"})
 }
 
+// --- mem_skill_load ---
+
+func TestMemSkillLoad_ByID_ReturnsFullContent(t *testing.T) {
+	srv := newTestServer(t)
+
+	saveText := call(t, srv, "mem_save", map[string]any{
+		"title":     "Cómo hacer la prueba de mem_skill_load",
+		"content":   "Qué: Procedimiento de prueba con varios pasos.\nPor qué: Verificar que mem_skill_load devuelve el cuerpo completo.\n\nPaso 1: hacer A.\nPaso 2: hacer B.\nPaso 3: hacer C — este paso NO debe aparecer en el bloque core comprimido.",
+		"type":      "skill",
+		"project":   "p",
+		"topic_key": "skills/prueba",
+	})
+	id := extractID(saveText)
+	if id == "" {
+		t.Fatalf("could not extract ID from: %s", saveText)
+	}
+
+	text := call(t, srv, "mem_skill_load", map[string]any{"id": id})
+
+	if !contains(text, "Paso 3: hacer C") {
+		t.Errorf("mem_skill_load debería devolver el contenido completo, sin truncar: %s", text)
+	}
+}
+
+func TestMemSkillLoad_ByTopicKey(t *testing.T) {
+	srv := newTestServer(t)
+
+	call(t, srv, "mem_save", map[string]any{
+		"title":     "Cómo hacer la prueba de mem_skill_load por topic_key",
+		"content":   "Qué: Procedimiento de prueba.\nPor qué: Verificar resolución por topic_key.\n\nPaso único.",
+		"type":      "skill",
+		"project":   "p",
+		"topic_key": "skills/prueba-topic",
+	})
+
+	text := call(t, srv, "mem_skill_load", map[string]any{"topic_key": "skills/prueba-topic", "project": "p"})
+
+	if !contains(text, "Paso único") {
+		t.Errorf("mem_skill_load por topic_key debería devolver el contenido completo: %s", text)
+	}
+}
+
+func TestMemSkillLoad_WrongType_Fails(t *testing.T) {
+	srv := newTestServer(t)
+
+	saveText := call(t, srv, "mem_save", map[string]any{
+		"title":   "No es una skill",
+		"content": "Qué: Es un bugfix, no un procedimiento.\nPor qué: Probar el rechazo de mem_skill_load.\nArchivos: N/A\nCómo aplicar: N/A.",
+		"type":    "bugfix",
+		"project": "p",
+	})
+	id := extractID(saveText)
+	if id == "" {
+		t.Fatalf("could not extract ID from: %s", saveText)
+	}
+
+	errText := callExpectError(t, srv, "mem_skill_load", map[string]any{"id": id})
+	if !contains(errText, "no type=skill") {
+		t.Errorf("esperaba error de tipo incorrecto, got: %s", errText)
+	}
+}
+
+func TestMemSkillLoad_MissingIDAndTopicKey_Fails(t *testing.T) {
+	srv := newTestServer(t)
+	callExpectError(t, srv, "mem_skill_load", map[string]any{})
+}
+
+func TestMemSkillLoad_NotFound(t *testing.T) {
+	srv := newTestServer(t)
+	callExpectError(t, srv, "mem_skill_load", map[string]any{"id": "99999"})
+}
+
 // --- mem_update ---
 
 func TestMemUpdate(t *testing.T) {

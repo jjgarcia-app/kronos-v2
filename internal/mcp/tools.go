@@ -30,7 +30,7 @@ CAMPO content — usa esta estructura:
 CAMPO scope — usa "global" solo para patrones reutilizables entre proyectos. Default "project" para todo lo demás.`),
 		mcpgo.WithString("title", mcpgo.Required(), mcpgo.Description("Frase verbal corta y buscable. Formato: Verbo + qué. Ej: 'Elegimos pgx sobre lib/pq por compatibilidad con RETURNING'")),
 		mcpgo.WithString("content", mcpgo.Required(), mcpgo.Description("Nota estructurada: Qué ocurrió | Por qué importa | Archivos relevantes (path:línea) | Cómo aplicar o reproducir")),
-		mcpgo.WithString("type", mcpgo.Required(), mcpgo.Description("Tipo: bugfix | decision | architecture | discovery | pattern | config | preference | passive | intent (plan o afirmación todavía sin verificar contra el repo — el bloque core la marca [intent] y avisa que hay que confirmarla)")),
+		mcpgo.WithString("type", mcpgo.Required(), mcpgo.Description("Tipo: bugfix | decision | architecture | discovery | pattern | config | preference | passive | intent (plan o afirmación todavía sin verificar contra el repo — el bloque core la marca [intent] y avisa que hay que confirmarla) | skill (procedimiento reutilizable paso a paso, con nombre corto siempre visible y cuerpo completo cargado a demanda vía mem_skill_load)")),
 		mcpgo.WithString("project", mcpgo.Description("Nombre del proyecto. Si se omite, se detecta automáticamente a partir de 'directory' (o del cwd del server si tampoco se pasa 'directory')")),
 		mcpgo.WithString("directory", mcpgo.Description("Directorio de trabajo actual, usado para autodetectar 'project' si se omite. Recomendado pasarlo siempre que se conozca — el servidor MCP es un proceso persistente y su propio cwd puede no coincidir con el del repo actual")),
 		mcpgo.WithString("session_id", mcpgo.Description("ID de la sesión activa — el que kronos imprimió al arrancar esta sesión ('[kronos] your session_id is ...'). Pasalo siempre que lo tengas: Claude Code no le da el session_id a los MCP servers, así que sin esto kronos no puede asociar el save a tu sesión real")),
@@ -87,6 +87,21 @@ func toolMemGetObservation() mcpgo.Tool {
 
 No hagas inferencias basadas en contenido truncado — obtén la observación completa primero.`),
 		mcpgo.WithString("id", mcpgo.Required(), mcpgo.Description("ID numérico de la observación (aparece en los resultados de mem_search)")),
+	)
+}
+
+func toolMemSkillLoad() mcpgo.Tool {
+	return mcpgo.NewTool("mem_skill_load",
+		mcpgo.WithDescription(`CUÁNDO LLAMAR: cuando el bloque core (o mem_search) te muestra una línea "[skill] <nombre> — ..." y necesitás el procedimiento completo, paso a paso, para ejecutarlo.
+
+El bloque core y mem_search SOLO muestran el nombre corto y una línea de descripción de cada skill — el contenido completo (los pasos) se carga a demanda con este tool, nunca automáticamente.
+
+Identificá la skill por "id" (el número que trae la línea del bloque core o de mem_search) o por "topic_key" (+ "project"/"directory"/"session_id" para resolver el proyecto). Falla con un error claro si la observación encontrada no es type=skill.`),
+		mcpgo.WithString("id", mcpgo.Description("ID numérico de la observación type=skill. Alternativa a 'topic_key'")),
+		mcpgo.WithString("topic_key", mcpgo.Description("topic_key de la skill. Alternativa a 'id' — requiere poder resolver 'project' (via 'project', 'directory' o 'session_id')")),
+		mcpgo.WithString("project", mcpgo.Description("Proyecto donde buscar por topic_key. Si se omite, se autodetecta desde 'directory' o 'session_id'")),
+		mcpgo.WithString("directory", mcpgo.Description("Directorio de trabajo actual, usado para autodetectar 'project' si se omite (solo aplica buscando por topic_key)")),
+		mcpgo.WithString("session_id", mcpgo.Description("ID de la sesión activa, usado para autodetectar 'project' si se omite (solo aplica buscando por topic_key)")),
 	)
 }
 

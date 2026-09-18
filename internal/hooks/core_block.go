@@ -83,6 +83,12 @@ const (
 	// defaultCoreBlockMaxSessionItems: cuántos items de tipo session entran al
 	// bloque por defecto. Uno: el checkpoint ya cubre "dónde quedamos".
 	defaultCoreBlockMaxSessionItems = 1
+	// defaultCoreBlockMaxSkillItems: cuántos items type=skill entran al
+	// bloque por defecto. Sin medición en producción todavía (tipo nuevo,
+	// 2026-09-18) — 3 alcanza para dar visibilidad a los procedimientos más
+	// recientes sin monopolizar el bloque, mismo orden de magnitud que
+	// MaxPerType general.
+	defaultCoreBlockMaxSkillItems = 3
 )
 
 // titleOverlapThreshold: fracción mínima de tokens significativos
@@ -159,6 +165,14 @@ type CoreBlockOptions struct {
 	// conocimiento real. Medido contra la base real: type=session era el tipo
 	// MÁS inyectado de todos (76 items, ~19% del total inyectado).
 	MaxSessionItems int
+	// MaxSkillItems: tope de items type=skill (procedimientos reutilizables,
+	// ver store.TypeSkill) dentro del bloque — mismo criterio dedicado que
+	// MaxSessionItems, no el genérico MaxPerType. 0 usa el default (ver
+	// defaultCoreBlockMaxSkillItems). Una skill es un ÍNDICE hacia un
+	// procedimiento completo (ver mem_skill_load): mostrar más de un puñado
+	// de nombres cortos no aporta más que las primeras, y le saca lugar al
+	// conocimiento puntual del proyecto.
+	MaxSkillItems int
 }
 
 // CoreBlockMeta trae metadata del armado que no forma parte del texto
@@ -419,9 +433,13 @@ func buildCoreBlock(ctx context.Context, st store.Storer, project string, opts C
 			continue
 		}
 		slog.Debug("core_block: global candidato", "id", o.ID, "origin_project", o.Project, "project", normalizedProject, "reason", reason)
+		text := formatObsLineCompressed(o)
+		if o.Type == store.TypeSkill {
+			text = formatSkillLine(o)
+		}
 		globalCandidates = append(globalCandidates, coreItem{
 			id:       o.ID,
-			text:     formatObsLineCompressed(o),
+			text:     text,
 			isIntent: o.Type == store.TypeIntent,
 			obsType:  o.Type,
 			section:  "global",
@@ -465,6 +483,22 @@ func buildCoreBlock(ctx context.Context, st store.Storer, project string, opts C
 	omissions.maxPerType += droppedSession
 	projectFill, droppedSession = capItemsOfType(projectFill, store.TypeSession, maxSession, sessionCounts)
 	omissions.maxPerType += droppedSession
+
+	// Tope dedicado de type=skill — mismo mecanismo que el de session
+	// (contador propio, aplicado antes del tope genérico por tipo) pero con
+	// su propio límite (MaxSkillItems): ver comentario en CoreBlockOptions.
+	maxSkill := opts.MaxSkillItems
+	if maxSkill <= 0 {
+		maxSkill = defaultCoreBlockMaxSkillItems
+	}
+	skillCounts := make(map[store.ObservationType]int, 1)
+	var droppedSkill int
+	projectPriority, droppedSkill = capItemsOfType(projectPriority, store.TypeSkill, maxSkill, skillCounts)
+	omissions.maxPerType += droppedSkill
+	globalCandidates, droppedSkill = capItemsOfType(globalCandidates, store.TypeSkill, maxSkill, skillCounts)
+	omissions.maxPerType += droppedSkill
+	projectFill, droppedSkill = capItemsOfType(projectFill, store.TypeSkill, maxSkill, skillCounts)
+	omissions.maxPerType += droppedSkill
 
 	typeCounts := make(map[store.ObservationType]int, 4)
 	var dropped int
@@ -635,11 +669,18 @@ func classifyGlobalRelevance(o *store.Observation, normalizedProject string, pro
 
 // coreItemFromObs arma un coreItem en formato "normal" (tipo + título +
 // resumen) a partir de una observación — usado en los pasos de proyecto
-// (preferencias/decisiones/relleno).
+// (preferencias/decisiones/relleno). type=skill es la excepción: siempre en
+// formato comprimido (ver formatSkillLine), nunca el resumen normal — es
+// justo lo que evita que un procedimiento completo compita por el
+// presupuesto del bloque (ver store.TypeSkill).
 func coreItemFromObs(o *store.Observation, now time.Time, staleDays, maxItemChars int) coreItem {
+	text := formatObsLine(o, now, staleDays, maxItemChars)
+	if o.Type == store.TypeSkill {
+		text = formatSkillLine(o)
+	}
 	return coreItem{
 		id:       o.ID,
-		text:     formatObsLine(o, now, staleDays, maxItemChars),
+		text:     text,
 		isIntent: o.Type == store.TypeIntent,
 		obsType:  o.Type,
 		section:  "project",
@@ -966,6 +1007,22 @@ func truncateAtWordBoundary(s string, n int) string {
 // 9 globales eso es el bloque entero (ver comentario de mediciones arriba).
 func formatObsLineCompressed(o *store.Observation) string {
 	return truncateAtWordBoundary(fmt.Sprintf("[%s] %s", o.Type, o.Title), maxGlobalItemChars)
+}
+
+// maxSkillDescChars: tope de la descripción (primera línea del content, sin
+// "Qué: ...") en la línea compacta de una skill.
+const maxSkillDescChars = 80
+
+// formatSkillLine renderiza una observación type=skill SIEMPRE en su forma
+// comprimida: "[skill] <nombre corto> — <primera línea de la descripción>" —
+// nunca el procedimiento completo, que se carga a demanda vía el tool MCP
+// mem_skill_load (ver internal/mcp/handlers.go, handleMemSkillLoad). Es la
+// razón de ser de este tipo (ver store.TypeSkill): un procedimiento entero
+// compite por el presupuesto del bloque con el costo fijo de una línea, no
+// con su propio tamaño.
+func formatSkillLine(o *store.Observation) string {
+	desc := oneLineSummary(stripQuePrefix(o.Content), maxSkillDescChars)
+	return fmt.Sprintf("[skill] %s — %s", o.Title, desc)
 }
 
 // oneLineSummary reduce content a su primera línea, recortada a maxLen sin
