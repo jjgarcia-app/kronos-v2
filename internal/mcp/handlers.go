@@ -354,6 +354,55 @@ func (s *Server) handleMemGetObservation(ctx context.Context, req mcpgo.CallTool
 	return ok(sb.String()), nil
 }
 
+// handleMemSkillLoad devuelve el cuerpo COMPLETO de una observación
+// type=skill — sin comprimir, a diferencia de cómo se ve en el bloque core
+// (ver formatSkillLine en internal/hooks/core_block.go). Es la mitad
+// "cargada a demanda" del patrón de progressive disclosure de store.TypeSkill:
+// el bloque core solo muestra el nombre corto, este tool trae los pasos.
+func (s *Server) handleMemSkillLoad(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	idStr := str(req, "id")
+	topicKey := str(req, "topic_key")
+	if idStr == "" && topicKey == "" {
+		return fail(fmt.Errorf(`se requiere "id" o "topic_key" para identificar la skill`)), nil
+	}
+
+	var obs *store.Observation
+	if idStr != "" {
+		id, err := strconv.ParseInt(idStr, 10, 64)
+		if err != nil {
+			return fail(fmt.Errorf("id inválido: %s", idStr)), nil
+		}
+		o, err := s.store.GetObservation(ctx, id)
+		if err != nil {
+			return fail(err), nil
+		}
+		obs = o
+	} else {
+		proj, err := resolveProject(ctx, s.store, req)
+		if err != nil {
+			return fail(err), nil
+		}
+		o, err := s.store.GetByTopicKey(ctx, proj, topicKey)
+		if err != nil {
+			return fail(err), nil
+		}
+		obs = o
+	}
+	if obs == nil {
+		return fail(fmt.Errorf("skill no encontrada")), nil
+	}
+	if obs.Type != store.TypeSkill {
+		return fail(fmt.Errorf("la observación %d (%q) es type=%s, no type=skill — mem_skill_load solo carga procedimientos", obs.ID, obs.Title, obs.Type)), nil
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "# %s\n\n", obs.Title)
+	fmt.Fprintf(&sb, "**ID**: %d | **Proyecto**: %s | **Topic key**: %s\n\n", obs.ID, obs.Project, obs.TopicKey)
+	fmt.Fprintf(&sb, "%s\n", secrets.Redact(obs.Content))
+
+	return ok(sb.String()), nil
+}
+
 func (s *Server) handleMemUpdate(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
 	idStr := str(req, "id")
 	id, err := strconv.ParseInt(idStr, 10, 64)

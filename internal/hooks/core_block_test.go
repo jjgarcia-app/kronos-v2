@@ -915,3 +915,95 @@ func TestBuildCoreBlock_CapsSessionItems(t *testing.T) {
 		t.Errorf("el bugfix real debería seguir en el bloque:\n%s", block)
 	}
 }
+
+// TestBuildCoreBlock_SkillRendersCompressed cubre el requisito central de
+// store.TypeSkill: el bloque core NUNCA debe mostrar el procedimiento
+// completo — solo "[skill] <título> — <primera línea>", igual que un global
+// comprimido. Sin esto, un procedimiento largo compite por presupuesto con
+// su propio tamaño en vez de con un costo fijo de una línea.
+func TestBuildCoreBlock_SkillRendersCompressed(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	if _, err := st.SaveObservation(ctx, store.SaveParams{
+		Type:  store.TypeSkill,
+		Title: "Cómo cerrar una ronda de release de kronos-v2",
+		Content: "Qué: procedimiento paso a paso.\nPor qué: evitar saltarse pasos.\n\n" +
+			"Paso 1: correr veto (build+vet+test+lint).\n" +
+			"Paso 2: merge feature→release/vX.Y.Z→main.\n" +
+			"Paso 3: tag anotado y push.\n" +
+			"Paso 4: esperar CI/Release en GitHub — este paso NO debe aparecer comprimido.",
+		Project: "proj-skill", Scope: store.ScopeProject,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	block, err := hooks.BuildCoreBlock(ctx, st, "proj-skill", hooks.CoreBlockOptions{CharsLimit: 2000, MaxItems: 12})
+	if err != nil {
+		t.Fatalf("BuildCoreBlock: %v", err)
+	}
+
+	if !strings.Contains(block, "[skill] Cómo cerrar una ronda de release de kronos-v2 — procedimiento paso a paso.") {
+		t.Errorf("esperaba la línea compacta [skill], output:\n%s", block)
+	}
+	if strings.Contains(block, "esperar CI/Release en GitHub") {
+		t.Errorf("el bloque core no debería incluir el procedimiento completo:\n%s", block)
+	}
+}
+
+// TestBuildCoreBlock_CapsSkillItems cubre el tope propio de type=skill
+// (MaxSkillItems, independiente de MaxPerType/MaxSessionItems): con muchas
+// skills disponibles, solo entra un puñado, y el conocimiento real
+// (bugfix/decision) no se ve desplazado.
+func TestBuildCoreBlock_CapsSkillItems(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	// conocimiento real
+	if _, err := st.SaveObservation(ctx, store.SaveParams{
+		Type: store.TypeBugfix, Title: "Fix del índice del tsvector", Content: "La búsqueda hacía Seq Scan.",
+		Project: "proj-skillcap", Scope: store.ScopeProject,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.SaveObservation(ctx, store.SaveParams{
+		Type: store.TypeDecision, Title: "Elegimos pgx sobre lib/pq", Content: "Compatibilidad con RETURNING.",
+		Project: "proj-skillcap", Scope: store.ScopeProject, TopicKey: "db/driver",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// varias skills reales, con títulos sin solapamiento (evitar dedupe)
+	skillTitles := []string{
+		"Cómo cerrar una ronda de release de kronos-v2",
+		"Cómo diagnosticar un bug de buffer-vs-primario en DualStore",
+		"Cómo migrar el vault de Obsidian tras un cambio de schema",
+		"Cómo correr la consolidación de duplicados semánticos",
+		"Cómo rotar las credenciales de Infisical en producción",
+	}
+	for _, title := range skillTitles {
+		if _, err := st.SaveObservation(ctx, store.SaveParams{
+			Type: store.TypeSkill, Title: title,
+			Content: "Qué: procedimiento paso a paso.\nPor qué: reproducible entre sesiones.\n\nPaso 1: hacer el trabajo.",
+			Project: "proj-skillcap", Scope: store.ScopeProject,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	block, err := hooks.BuildCoreBlock(ctx, st, "proj-skillcap", hooks.CoreBlockOptions{CharsLimit: 2000, MaxItems: 12})
+	if err != nil {
+		t.Fatalf("BuildCoreBlock: %v", err)
+	}
+
+	skills := strings.Count(block, "[skill]")
+	if skills == 0 || skills > 3 {
+		t.Errorf("esperaba entre 1 y 3 skills (tope default MaxSkillItems=3), entraron %d:\n%s", skills, block)
+	}
+	if !strings.Contains(block, "tsvector") {
+		t.Errorf("el bugfix real debería seguir en el bloque:\n%s", block)
+	}
+	if !strings.Contains(block, "pgx sobre lib/pq") {
+		t.Errorf("la decisión real debería seguir en el bloque:\n%s", block)
+	}
+}

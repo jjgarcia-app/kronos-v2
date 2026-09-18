@@ -31,6 +31,7 @@ var kronosToolPermissions = []string{
 	"mcp__kronos__mem_search",
 	"mcp__kronos__mem_context",
 	"mcp__kronos__mem_get_observation",
+	"mcp__kronos__mem_skill_load",
 	"mcp__kronos__mem_update",
 	"mcp__kronos__mem_delete",
 	"mcp__kronos__mem_session_start",
