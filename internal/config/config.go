@@ -461,7 +461,7 @@ func Default() Config {
 		Embeddings: EmbeddingsConfig{
 			Provider:       "ollama",
 			OllamaURL:      "http://localhost:11434",
-			OllamaModel:    "nomic-embed-text",
+			OllamaModel:    "all-minilm",
 			OllamaLLMModel: "llama3.2",
 		},
 		LLM: LLMConfig{

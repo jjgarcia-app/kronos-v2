@@ -10,8 +10,16 @@ import (
 )
 
 const (
-	DefaultOllamaURL   = "http://localhost:11434"
-	DefaultOllamaModel = "nomic-embed-text"
+	DefaultOllamaURL = "http://localhost:11434"
+	// DefaultOllamaModel: all-minilm (22M parámetros, 384 dim) en vez de
+	// nomic-embed-text (137M, 768 dim) — medido en 2026-09-18 en una máquina
+	// sin GPU compartida con sesiones de Claude Code: ~4x más rápido por
+	// embedding (p50 2.4s vs 9.5s bajo la misma carga), cobertura y
+	// precisión@3 iguales dentro del margen de ruido en los 3 fixtures de
+	// evaluación (aguja/fixture_set/set — ver kronos-eval). Configurable vía
+	// recall.embeddings.ollama_model en config.json si el usuario prefiere
+	// más calidad semántica a costa de latencia.
+	DefaultOllamaModel = "all-minilm"
 )
 
 // EmbeddingFunc is the signature chromem-go uses internally.
