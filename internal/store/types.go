@@ -28,6 +28,24 @@ const (
 	// bloque core y la inyección por continuidad avisen "esto es un plan,
 	// confirmalo antes de asumirlo" (ver internal/hooks/core_block.go).
 	TypeIntent ObservationType = "intent"
+	// TypeSkill: procedimiento reutilizable — "cómo hacer X paso a paso" —
+	// a diferencia de bugfix/decision/discovery/etc, que describen un HECHO
+	// puntual, una skill describe un PROCESO con pasos ordenados que se va a
+	// repetir. Motivado por la auditoría comparativa 2026-09-18: kronos tenía
+	// bloque core (always-on) y recall FTS+vector, pero ningún lugar donde
+	// guardar procedimiento sin que compitiera por el mismo espacio que los
+	// hechos puntuales — "cómo cerrar una ronda de release" o "cómo
+	// diagnosticar un bug de buffer-vs-primario" quedaban solo en el
+	// historial de chat/commits, no en memoria reutilizable.
+	//
+	// El título (Title) es el nombre corto — lo único que se inyecta SIEMPRE
+	// en el bloque core, comprimido a una línea (ver formatSkillLine en
+	// internal/hooks/core_block.go). El Content es el cuerpo completo del
+	// procedimiento — nunca se manda al bloque core, se carga solo bajo
+	// demanda vía el tool MCP mem_skill_load (ver internal/mcp/handlers.go).
+	// Mismo patrón de "progressive disclosure" que las skills de Claude Code:
+	// nombre siempre visible, cuerpo cargado solo cuando hace falta.
+	TypeSkill ObservationType = "skill"
 )
 
 type Scope string
