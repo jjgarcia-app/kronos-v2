@@ -147,4 +147,13 @@ var postgresMigrations = []string{
 	// (idx_observations_trgm) no sirve para esta query: filtra por
 	// @@ plainto_tsquery, no por LIKE.
 	`CREATE INDEX IF NOT EXISTS idx_observations_tsv ON observations USING GIN (to_tsvector('simple', title || ' ' || content))`,
+
+	// v38–v39: idx_observations_tsv pasa de 'simple' a 'spanish'. Con
+	// 'simple' el tsvector no aplica stemming — "delegar" y "delega" quedan
+	// como lexemas distintos y no matchean entre sí en searchPostgres pese
+	// a ser la misma raíz. Con 'spanish' ambos colapsan a "deleg". Hay que
+	// tirar el índice viejo (quedó construido sobre el config 'simple') y
+	// recrearlo con el nuevo config; no toca datos, solo el índice.
+	`DROP INDEX IF EXISTS idx_observations_tsv`,
+	`CREATE INDEX IF NOT EXISTS idx_observations_tsv ON observations USING GIN (to_tsvector('spanish', title || ' ' || content))`,
 }
