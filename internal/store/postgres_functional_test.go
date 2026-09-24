@@ -102,3 +102,57 @@ func TestPostgresBackend_AllReadPathsSucceed(t *testing.T) {
 		t.Errorf("CreateSession: %v", err)
 	}
 }
+
+// TestPostgresBackend_SearchAppliesSpanishStemming reproduce el bug real:
+// con to_tsvector('simple', ...) "delegar" y "delega" son lexemas distintos
+// y no matchean entre sí pese a compartir raíz. Con 'spanish' ambos
+// colapsan a "deleg" (ver idx_observations_tsv v38–v39 en
+// schema_postgres.go y searchPostgres en fts.go). Corre solo contra
+// Postgres real porque SQLite usa FTS5, que no tiene este problema — no
+// aplica ningún stemmer por config y por eso no puede reproducir ni
+// validar este bug.
+func TestPostgresBackend_SearchAppliesSpanishStemming(t *testing.T) {
+	dsn := resolveFunctionalTestDSN(t)
+	if dsn == "" {
+		t.Skip("sin DSN de Postgres (KRONOS_TEST_DSN o db.postgres_dsn en config) — se salta el test funcional")
+	}
+
+	s, err := store.NewPostgres(dsn)
+	if err != nil {
+		t.Skipf("Postgres no disponible en %s, se salta el test funcional: %v", dsn, err)
+	}
+	t.Cleanup(func() { s.Close() })
+
+	ctx := context.Background()
+	project := "kronos-fts-stemming-audit"
+
+	saved, err := s.SaveObservation(ctx, store.SaveParams{
+		Type:    store.TypeDiscovery,
+		Title:   "Tarea de delegar responsabilidades",
+		Content: "El plan es delegar la revisión del release al equipo de infraestructura.",
+		Project: project,
+	})
+	if err != nil {
+		t.Fatalf("SaveObservation: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = s.DB().ExecContext(context.Background(),
+			`DELETE FROM observations WHERE id = $1`, saved.ID)
+	})
+
+	got, err := s.Search(ctx, store.SearchParams{Query: "delega", Project: project})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	found := false
+	for _, o := range got {
+		if o.ID == saved.ID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("buscar %q no encontró la observación guardada con %q — stemming en español roto (%d resultados)",
+			"delega", "delegar", len(got))
+	}
+}
