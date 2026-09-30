@@ -42,6 +42,53 @@ func isolatedDataDir(t *testing.T) string {
 	return dataDir
 }
 
+// TestDigestFactIsGrounded_BloqueaFabricacionReal reproduce el bug real
+// (obs 231072704912801792, proyecto temis-saas, 2026-09-30): el
+// enriquecimiento por LLM conflacionó tres fixes distintos de
+// llm_usage_log en una sola oración sintética que citaba una "columna
+// embeddings" en la "tabla de precios" con RLS — una entidad que no existe
+// en ningún lado del excerpt real. La guarda debe rechazar ese hecho.
+func TestDigestFactIsGrounded_BloqueaFabricacionReal(t *testing.T) {
+	excerpt := `05:47 — Arreglé la política RLS de escritura en la tabla llm_usage_log: permitía solo escribir al cliente dueño de la fila.
+06:15 — Completé la cobertura de MODEL_RATES (apps/agentic/src/lib/llm/model-pricing.ts) agregando los modelos faltantes.
+07:03 — Descubrí que nada llamaba a enterUsageContext en el lane de embeddings; agregué la llamada.`
+
+	fabricado := hooks.DigestFactIsGrounded(
+		"RLS de escritura en tabla de precios bloqueaba lane embeddings",
+		"Columna embeddings en tabla de precios tenía RLS que solo permitía cliente escribir, bloqueando sistema para escribir cálculos de embeddings.",
+		excerpt,
+	)
+	if fabricado {
+		t.Fatal("la guarda debería haber rechazado el hecho fabricado (columna/tabla inexistentes en el excerpt)")
+	}
+
+	real := hooks.DigestFactIsGrounded(
+		"Cablear enterUsageContext en lane de embeddings",
+		"Qué: nada llamaba a enterUsageContext en el lane de embeddings.\nCómo aplicar: agregar la llamada al entry point.",
+		excerpt,
+	)
+	if !real {
+		t.Fatal("la guarda no debería rechazar un hecho cuyos identificadores sí están en el excerpt")
+	}
+
+	sinExcerpt := hooks.DigestFactIsGrounded("cualquier título", "cualquier contenido con algo_raro", "")
+	if !sinExcerpt {
+		t.Fatal("sin excerpt disponible la guarda debe ser fail-open (no bloquear)")
+	}
+
+	// Caso límite: el hecho SÍ menciona "tabla llm_usage_log" con prosa en
+	// español (no un identificador snake_case aislado) — no debe bloquearse
+	// porque esa frase exacta está en el excerpt real.
+	legitimo := hooks.DigestFactIsGrounded(
+		"RLS bloqueaba escritura del servidor en llm_usage_log",
+		"Qué: la tabla llm_usage_log tenía una política RLS que solo dejaba escribir al cliente dueño de la fila.",
+		excerpt,
+	)
+	if !legitimo {
+		t.Fatal("la guarda no debería bloquear una frase de esquema que sí está en el excerpt")
+	}
+}
+
 func ollamaDigestStub(t *testing.T, inner string) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

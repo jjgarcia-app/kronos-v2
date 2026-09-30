@@ -24,6 +24,8 @@ Extend the summary with anything new and concrete from this excerpt: what was in
 
 Additionally, extract up to 3 standalone facts worth remembering as their OWN piece of knowledge — not buried in a session summary — for someone querying memory in a DIFFERENT, FUTURE session, possibly weeks from now. A fact only qualifies if it will still be true and useful in 30 days: a bug and its root cause, an architecture/design decision, a config change and why, a non-obvious discovery or gotcha, a reusable pattern, or a learned preference. Do NOT propose facts for routine/ephemeral activity ("ran the tests", "read a file", "started the session") — if nothing qualifies, return an empty list. Each fact must be self-contained (title and content make sense with zero session context).
 
+CRITICAL — do not conflate distinct events into one fabricated fact. If the excerpt covers MULTIPLE separate fixes/decisions (even if they touch the same file or table), each one is its OWN fact — never merge details from different events into a single sentence. Every concrete noun you name (table, column, function, file, flag, config key) must appear VERBATIM in the excerpt for THAT SPECIFIC event; never combine a table name mentioned in one fix with a symptom or column mentioned in a different fix. If you are not sure two mentions refer to the same real entity, drop the fact rather than guess or synthesize a plausible-sounding sentence.
+
 Respond ONLY with valid JSON (no markdown, no explanation outside JSON):
 {"content": "<updated running summary, plain text with line breaks, en español>",
  "facts": [{"type": "<bugfix|decision|config|discovery|pattern|preference>", "title": "<short searchable phrase, verb + what, en español>", "content": "<Qué: ...\nPor qué: ...\nCómo aplicar: ..., en español>"}]}`,
@@ -46,6 +48,8 @@ Transcript excerpt (most recent turns, oldest first):
 ---
 
 List up to %d such facts. A fact only qualifies if it will still be true and useful in 30 days: a bug and its root cause, an architecture/design decision, a config change and why, a non-obvious discovery or gotcha, a reusable pattern, or a learned preference. Do NOT propose facts for routine/ephemeral activity ("ran the tests", "read a file", "started the session"). Each fact must be self-contained (title and content make sense with zero session context).
+
+CRITICAL — do not conflate distinct events into one fabricated fact. If the excerpt covers MULTIPLE separate fixes/decisions (even if they touch the same file or table), each one is its OWN fact — never merge details from different events into a single sentence. Every concrete noun you name (table, column, function, file, flag, config key) must appear VERBATIM in the excerpt for THAT SPECIFIC event; never combine a table name mentioned in one fix with a symptom or column mentioned in a different fix. If you are not sure two mentions refer to the same real entity, drop the fact rather than guess or synthesize a plausible-sounding sentence.
 
 If at least one fact qualifies, respond ONLY with a valid JSON array (no markdown, no explanation outside JSON):
 [{"type": "<bugfix|decision|config|discovery|pattern|preference>", "title": "<short searchable phrase, verb + what, en español>", "content": "<Qué: ...\nPor qué: ...\nCómo aplicar: ..., en español>"}]
