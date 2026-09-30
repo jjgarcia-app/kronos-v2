@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 	"time"
 
@@ -177,6 +178,7 @@ func MaybeUpdateDigest(ctx context.Context, st store.Storer, cfg config.Config, 
 
 	content := deterministic
 	var facts []llm.DigestFact
+	var factsExcerpt string // el excerpt que sustentó `facts` — se usa para descartar hechos fabricados antes de promoverlos, ver promoteDigestFacts
 
 	if cfg.Digest.LLMEnrichment && llmClient != nil {
 		enrichTimeout := time.Duration(0) // 0 = timeout general (llm.timeout_ms) — camino interactivo (force)
@@ -195,9 +197,10 @@ func MaybeUpdateDigest(ctx context.Context, st store.Storer, cfg config.Config, 
 			if existing != nil && strings.TrimSpace(existing.Content) != "" {
 				content = existing.Content
 			}
-			retryFacts, explicit := tryDigestFactsOnlyRetry(ctx, llmClient, transcriptPath, cfg, sessionID, enrichTimeout)
+			retryFacts, retryExcerpt, explicit := tryDigestFactsOnlyRetry(ctx, llmClient, transcriptPath, cfg, sessionID, enrichTimeout)
 			if explicit {
 				facts = retryFacts
+				factsExcerpt = retryExcerpt
 				pending.Clear(sessionID)
 			} else {
 				pending.MarkFactsPending(sessionID)
@@ -208,7 +211,7 @@ func MaybeUpdateDigest(ctx context.Context, st store.Storer, cfg config.Config, 
 			// llm.Client.UpdateDigest) — no se agrega una llamada nueva, así
 			// que el contador de uso sigue subiendo en 1 por actualización de
 			// digest, no en 2.
-			update, failed := tryDigestLLMEnrichment(ctx, llmClient, existing, transcriptPath, sessionID, enrichTimeout)
+			update, updateExcerpt, failed := tryDigestLLMEnrichment(ctx, llmClient, existing, transcriptPath, sessionID, enrichTimeout)
 			switch {
 			case update != nil:
 				content = update.Content + "\n\n" + deterministic
@@ -217,6 +220,7 @@ func MaybeUpdateDigest(ctx context.Context, st store.Storer, cfg config.Config, 
 					// que no hay ninguno — en ambos casos no hace falta
 					// reintentar nada más.
 					facts = update.Facts
+					factsExcerpt = updateExcerpt
 					pending.Clear(sessionID)
 				} else {
 					// (b) éxito en la prosa, pero sin respuesta explícita
@@ -264,7 +268,7 @@ func MaybeUpdateDigest(ctx context.Context, st store.Storer, cfg config.Config, 
 	// esto es puramente aditivo: promueve lo que el LLM extrajo (si algo)
 	// como observaciones propias tipadas, sin cambiar el formato del digest.
 	if cfg.Digest.PromoteFacts && len(facts) > 0 {
-		promoteDigestFacts(ctx, st, cfg, facts, sessionID, proj.Name)
+		promoteDigestFacts(ctx, st, cfg, facts, factsExcerpt, sessionID, proj.Name)
 	}
 
 	return nil
@@ -310,7 +314,87 @@ const digestDefaultMaxFacts = 3
 // SaveObservation evita duplicar un hecho ya guardado en una corrida
 // anterior del digest — re-correrlo con el mismo excerpt no crea filas
 // nuevas, solo bumpea duplicate_count de las existentes.
-func promoteDigestFacts(ctx context.Context, st store.Storer, cfg config.Config, facts []llm.DigestFact, sessionID, project string) {
+// digestIdentifierPattern captura identificadores técnicos con forma de
+// nombre de tabla/columna/función/archivo: snake_case o camelCase de al
+// menos 2 partes, o algo con punto/slash (ruta, extensión) — no palabras
+// sueltas en español, que dan demasiados falsos positivos.
+var digestIdentifierPattern = regexp.MustCompile(`\b[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+\b|\b[a-z][a-z0-9]*(?:[A-Z][a-z0-9]*)+\b|\b[\w./-]+\.[a-z]{1,4}\b`)
+
+// digestSchemaPhrasePattern busca menciones en español de una entidad de
+// esquema/config ("tabla X", "columna Y", ...) seguidas de hasta 3 palabras
+// — es la parte del bug real que digestIdentifierPattern NO cubre: el hecho
+// fabricado (obs 231072704912801792) no usaba ningún identificador de
+// código, solo prosa natural ("columna embeddings", "tabla de precios") que
+// describía una entidad inexistente. Cortamos la frase en la primera
+// conjunción/verbo común para no arrastrar la oración entera.
+var digestSchemaPhrasePattern = regexp.MustCompile(`(?i)\b(tabla|columna|campo|función|funcion|endpoint|variable|clase|módulo|modulo|archivo|parámetro|parametro|flag)\s+([\p{L}0-9_./-]+(?:\s+[\p{L}0-9_./-]+){0,2})`)
+
+// digestSchemaPhraseStopwords corta la frase capturada antes de un
+// conector/verbo — sin esto "tabla X que bloqueaba Y" arrastraría "que" y
+// "bloqueaba" como si fueran parte del nombre de la entidad.
+var digestSchemaPhraseStopwords = map[string]bool{
+	"que": true, "con": true, "para": true, "solo": true, "sólo": true,
+	"en": true, "de": true, "del": true, "la": true, "el": true,
+	"tenía": true, "tenia": true, "permitía": true, "permitia": true,
+	"bloqueando": true, "bloqueaba": true, "y": true, "sin": true,
+}
+
+// digestSchemaPhrase corta la frase capturada en la primera stopword —
+// "tabla de precios" queda "tabla de precios" completo porque "de" solo
+// corta si es la PRIMERA palabra (una tabla puede legítimamente llamarse
+// "de precios" en la superficie del texto); a partir de la segunda palabra
+// cualquier stopword corta.
+func digestSchemaPhrase(keyword, rest string) string {
+	words := strings.Fields(rest)
+	kept := []string{keyword}
+	for i, w := range words {
+		lw := strings.ToLower(w)
+		if i > 0 && digestSchemaPhraseStopwords[lw] {
+			break
+		}
+		kept = append(kept, w)
+	}
+	return strings.ToLower(strings.Join(kept, " "))
+}
+
+// digestFactIsGrounded exige que TODO identificador técnico mencionado en
+// título+contenido de un hecho aparezca literalmente en el excerpt que le
+// dio origen — barato (regex + substring, sin LLM) y es la única defensa
+// determinística contra un caso real observado: el enriquecimiento por LLM
+// resumió tres fixes distintos de llm_usage_log (RLS, MODEL_RATES, lane de
+// embeddings) en una sola oración sintética que citaba una "columna
+// embeddings" y una "tabla de precios con RLS" que no existen en ningún lado
+// del excerpt real (obs 231072704912801792, temis-saas, 2026-09-30). Pedirle
+// al prompt que no conflacione ayuda pero no es verificable a demanda (no es
+// reproducible bajo demanda); esta guarda sí es determinística y barata de
+// correr en cada hecho antes de guardarlo como observación propia.
+//
+// Si el excerpt no está disponible (excerptUsed == ""), no bloquea nada —
+// fail-open, como el resto del camino del digest: es mejor un hecho sin
+// verificar que perder promoción por un problema de plumbing.
+func digestFactIsGrounded(title, content, excerptUsed string) bool {
+	if strings.TrimSpace(excerptUsed) == "" {
+		return true
+	}
+	text := title + " " + content
+	ids := digestIdentifierPattern.FindAllString(text, -1)
+	for _, id := range ids {
+		if !strings.Contains(excerptUsed, id) {
+			return false
+		}
+	}
+
+	excerptLower := strings.ToLower(excerptUsed)
+	for _, m := range digestSchemaPhrasePattern.FindAllStringSubmatch(text, -1) {
+		phrase := digestSchemaPhrase(m[1], m[2])
+		if !strings.Contains(excerptLower, phrase) {
+			return false
+		}
+	}
+	return true
+}
+
+func promoteDigestFacts(ctx context.Context, st store.Storer, cfg config.Config, facts []llm.DigestFact, excerptUsed, sessionID, project string) {
 	max := cfg.Digest.MaxFacts
 	if max <= 0 {
 		max = digestDefaultMaxFacts
@@ -327,6 +411,11 @@ func promoteDigestFacts(ctx context.Context, st store.Storer, cfg config.Config,
 		title := strings.TrimSpace(f.Title)
 		content := strings.TrimSpace(f.Content)
 		if len(title) < digestFactMinTitleChars || len(content) < digestFactMinContentChars {
+			continue
+		}
+		if !digestFactIsGrounded(title, content, excerptUsed) {
+			slog.Warn("digest: hecho descartado por mencionar un identificador que no está en el excerpt (posible conflación/fabricación)",
+				"session_id", sessionID, "title", title)
 			continue
 		}
 		if _, err := st.SaveObservation(ctx, store.SaveParams{
@@ -371,10 +460,10 @@ func ensureSession(ctx context.Context, st store.Storer, sessionID, proj, cwd st
 // enriquecimiento pendiente (ver DigestPending) y reintentarlo en la próxima
 // oportunidad. Cada falla real se loguea (motivo + tiempo transcurrido) para
 // que un LLM roto deje de fallar en silencio como pasaba antes.
-func tryDigestLLMEnrichment(ctx context.Context, llmClient *llm.Client, existing *store.Observation, transcriptPath, sessionID string, timeout time.Duration) (update *llm.DigestUpdate, failed bool) {
+func tryDigestLLMEnrichment(ctx context.Context, llmClient *llm.Client, existing *store.Observation, transcriptPath, sessionID string, timeout time.Duration) (update *llm.DigestUpdate, excerptUsed string, failed bool) {
 	excerpt, err := transcript.TailExcerpt(transcriptPath, excerptMaxChars)
 	if err != nil || len(strings.TrimSpace(excerpt)) < minExcerptChars {
-		return nil, false // nada real que resumir en prosa todavía
+		return nil, "", false // nada real que resumir en prosa todavía
 	}
 
 	previous := ""
@@ -388,17 +477,17 @@ func tryDigestLLMEnrichment(ctx context.Context, llmClient *llm.Client, existing
 	if err != nil {
 		slog.Warn("digest: la actualización por LLM falló, se guarda solo el determinístico",
 			"session_id", sessionID, "elapsed", elapsed, "error", err)
-		return nil, true
+		return nil, "", true
 	}
 	if result == nil {
-		return nil, false
+		return nil, "", false
 	}
 	prose := strings.TrimSpace(result.Content)
 	if prose == "" || prose == strings.TrimSpace(previous) {
-		return nil, false // el LLM dijo "nada nuevo" — no aporta sobre el determinístico
+		return nil, "", false // el LLM dijo "nada nuevo" — no aporta sobre el determinístico
 	}
 	result.Content = prose
-	return result, false
+	return result, excerpt, false
 }
 
 // tryDigestFactsOnlyRetry pide, con una llamada acotada (ver
@@ -412,12 +501,12 @@ func tryDigestLLMEnrichment(ctx context.Context, llmClient *llm.Client, existing
 // (la llamada falló, se pasó de tiempo, o la respuesta no se pudo parsear) —
 // el caller debe volver a anotar el pendiente para el próximo tick, hasta el
 // tope de digestPendingMaxAttempts.
-func tryDigestFactsOnlyRetry(ctx context.Context, llmClient *llm.Client, transcriptPath string, cfg config.Config, sessionID string, timeout time.Duration) (facts []llm.DigestFact, explicit bool) {
+func tryDigestFactsOnlyRetry(ctx context.Context, llmClient *llm.Client, transcriptPath string, cfg config.Config, sessionID string, timeout time.Duration) (facts []llm.DigestFact, excerptUsed string, explicit bool) {
 	excerpt, err := transcript.TailExcerpt(transcriptPath, excerptMaxChars)
 	if err != nil || len(strings.TrimSpace(excerpt)) < minExcerptChars {
 		// Nada real que pedir todavía — no es una falla del LLM, así que no
 		// vale la pena seguir reintentando por esto puntualmente.
-		return nil, true
+		return nil, "", true
 	}
 
 	max := cfg.Digest.MaxFacts
@@ -430,9 +519,9 @@ func tryDigestFactsOnlyRetry(ctx context.Context, llmClient *llm.Client, transcr
 	if err != nil {
 		slog.Warn("digest: el reintento de hechos por LLM falló, se sigue reintentando",
 			"session_id", sessionID, "elapsed", time.Since(start), "error", err)
-		return nil, false
+		return nil, "", false
 	}
-	return result, explicitResp
+	return result, excerpt, explicitResp
 }
 
 // renderDeterministicDigest arma el digest sin LLM a partir de los hechos
