@@ -70,7 +70,6 @@ func TestDigestFactIsGrounded_BloqueaFabricacionReal(t *testing.T) {
 	if !real {
 		t.Fatal("la guarda no debería rechazar un hecho cuyos identificadores sí están en el excerpt")
 	}
-
 	sinExcerpt := hooks.DigestFactIsGrounded("cualquier título", "cualquier contenido con algo_raro", "")
 	if !sinExcerpt {
 		t.Fatal("sin excerpt disponible la guarda debe ser fail-open (no bloquear)")
@@ -86,6 +85,38 @@ func TestDigestFactIsGrounded_BloqueaFabricacionReal(t *testing.T) {
 	)
 	if !legitimo {
 		t.Fatal("la guarda no debería bloquear una frase de esquema que sí está en el excerpt")
+	}
+}
+
+// TestDigestFilterGroundedProse_BloqueaLineaFabricada reproduce el mismo bug
+// real pero en la prosa libre del resumen de sesión (no en un hecho tipado):
+// una línea del resumen que conflaciona una entidad inexistente debe caer,
+// sin tirar el resto de líneas legítimas de la misma actualización.
+func TestDigestFilterGroundedProse_BloqueaLineaFabricada(t *testing.T) {
+	excerpt := `05:47 — Arreglé la política RLS de escritura en la tabla llm_usage_log: permitía solo escribir al cliente dueño de la fila.
+06:15 — Completé la cobertura de MODEL_RATES (apps/agentic/src/lib/llm/model-pricing.ts) agregando los modelos faltantes.
+07:03 — Descubrí que nada llamaba a enterUsageContext en el lane de embeddings; agregué la llamada.`
+
+	prosa := "- Arreglé la política RLS de escritura en llm_usage_log para el rol de servicio.\n" +
+		"- La columna embeddings en la tabla de precios tenía RLS que bloqueaba al sistema.\n" +
+		"- Completé la cobertura de MODEL_RATES agregando los modelos faltantes."
+
+	filtrada := hooks.DigestFilterGroundedProse(prosa, excerpt, "", "sess-test")
+
+	if strings.Contains(filtrada, "tabla de precios") {
+		t.Fatalf("la línea fabricada (tabla de precios / columna embeddings) no debería sobrevivir al filtro:\n%s", filtrada)
+	}
+	if !strings.Contains(filtrada, "llm_usage_log") {
+		t.Fatalf("la línea legítima sobre llm_usage_log se perdió sin necesidad:\n%s", filtrada)
+	}
+	if !strings.Contains(filtrada, "MODEL_RATES") {
+		t.Fatalf("la línea legítima sobre MODEL_RATES se perdió sin necesidad:\n%s", filtrada)
+	}
+
+	// Sin excerpt disponible, fail-open: la prosa completa pasa sin filtrar.
+	sinExcerpt := hooks.DigestFilterGroundedProse(prosa, "", "", "sess-test")
+	if sinExcerpt != prosa {
+		t.Fatal("sin excerpt disponible el filtro de prosa debe ser fail-open (no tocar nada)")
 	}
 }
 

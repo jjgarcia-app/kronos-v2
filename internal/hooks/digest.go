@@ -486,8 +486,46 @@ func tryDigestLLMEnrichment(ctx context.Context, llmClient *llm.Client, existing
 	if prose == "" || prose == strings.TrimSpace(previous) {
 		return nil, "", false // el LLM dijo "nada nuevo" — no aporta sobre el determinístico
 	}
+	prose = digestFilterGroundedProse(prose, excerpt, previous, sessionID)
+	if prose == "" {
+		return nil, "", false // todas las líneas nuevas se descartaron por no estar ancladas
+	}
 	result.Content = prose
 	return result, excerpt, false
+}
+
+// digestFilterGroundedProse aplica la misma defensa de digestFactIsGrounded
+// (ver su comentario para el bug real que motiva esto) a la prosa libre del
+// resumen de sesión, línea por línea en vez de al hecho completo — la prosa
+// es texto corrido con varias oraciones/bullets por actualización, y
+// descartar el digest ENTERO por una sola línea conflacionada tiraría
+// también las líneas buenas. Cada línea se valida contra el excerpt actual
+// MÁS el resumen previo (previous): el previous ya pasó este mismo filtro en
+// su momento y puede describir hechos de un excerpt que ya rotó fuera de la
+// ventana de TailExcerpt, así que hay que aceptarlo como fuente válida
+// también. Una línea sin ningún identificador/frase de esquema (texto
+// puramente narrativo, "seguí revisando el pipeline") no tiene nada que
+// verificar y se deja pasar tal cual.
+func digestFilterGroundedProse(prose, excerptUsed, previous, sessionID string) string {
+	if strings.TrimSpace(excerptUsed) == "" {
+		return prose
+	}
+	source := excerptUsed + "\n" + previous
+	lines := strings.Split(prose, "\n")
+	kept := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			kept = append(kept, line)
+			continue
+		}
+		if digestFactIsGrounded("", line, source) {
+			kept = append(kept, line)
+			continue
+		}
+		slog.Warn("digest: línea de prosa descartada por mencionar un identificador/entidad que no está en el excerpt ni en el resumen previo (posible conflación/fabricación)",
+			"session_id", sessionID, "line", strings.TrimSpace(line))
+	}
+	return strings.TrimSpace(strings.Join(kept, "\n"))
 }
 
 // tryDigestFactsOnlyRetry pide, con una llamada acotada (ver
