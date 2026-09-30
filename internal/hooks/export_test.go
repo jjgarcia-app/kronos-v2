@@ -7,3 +7,7 @@ package hooks
 // TestDigestFactIsGrounded_BloqueaFabricacionReal (paquete hooks_test),
 // que reproduce el bug real de conflación (obs 231072704912801792).
 var DigestFactIsGrounded = digestFactIsGrounded
+
+// DigestFilterGroundedProse expone digestFilterGroundedProse para el test
+// TestDigestFilterGroundedProse_BloqueaLineaFabricada (paquete hooks_test).
+var DigestFilterGroundedProse = digestFilterGroundedProse
