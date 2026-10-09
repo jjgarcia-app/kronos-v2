@@ -19,11 +19,14 @@ func runSetup(args []string) error {
 		return setup.InstallCursor()
 	case "windsurf":
 		return setup.InstallWindsurf()
+	case "codex":
+		return setup.InstallCodex()
 	case "--all":
 		for _, fn := range []func() error{
 			setup.InstallClaudeCode,
 			setup.InstallCursor,
 			setup.InstallWindsurf,
+			setup.InstallCodex,
 		} {
 			if err := fn(); err != nil {
 				fmt.Printf("advertencia: %v\n", err)
@@ -34,12 +37,14 @@ func runSetup(args []string) error {
 		_ = setup.Uninstall()
 		_ = setup.UninstallCursor()
 		_ = setup.UninstallWindsurf()
+		_ = setup.UninstallCodex()
 		return nil
 	case "--list":
 		fmt.Println("Agentes soportados:")
 		fmt.Println("  claude-code  — hooks en ~/.claude/settings.json")
 		fmt.Println("  cursor       — MCP server en ~/.cursor/mcp.json")
 		fmt.Println("  windsurf     — MCP server en ~/.codeium/windsurf/mcp_config.json")
+		fmt.Println("  codex        — hooks en $CODEX_HOME/hooks.json (o ~/.codex) + `codex mcp add`")
 		fmt.Println("  --all        — instalar en todos")
 		fmt.Println("  uninstall    — desinstalar de todos")
 		return nil

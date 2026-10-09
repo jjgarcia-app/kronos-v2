@@ -185,6 +185,7 @@ func New() Model {
 			{id: "claude-code", label: "Claude Code", desc: "hooks + MCP en ~/.claude/settings.json", checked: true},
 			{id: "cursor", label: "Cursor", desc: "MCP en ~/.cursor/mcp.json"},
 			{id: "windsurf", label: "Windsurf", desc: "MCP en ~/.codeium/windsurf/mcp_config.json"},
+			{id: "codex", label: "Codex", desc: "hooks + MCP vía `codex mcp add` ($CODEX_HOME/hooks.json)"},
 		},
 	}
 }
@@ -483,6 +484,8 @@ func cmdRunSetup(agents []agentItem, wantsDocker bool, wantsPostgresDocker bool,
 				err = setup.InstallCursor()
 			case "windsurf":
 				err = setup.InstallWindsurf()
+			case "codex":
+				err = setup.InstallCodex()
 			}
 			if err != nil {
 				ch <- fmt.Sprintf("  ! %s: %v", a.label, err)
