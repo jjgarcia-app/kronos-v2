@@ -57,6 +57,6 @@ func run(args []string) error {
 		fmt.Printf("kronos %s\n", version)
 		return nil
 	default:
-		return fmt.Errorf("unknown command %q — use: init | serve | mcp [--tools=PROFILE] | hook | setup | export | vault import | doctor | tui | config | sync [--export|--import] | rules | env | gc | backup [--list|--restore] | service <install|uninstall|start|stop|restart|status> | version", args[0])
+		return fmt.Errorf("unknown command %q — use: init | serve | mcp [--tools=PROFILE] | hook | setup | export | vault import | doctor | tui | config | sync [--export|--import] | rules [--install] [--target claude-code|codex] | env | gc | backup [--list|--restore] | service <install|uninstall|start|stop|restart|status> | version", args[0])
 	}
 }
