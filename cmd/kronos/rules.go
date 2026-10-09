@@ -6,9 +6,12 @@ import (
 	"path/filepath"
 )
 
-// claudeMDFragment is the CLAUDE.md section for Layer 2 harness.
-// Users add this to their project or global CLAUDE.md for stronger enforcement.
-const claudeMDFragment = `## Kronos — Memoria persistente entre sesiones
+// kronosRulesFragment es el contenido de la capa 2 (refuerzo de instrucciones)
+// que empuja al agente a usar la memoria de Kronos de forma proactiva —
+// independiente del agente destino (Claude Code lee CLAUDE.md, Codex lee
+// AGENTS.md, pero el contenido es el mismo: los nombres de tool mem_* son
+// MCP y funcionan igual en ambos).
+const kronosRulesFragment = `## Kronos — Memoria persistente entre sesiones
 
 Tienes acceso a un servidor MCP de memoria (Kronos). Úsalo de forma proactiva.
 
@@ -35,36 +38,75 @@ Si perdiste el hilo de lo que hacías: revisa el bloque "TAREA EN PROGRESO" inye
 Para types ` + "`decision`" + `, ` + "`architecture`" + `, ` + "`pattern`" + `, ` + "`config`" + `: siempre incluye ` + "`topic_key`" + ` en formato ` + "`area/tema`" + ` (ej: ` + "`\"db/postgres-driver\"`" + `). Esto permite upsert y evita duplicados.
 `
 
+// claudeMDFragment se mantiene como alias por compatibilidad — algún código o
+// documentación externa puede referenciarlo con este nombre.
+const claudeMDFragment = kronosRulesFragment
+
+// rulesTarget describe un archivo de instrucciones de un agente: dónde vive
+// y cómo se llama en los mensajes de usuario.
+type rulesTarget struct {
+	id       string // "claude-code" | "codex"
+	label    string // nombre para mensajes
+	filename string // "CLAUDE.md" | "AGENTS.md"
+}
+
+var rulesTargets = map[string]rulesTarget{
+	"claude-code": {id: "claude-code", label: "Claude Code", filename: "CLAUDE.md"},
+	"codex":       {id: "codex", label: "Codex", filename: "AGENTS.md"},
+}
+
+// runRules: `kronos rules [--install] [--target claude-code|codex]`.
+// Sin --target, por compatibilidad hacia atrás, apunta a claude-code
+// (CLAUDE.md) — comportamiento histórico del comando.
 func runRules(args []string) error {
-	// with --install flag, write directly into current directory's CLAUDE.md
-	if len(args) > 0 && args[0] == "--install" {
-		return installRules()
+	targetID := "claude-code"
+	install := false
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--install":
+			install = true
+		case "--target":
+			if i+1 >= len(args) {
+				return fmt.Errorf("--target requiere un valor: claude-code | codex")
+			}
+			targetID = args[i+1]
+			i++
+		}
 	}
 
-	// default: print the fragment to stdout
-	fmt.Print(claudeMDFragment)
-	fmt.Println("\n# Para instalarlo directamente en CLAUDE.md del proyecto actual:")
-	fmt.Println("#   kronos rules --install")
+	target, ok := rulesTargets[targetID]
+	if !ok {
+		return fmt.Errorf("target desconocido %q — usa: claude-code | codex", targetID)
+	}
+
+	if install {
+		return installRules(target)
+	}
+
+	fmt.Print(kronosRulesFragment)
+	fmt.Printf("\n# Para instalarlo directamente en %s del proyecto actual:\n", target.filename)
+	fmt.Printf("#   kronos rules --install --target %s\n", target.id)
 	return nil
 }
 
-func installRules() error {
-	target := filepath.Join(".", "CLAUDE.md")
+func installRules(target rulesTarget) error {
+	path := filepath.Join(".", target.filename)
 
-	existing, err := os.ReadFile(target)
+	existing, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("leer CLAUDE.md: %w", err)
+		return fmt.Errorf("leer %s: %w", target.filename, err)
 	}
 
 	// Don't add if already present
 	if contains(string(existing), "Kronos — Memoria persistente") {
-		fmt.Println("CLAUDE.md ya contiene la sección de Kronos. Sin cambios.")
+		fmt.Printf("%s ya contiene la sección de Kronos. Sin cambios.\n", target.filename)
 		return nil
 	}
 
-	f, err := os.OpenFile(target, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
-		return fmt.Errorf("abrir CLAUDE.md: %w", err)
+		return fmt.Errorf("abrir %s: %w", target.filename, err)
 	}
 	defer f.Close()
 
@@ -73,12 +115,11 @@ func installRules() error {
 		separator = "\n---\n\n"
 	}
 
-	_, err = fmt.Fprintf(f, "%s%s", separator, claudeMDFragment)
-	if err != nil {
-		return fmt.Errorf("escribir CLAUDE.md: %w", err)
+	if _, err := fmt.Fprintf(f, "%s%s", separator, kronosRulesFragment); err != nil {
+		return fmt.Errorf("escribir %s: %w", target.filename, err)
 	}
 
-	fmt.Printf("Sección de Kronos agregada a %s\n", target)
+	fmt.Printf("Sección de Kronos agregada a %s\n", path)
 	return nil
 }
 
