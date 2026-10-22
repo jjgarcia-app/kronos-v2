@@ -60,7 +60,29 @@ func (s *Store) Search(ctx context.Context, p SearchParams) ([]*SearchResult, er
 // searchOnce es una corrida de búsqueda contra el backend activo.
 func (s *Store) searchOnce(ctx context.Context, p SearchParams) ([]*SearchResult, error) {
 	if s.driver == "postgres" {
-		return s.searchPostgres(ctx, p)
+		// 'simple' primero: es el ranking contra el que se calibraron el corte
+		// por densidad y las guardas del recall. 'spanish' (stemming:
+		// "delega" ~ "delegar") solo completa DESPUÉS, sin reordenar lo que
+		// 'simple' ya trajo; como ranking principal bajó la cobertura de la
+		// aguja 92%→82% (kronos-eval).
+		res, err := s.searchPostgres(ctx, p, "simple")
+		if err != nil {
+			return res, err
+		}
+		est, err := s.searchPostgres(ctx, p, "spanish")
+		if err != nil {
+			return res, nil
+		}
+		visto := make(map[int64]bool, len(res))
+		for _, r := range res {
+			visto[r.ID] = true
+		}
+		for _, r := range est {
+			if !visto[r.ID] && len(res) < p.Limit {
+				res = append(res, r)
+			}
+		}
+		return res, nil
 	}
 	return s.searchSQLite(ctx, p)
 }
@@ -162,37 +184,37 @@ func (s *Store) searchSQLite(ctx context.Context, p SearchParams) ([]*SearchResu
 // los dos backends sin ramas especiales por driver. Para texto plano sin OR
 // ni comillas (el resto de los callers de Search) el comportamiento es
 // idéntico al de plainto_tsquery: todos los términos AND.
-func (s *Store) searchPostgres(ctx context.Context, p SearchParams) ([]*SearchResult, error) {
+func (s *Store) searchPostgres(ctx context.Context, p SearchParams, cfg string) ([]*SearchResult, error) {
 	var sqlRows *sql.Rows
 	var err error
 
 	if p.Project != "" {
-		sqlRows, err = s.db.QueryContext(ctx, `
+		sqlRows, err = s.db.QueryContext(ctx, fmt.Sprintf(`
 			SELECT id, COALESCE(sync_id,''), COALESCE(session_id,''), type, title, content,
 			       COALESCE(tool_name,''), project, scope, topic_key, normalized_hash,
 			       revision_count, duplicate_count, created_at, updated_at, deleted_at,
-			       ts_rank(to_tsvector('spanish', title || ' ' || content),
-			               websearch_to_tsquery('spanish', $1)) as rank
+			       ts_rank(to_tsvector('%s', title || ' ' || content),
+			               websearch_to_tsquery('%s', $1)) as rank
 			FROM observations
-			WHERE to_tsvector('spanish', title || ' ' || content) @@ websearch_to_tsquery('spanish', $1)
+			WHERE to_tsvector('%s', title || ' ' || content) @@ websearch_to_tsquery('%s', $1)
 			  AND (project = $2 OR scope = 'global')
 			  AND deleted_at IS NULL
 			ORDER BY rank DESC
-			LIMIT $3`,
+			LIMIT $3`, cfg, cfg, cfg, cfg),
 			p.Query, p.Project, p.Limit,
 		)
 	} else {
-		sqlRows, err = s.db.QueryContext(ctx, `
+		sqlRows, err = s.db.QueryContext(ctx, fmt.Sprintf(`
 			SELECT id, COALESCE(sync_id,''), COALESCE(session_id,''), type, title, content,
 			       COALESCE(tool_name,''), project, scope, topic_key, normalized_hash,
 			       revision_count, duplicate_count, created_at, updated_at, deleted_at,
-			       ts_rank(to_tsvector('spanish', title || ' ' || content),
-			               websearch_to_tsquery('spanish', $1)) as rank
+			       ts_rank(to_tsvector('%s', title || ' ' || content),
+			               websearch_to_tsquery('%s', $1)) as rank
 			FROM observations
-			WHERE to_tsvector('spanish', title || ' ' || content) @@ websearch_to_tsquery('spanish', $1)
+			WHERE to_tsvector('%s', title || ' ' || content) @@ websearch_to_tsquery('%s', $1)
 			  AND deleted_at IS NULL
 			ORDER BY rank DESC
-			LIMIT $2`,
+			LIMIT $2`, cfg, cfg, cfg, cfg),
 			p.Query, p.Limit,
 		)
 	}
