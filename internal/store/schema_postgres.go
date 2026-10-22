@@ -156,4 +156,9 @@ var postgresMigrations = []string{
 	// recrearlo con el nuevo config; no toca datos, solo el índice.
 	`DROP INDEX IF EXISTS idx_observations_tsv`,
 	`CREATE INDEX IF NOT EXISTS idx_observations_tsv ON observations USING GIN (to_tsvector('spanish', title || ' ' || content))`,
+
+	// v40: la búsqueda vuelve a probar 'simple' primero (el stemming de
+	// 'spanish' bajó la cobertura medida) y cae a 'spanish' solo si 'simple'
+	// no trae nada; cada config necesita su propio índice GIN.
+	`CREATE INDEX IF NOT EXISTS idx_observations_tsv_simple ON observations USING GIN (to_tsvector('simple', title || ' ' || content))`,
 }
