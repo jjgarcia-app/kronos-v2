@@ -38,10 +38,6 @@ Si perdiste el hilo de lo que hacías: revisa el bloque "TAREA EN PROGRESO" inye
 Para types ` + "`decision`" + `, ` + "`architecture`" + `, ` + "`pattern`" + `, ` + "`config`" + `: siempre incluye ` + "`topic_key`" + ` en formato ` + "`area/tema`" + ` (ej: ` + "`\"db/postgres-driver\"`" + `). Esto permite upsert y evita duplicados.
 `
 
-// claudeMDFragment se mantiene como alias por compatibilidad — algún código o
-// documentación externa puede referenciarlo con este nombre.
-const claudeMDFragment = kronosRulesFragment
-
 // rulesTarget describe un archivo de instrucciones de un agente: dónde vive
 // y cómo se llama en los mensajes de usuario.
 type rulesTarget struct {
