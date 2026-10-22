@@ -2,7 +2,7 @@ module github.com/jjgarcia-app/kronos-v2
 
 go 1.25.5
 
-toolchain go1.26.6
+toolchain go1.26.10
 
 require (
 	github.com/charmbracelet/bubbles v1.0.0
@@ -46,6 +46,6 @@ require (
 	github.com/spf13/cast v1.7.1 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
-	golang.org/x/sync v0.21.0 // indirect
-	golang.org/x/text v0.39.0 // indirect
+	golang.org/x/sync v0.22.0 // indirect
+	golang.org/x/text v0.41.0 // indirect
 )
