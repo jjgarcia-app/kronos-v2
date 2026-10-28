@@ -554,7 +554,7 @@ func Default() Config {
 		Gate: GateConfig{
 			Enabled:              true,
 			Block:                false,
-			Tools:                []string{"Edit", "Write", "Bash"},
+			Tools:                []string{"Edit", "Write", "Bash", "mcp__*"},
 			MinObservations:      5,
 			SatisfiedByInjection: true,
 		},

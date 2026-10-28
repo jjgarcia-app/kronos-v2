@@ -85,8 +85,8 @@ func TestDefault_HasExpectedValues(t *testing.T) {
 	if cfg.Gate.Block {
 		t.Error("default gate.block should be false")
 	}
-	if len(cfg.Gate.Tools) != 3 || cfg.Gate.Tools[0] != "Edit" || cfg.Gate.Tools[1] != "Write" || cfg.Gate.Tools[2] != "Bash" {
-		t.Errorf("default gate.tools = %v, want [Edit Write Bash]", cfg.Gate.Tools)
+	if len(cfg.Gate.Tools) != 4 || cfg.Gate.Tools[0] != "Edit" || cfg.Gate.Tools[1] != "Write" || cfg.Gate.Tools[2] != "Bash" || cfg.Gate.Tools[3] != "mcp__*" {
+		t.Errorf("default gate.tools = %v, want [Edit Write Bash mcp__*]", cfg.Gate.Tools)
 	}
 	if cfg.Gate.MinObservations != 5 {
 		t.Errorf("default gate.min_observations = %d, want 5", cfg.Gate.MinObservations)
@@ -116,7 +116,7 @@ func TestLoad_PartialGateSection_KeepsDefaults(t *testing.T) {
 	if !cfg.Gate.Enabled {
 		t.Error("gate.enabled ausente debería conservar el default true")
 	}
-	if len(cfg.Gate.Tools) != 3 {
+	if len(cfg.Gate.Tools) != 4 {
 		t.Errorf("gate.tools ausente debería conservar el default, got %v", cfg.Gate.Tools)
 	}
 	if cfg.Gate.MinObservations != 5 {
