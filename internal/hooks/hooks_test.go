@@ -2343,3 +2343,49 @@ func TestRunPostToolUse_EmptyToolName_NoOp(t *testing.T) {
 		t.Errorf("esperaba 0 registros con ToolName vacío, obtuve: %+v", stats)
 	}
 }
+
+// TestRunPreToolUse_ExternalMCP_InjectionDoesNotSatisfy: una tool MCP externa
+// (Jira, etc.) exige mem_search explícito aunque el core ya se haya inyectado.
+func TestRunPreToolUse_ExternalMCP_InjectionDoesNotSatisfy(t *testing.T) {
+	setupTempConfigDir(t)
+	t.Setenv("KRONOS_GATE_BLOCK", "1")
+	t.Setenv("KRONOS_GATE_TOOLS", "Edit,Write,mcp__*")
+	hooks.ResetGatedTools()
+
+	st := newTestStore(t)
+	ctx := context.Background()
+	seedObservations(t, st, "proyecto-mcp-gate", 5)
+	st.CreateSession(ctx, "sess-mcp-gate", "proyecto-mcp-gate", "/tmp")
+	if err := st.PersistInjectedIDs(ctx, "sess-mcp-gate", []string{"1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	var exitCode *int
+	hooks.SetExitFn(func(code int) { exitCode = &code })
+	defer hooks.SetExitFn(nil)
+
+	cwd := gateCWD(t, "proyecto-mcp-gate")
+	captureStderr(t, func() {
+		hooks.RunPreToolUse(ctx, hooks.Input{SessionID: "sess-mcp-gate", ToolName: "mcp__atlassian__getJiraIssue", CWD: cwd}, st)
+	})
+	if exitCode == nil || *exitCode != 2 {
+		t.Fatalf("tool MCP externa sin búsqueda debe bloquear (exit 2), got %v", exitCode)
+	}
+
+	// Edit sigue satisfecho por la inyección (comportamiento previo intacto).
+	exitCode = nil
+	captureStderr(t, func() {
+		hooks.RunPreToolUse(ctx, hooks.Input{SessionID: "sess-mcp-gate", ToolName: "Edit", CWD: cwd}, st)
+	})
+	if exitCode != nil {
+		t.Errorf("Edit con inyección no debe bloquear, got exit %d", *exitCode)
+	}
+
+	// Las tools de kronos nunca se gatean: mem_search tiene que poder correr.
+	captureStderr(t, func() {
+		hooks.RunPreToolUse(ctx, hooks.Input{SessionID: "sess-mcp-gate", ToolName: "mcp__kronos__mem_search", CWD: cwd}, st)
+	})
+	if exitCode != nil {
+		t.Errorf("mcp__kronos__* nunca debe bloquear, got exit %d", *exitCode)
+	}
+}

@@ -424,3 +424,103 @@ func TestUninstall_RemovesHooks(t *testing.T) {
 		t.Errorf("kronos hooks still present after uninstall: %s", data)
 	}
 }
+
+// Hooks de otras herramientas (appropia, orca) comparten el sufijo
+// "hook session-start" y llevan timeout: setup no debe reemplazarlos ni
+// borrarles el timeout.
+func TestInstallClaudeCode_PreservesForeignHooksAndTimeouts(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+	claudeDir := filepath.Join(tmpHome, ".claude")
+	if err := os.MkdirAll(claudeDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	existing := map[string]any{
+		"hooks": map[string]any{
+			"SessionStart": []any{map[string]any{"hooks": []any{
+				map[string]any{"type": "command", "command": "appropia hook session-start", "timeout": 10},
+			}}},
+			"Stop": []any{map[string]any{"hooks": []any{
+				map[string]any{"type": "command", "command": "appropia hook stop", "timeout": 660},
+			}}},
+		},
+	}
+	data, _ := json.MarshalIndent(existing, "", "  ")
+	os.WriteFile(filepath.Join(claudeDir, "settings.json"), data, 0644)
+
+	if err := setup.InstallClaudeCode(); err != nil {
+		t.Fatalf("InstallClaudeCode: %v", err)
+	}
+	out, _ := os.ReadFile(filepath.Join(claudeDir, "settings.json"))
+	var got struct {
+		Hooks map[string][]struct {
+			Hooks []struct {
+				Command string  `json:"command"`
+				Timeout float64 `json:"timeout"`
+			} `json:"hooks"`
+		} `json:"hooks"`
+	}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatal(err)
+	}
+	find := func(event, cmd string) (float64, bool) {
+		for _, m := range got.Hooks[event] {
+			for _, h := range m.Hooks {
+				if h.Command == cmd {
+					return h.Timeout, true
+				}
+			}
+		}
+		return 0, false
+	}
+	if to, ok := find("SessionStart", "appropia hook session-start"); !ok || to != 10 {
+		t.Errorf("appropia session-start perdido o sin timeout: ok=%v timeout=%v", ok, to)
+	}
+	if to, ok := find("Stop", "appropia hook stop"); !ok || to != 660 {
+		t.Errorf("appropia stop perdido o sin timeout: ok=%v timeout=%v", ok, to)
+	}
+}
+
+// El gate de memoria cubre tools MCP externas: si el matcher canónico de
+// PreToolUse no incluye mcp__.*, Claude Code nunca lanza el hook para ellas.
+func TestInstallClaudeCode_PreToolUseMatcherCoversMCP(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+	claudeDir := filepath.Join(tmpHome, ".claude")
+	os.MkdirAll(claudeDir, 0755)
+	// instalación vieja con el matcher anterior: debe reconciliarse.
+	old := `{"hooks":{"PreToolUse":[{"matcher":"Edit|Write|Bash","hooks":[{"type":"command","command":"kronos hook pre-tool-use"}]}]}}`
+	os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte(old), 0644)
+
+	if err := setup.InstallClaudeCode(); err != nil {
+		t.Fatalf("InstallClaudeCode: %v", err)
+	}
+	out, _ := os.ReadFile(filepath.Join(claudeDir, "settings.json"))
+	var got struct {
+		Hooks map[string][]struct {
+			Matcher string `json:"matcher"`
+			Hooks   []struct {
+				Command string `json:"command"`
+			} `json:"hooks"`
+		} `json:"hooks"`
+	}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, m := range got.Hooks["PreToolUse"] {
+		for _, h := range m.Hooks {
+			if strings.HasSuffix(h.Command, "hook pre-tool-use") {
+				found = true
+				if !strings.Contains(m.Matcher, "mcp__.*") {
+					t.Errorf("matcher de pre-tool-use = %q, debe incluir mcp__.*", m.Matcher)
+				}
+			}
+		}
+	}
+	if !found {
+		t.Error("no quedó el hook pre-tool-use de kronos")
+	}
+}

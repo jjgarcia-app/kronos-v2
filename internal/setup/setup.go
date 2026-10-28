@@ -16,6 +16,9 @@ type hookEntry struct {
 	Type    string `json:"type"`
 	Command string `json:"command,omitempty"`
 	Prompt  string `json:"prompt,omitempty"`
+	// Timeout se preserva tal cual: hooks de otras herramientas (appropia,
+	// orca) lo usan y un round-trip por esta struct no debe borrarlo.
+	Timeout float64 `json:"timeout,omitempty"`
 }
 
 // hookMatcher is one element of the per-event array in settings.json.
@@ -96,8 +99,12 @@ func kronosHooksMap() map[string][]hookMatcher {
 		// vez de solo evitar su efecto. Para PostToolUse esto además alinea
 		// el scope real con la intención original ("acciones significativas"
 		// — Activity.RecordSignificantAction, nunca sobre lecturas/búsquedas).
+		// PreToolUse suma mcp__.*: el gate de consulta de memoria también cubre
+		// tools MCP externas (Jira, navegador). RunPreToolUse exime a
+		// mcp__kronos__* y filtra por gate.tools; el matcher solo decide si
+		// Claude Code lanza el proceso.
 		"PreToolUse": {
-			{Matcher: "Edit|Write|Bash", Hooks: []hookEntry{{Type: "command", Command: cmd("pre-tool-use")}}},
+			{Matcher: "Edit|Write|Bash|mcp__.*", Hooks: []hookEntry{{Type: "command", Command: cmd("pre-tool-use")}}},
 		},
 		"PreCompact": {
 			{Hooks: []hookEntry{{Type: "command", Command: cmd("pre-compact")}}},
@@ -478,7 +485,9 @@ func normalizeKronosHooks(hooks map[string]any) bool {
 			for _, h := range m.Hooks {
 				// cualquier variante (pelada o con ruta vieja) que apunte al
 				// mismo subcomando pero no sea ya exactamente la canónica.
-				if strings.HasSuffix(h.Command, " "+suffix) && h.Command != canonicalCmd {
+				// solo si el binario es kronos: "appropia hook session-start"
+				// comparte el sufijo y no se debe pisar.
+				if isKronosBinaryCmd(h.Command) && strings.HasSuffix(h.Command, " "+suffix) && h.Command != canonicalCmd {
 					kept = append(kept, hookEntry{Type: "command", Command: canonicalCmd})
 					changed = true
 					isKronosBlock = true
@@ -509,6 +518,17 @@ func normalizeKronosHooks(hooks map[string]any) bool {
 		}
 	}
 	return changed
+}
+
+// isKronosBinaryCmd: el primer token del comando es un binario kronos
+// (pelado o con ruta, con o sin .exe).
+func isKronosBinaryCmd(cmd string) bool {
+	first := strings.Fields(cmd)
+	if len(first) == 0 {
+		return false
+	}
+	base := filepath.Base(strings.ReplaceAll(first[0], `\`, "/"))
+	return base == "kronos" || base == "kronos.exe"
 }
 
 // mergeHooks adds Kronos hooks that are not already present.
@@ -594,6 +614,9 @@ func toMatcherSlice(raw any) []hookMatcher {
 				Type:    strVal(hem, "type"),
 				Command: strVal(hem, "command"),
 				Prompt:  strVal(hem, "prompt"),
+			}
+			if t, ok := hem["timeout"].(float64); ok {
+				e.Timeout = t
 			}
 			// skip broken agent hooks with no prompt
 			if e.Type == "agent" && e.Prompt == "" {

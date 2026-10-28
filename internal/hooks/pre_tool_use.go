@@ -70,7 +70,7 @@ func RunPreToolUse(ctx context.Context, in Input, st store.Storer) error {
 		return nil
 	}
 	gated := resolveGatedTools(cfg)
-	if !gated[in.ToolName] {
+	if !isGatedTool(gated, in.ToolName) {
 		return nil
 	}
 	// proyecto sin detectar → el gate no tiene contra qué medir "ya buscaste
@@ -103,7 +103,12 @@ func RunPreToolUse(ctx context.Context, in Input, st store.Storer) error {
 	// 2026-09-11: con el bloque core y el recall por relevancia activos,
 	// exigir además una búsqueda explícita es casi siempre redundante — la
 	// sesión gasta un turno buscando algo que ya se le mostró.
-	if satisfiedByInjection(cfg) && len(sess.InjectedObservationIDs) > 0 {
+	//
+	// Excepción: las tools MCP externas (Jira, navegador, etc.) siempre piden
+	// búsqueda explícita. El bloque core es memoria general del proyecto, no
+	// de la tarea; medido el 14-oct, una sesión con 84 llamadas a Jira hizo 3
+	// mem_search porque la inyección del core daba el gate por satisfecho.
+	if satisfiedByInjection(cfg) && !isExternalMCPTool(in.ToolName) && len(sess.InjectedObservationIDs) > 0 {
 		slog.Debug("gate: sesión ya recibió memoria inyectada (core block o recall), no bloquea",
 			"project", proj, "session_id", in.SessionID, "injected_count", len(sess.InjectedObservationIDs))
 		return nil
@@ -164,6 +169,32 @@ func resolveGatedTools(cfg config.Config) map[string]bool {
 	}
 	gatedTools = m
 	return gatedTools
+}
+
+// kronosMCPPrefix identifica las tools del propio kronos: nunca se gatean,
+// porque bloquear mem_search impediría cumplir justo lo que el gate pide.
+const kronosMCPPrefix = "mcp__kronos__"
+
+// isGatedTool dice si el gate aplica a la tool: nombre exacto o patrón con
+// "*" final ("mcp__*"). Las tools de kronos quedan siempre fuera.
+func isGatedTool(gated map[string]bool, tool string) bool {
+	if strings.HasPrefix(tool, kronosMCPPrefix) {
+		return false
+	}
+	if gated[tool] {
+		return true
+	}
+	for pat := range gated {
+		if strings.HasSuffix(pat, "*") && strings.HasPrefix(tool, strings.TrimSuffix(pat, "*")) {
+			return true
+		}
+	}
+	return false
+}
+
+// isExternalMCPTool: tool MCP que no es de kronos.
+func isExternalMCPTool(tool string) bool {
+	return strings.HasPrefix(tool, "mcp__") && !strings.HasPrefix(tool, kronosMCPPrefix)
 }
 
 // isBlockMode resuelve gate.block: KRONOS_GATE_BLOCK gana si está seteada
