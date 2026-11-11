@@ -153,7 +153,7 @@ func wrapStdoutAsContext(eventName string, run func() error) error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintln(real, string(payload))
+		_, _ = fmt.Fprintln(real, string(payload))
 	}
 	return runErr
 }
@@ -183,7 +183,7 @@ func runPromptSubmitHook(reason string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintln(os.Stdout, string(payload))
+		_, _ = fmt.Fprintln(os.Stdout, string(payload))
 	}
 	return runErr
 }
