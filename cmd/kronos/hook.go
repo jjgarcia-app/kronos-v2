@@ -118,7 +118,44 @@ func runHook(args []string) error {
 	}
 	defer st.Close()
 
-	return hooks.RunWithReason(context.Background(), hookName, reason, st, nil)
+	if hookName != "session-start" {
+		return hooks.RunWithReason(context.Background(), hookName, reason, st, nil)
+	}
+
+	return wrapStdoutAsContext("SessionStart", func() error {
+		return hooks.RunWithReason(context.Background(), hookName, reason, st, nil)
+	})
+}
+
+func wrapStdoutAsContext(eventName string, run func() error) error {
+	real := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		return run()
+	}
+	os.Stdout = w
+	done := make(chan []byte)
+	go func() {
+		data, _ := io.ReadAll(r)
+		done <- data
+	}()
+	runErr := run()
+	os.Stdout = real
+	w.Close()
+	captured := <-done
+	if len(bytes.TrimSpace(captured)) > 0 {
+		payload, err := json.Marshal(map[string]any{
+			"hookSpecificOutput": map[string]string{
+				"hookEventName":     eventName,
+				"additionalContext": string(captured),
+			},
+		})
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(real, string(payload))
+	}
+	return runErr
 }
 
 // promptSubmitDaemonURL apunta al mismo puerto que usa el daemon compartido
@@ -134,12 +171,30 @@ const promptSubmitDaemonURL = "http://127.0.0.1:4317/hooks/prompt-submit"
 // esto es una optimización, no una dependencia dura: el hook sigue
 // funcionando exactamente igual que antes si el daemon no está disponible.
 func runPromptSubmitHook(reason string) error {
+	var buf bytes.Buffer
+	runErr := promptSubmitHookTo(reason, &buf)
+	if buf.Len() > 0 {
+		payload, err := json.Marshal(map[string]any{
+			"hookSpecificOutput": map[string]string{
+				"hookEventName":     "UserPromptSubmit",
+				"additionalContext": buf.String(),
+			},
+		})
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(os.Stdout, string(payload))
+	}
+	return runErr
+}
+
+func promptSubmitHookTo(reason string, out io.Writer) error {
 	data, err := io.ReadAll(os.Stdin)
 	if err != nil {
 		return fmt.Errorf("read hook input: %w", err)
 	}
 
-	if tryDaemonPromptSubmit(promptSubmitDaemonURL, data, os.Stdout) {
+	if tryDaemonPromptSubmit(promptSubmitDaemonURL, data, out) {
 		return nil
 	}
 
@@ -176,7 +231,7 @@ func runPromptSubmitHook(reason string) error {
 		vsCancel()
 	}
 
-	runErr := hooks.RunPromptSubmit(context.Background(), in, st, vs, os.Stdout)
+	runErr := hooks.RunPromptSubmit(context.Background(), in, st, vs, out)
 
 	// Digest corriente de la sesión — cuando el daemon no responde, este
 	// proceso corto es lo único que va a intentar actualizarlo. IsDigestDue
